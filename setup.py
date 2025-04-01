@@ -17,6 +17,14 @@ setup(
         "networkx",
         "pycortex",
     ],
+    extras_require={
+        "test": [
+            "pytest",
+            "pytest-cov",
+            "flake8",
+            "codecov",
+        ],
+    },
     entry_points={
         "console_scripts": [
             "autoflatten=autoflatten.cli:main",
