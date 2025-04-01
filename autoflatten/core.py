@@ -268,7 +268,8 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
         # Update the vertex dictionary
         vertex_dict[cut_key] = np.array(sorted(list(final_vertices)))
         print(
-            f"Final continuous cut has {len(final_vertices)} vertices (originally {len(cut_vertices)})"
+            f"Final continuous cut has {len(final_vertices)} vertices "
+            f"(originally {len(cut_vertices)})"
         )
 
     return vertex_dict
@@ -276,7 +277,8 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
 
 def map_cuts_to_subject(vertex_dict, target_subject, hemi, source_subject="fsaverage"):
     """
-    Map cutting vertices from a source subject to a target subject using FreeSurfer's mri_label2label.
+    Map cutting vertices from a source subject to a target subject using FreeSurfer's
+    mri_label2label.
 
     Parameters:
     -----------
