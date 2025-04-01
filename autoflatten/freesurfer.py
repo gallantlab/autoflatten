@@ -9,6 +9,28 @@ import cortex
 import numpy as np
 
 
+def is_freesurfer_available():
+    """
+    Check if FreeSurfer is installed and accessible.
+
+    Returns
+    -------
+    bool
+        True if FreeSurfer is available, False otherwise
+    """
+    try:
+        # Try to run a simple FreeSurfer command
+        subprocess.run(
+            ["mri_info", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
 def setup_freesurfer(freesurfer_home=None, subjects_dir=None):
     """
     Set up FreeSurfer environment variables within a Jupyter notebook

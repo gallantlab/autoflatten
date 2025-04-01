@@ -14,27 +14,10 @@ import pytest
 from autoflatten.freesurfer import (
     create_label_file,
     create_patch_file,
+    is_freesurfer_available,
     read_freesurfer_label,
     run_mris_flatten,
-    setup_freesurfer,
 )
-
-
-# Check if FreeSurfer is installed and set up properly
-def is_freesurfer_available():
-    """Check if FreeSurfer is installed and accessible"""
-    try:
-        # Try to run a simple FreeSurfer command
-        subprocess.run(
-            ["mri_info", "--version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        return True
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
-
 
 # Mark tests to skip if FreeSurfer is not available
 requires_freesurfer = pytest.mark.skipif(
