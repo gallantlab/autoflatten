@@ -14,14 +14,16 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 
 import cortex
+import numpy as np
 
-# Import necessary functions from your helpers module
+from autoflatten.config import fsaverage_cut_template
 from autoflatten.core import (
     ensure_continuous_cuts,
     map_cuts_to_subject,
 )
 from autoflatten.freesurfer import create_patch_file, run_mris_flatten
 from autoflatten.template import identify_surface_components
+from autoflatten.utils import load_json
 
 
 def check_freesurfer_environment():
@@ -63,7 +65,15 @@ def check_freesurfer_environment():
             text=True,
         )
         if result.returncode == 0:
-            print(f"FreeSurfer version: {result.stdout.strip()}")
+            fs_version = result.stdout.strip()
+            print(f"FreeSurfer version: {fs_version}")
+
+            # Check if it's stable6 version
+            if "stable6" not in fs_version:
+                print(
+                    "Warning: FreeSurfer version does not appear to be 'stable6'. "
+                    "mris_flatten may not work properly with this version."
+                )
         else:
             print(
                 "Warning: Could not determine FreeSurfer version, but commands are available."
@@ -78,7 +88,13 @@ def check_freesurfer_environment():
 
 
 def process_hemisphere(
-    subject, hemi, output_dir, run_flatten=False, iterations=None, overwrite=False
+    subject,
+    hemi,
+    output_dir,
+    template_file=None,
+    run_flatten=True,
+    iterations=None,
+    overwrite=False,
 ):
     """
     Process a single hemisphere through the flattening pipeline.
@@ -91,8 +107,10 @@ def process_hemisphere(
         Hemisphere ('lh' or 'rh')
     output_dir : str
         Directory to save output files
+    template_file : str, optional
+        Path to the template file containing cut definitions. If None, uses the default template.
     run_flatten : bool, optional
-        Whether to run mris_flatten
+        Whether to run mris_flatten (default: True)
     iterations : int or None, optional
         Number of iterations for flattening. If None, use mris_flatten default.
     overwrite : bool, optional
@@ -133,12 +151,37 @@ def process_hemisphere(
 
         return result
 
-    # Step 1: Get medial wall and cuts from fsaverage
-    print(f"Getting medial wall and cuts from fsaverage for {hemi}")
-    vertex_dict = identify_surface_components("fsaverage", hemi)
+    # Step 1: Get cuts template
+    if template_file:
+        print(f"Loading cuts template from {template_file}")
+        template_data = load_json(template_file)
+        vertex_dict = {}
+        # Extract hemisphere-specific data from the template
+        prefix = f"{hemi}_"
+        for key, value in template_data.items():
+            if key.startswith(prefix):
+                # Remove the hemisphere prefix
+                new_key = key[len(prefix) :]
+                vertex_dict[new_key] = np.array(value)
+    else:
+        print(f"Using default fsaverage cuts template for {hemi}")
+        # Load predefined template
+        if os.path.exists(fsaverage_cut_template):
+            template_data = load_json(fsaverage_cut_template)
+            vertex_dict = {}
+            # Extract hemisphere-specific data from the template
+            prefix = f"{hemi}_"
+            for key, value in template_data.items():
+                if key.startswith(prefix):
+                    # Remove the hemisphere prefix
+                    new_key = key[len(prefix) :]
+                    vertex_dict[new_key] = np.array(value)
+        else:
+            print(f"Default template not found, generating from fsaverage for {hemi}")
+            vertex_dict = identify_surface_components("fsaverage", hemi)
 
     # Step 2: Map cuts to target subject
-    print(f"Mapping cuts from fsaverage to {subject} for {hemi}")
+    print(f"Mapping cuts to {subject} for {hemi}")
     vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
 
     # Step 3: Ensure cuts are continuous in target subject
@@ -190,17 +233,16 @@ def main():
         ),
     )
     parser.add_argument(
-        "--flatten",
+        "--no-flatten",
         action="store_true",
-        help="Run mris_flatten after creating patch files",
+        help="Do not run mris_flatten after creating patch files (flattening is done by default)",
+    )
+    parser.add_argument(
+        "--template-file",
+        help="Path to a custom JSON template file defining cuts (default: uses built-in fsaverage template)",
     )
     parser.add_argument(
         "--parallel", action="store_true", help="Process hemispheres in parallel"
-    )
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        help="Number of iterations for mris_flatten (if not specified, uses mris_flatten default)",
     )
     parser.add_argument(
         "--hemispheres",
@@ -249,6 +291,9 @@ def main():
 
     results = {}
 
+    # Set the flatten parameter (default is True, unless --no-flatten is specified)
+    run_flatten = not args.no_flatten
+
     # Process hemispheres (parallel or sequential)
     if args.parallel and len(hemispheres) > 1:
         print("Processing hemispheres in parallel")
@@ -259,8 +304,9 @@ def main():
                     args.subject,
                     hemi,
                     output_dir,
-                    args.flatten,
-                    args.iterations,
+                    args.template_file,
+                    run_flatten,
+                    None,  # No iterations parameter anymore
                     args.overwrite,
                 ): hemi
                 for hemi in hemispheres
@@ -286,8 +332,9 @@ def main():
                     args.subject,
                     hemi,
                     output_dir,
-                    args.flatten,
-                    args.iterations,
+                    args.template_file,
+                    run_flatten,
+                    None,  # No iterations parameter anymore
                     args.overwrite,
                 )
             except Exception as e:
@@ -303,7 +350,7 @@ def main():
 
             print(f"{hemi.upper()} Hemisphere:")
             print(f"  Patch file: {patch_file}")
-            if args.flatten:
+            if run_flatten:
                 print(f"  Flat file: {flat_file}")
 
     return 0
