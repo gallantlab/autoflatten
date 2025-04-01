@@ -7,7 +7,7 @@ setup(
     name="autoflatten",
     version="0.1.0",
     description="Automatic Surface Flattening Pipeline",
-    author="Mateo Visconti di Oleggio Castello",
+    author="Matteo Visconti di Oleggio Castello",
     author_email="mvdoc@berkeley.edu",
     url="",
     packages=find_packages(),
