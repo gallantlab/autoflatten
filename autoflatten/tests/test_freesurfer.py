@@ -81,10 +81,28 @@ def test_create_patch_file(mock_surface_data):
             assert header[1] == len(patch_vertices)
 
             # For each vertex, read vertex index and coordinates
+            vertex_data = []
             for _ in range(header[1]):
                 data = struct.unpack(">i3f", fp.read(16))
                 # Check that vertex indices are either positive (border) or negative (interior)
                 assert data[0] != 0
+                vertex_data.append(data)
+
+            # Verify the content matches the expected values
+            for i, (idx, coord) in enumerate(patch_vertices):
+                # Get the stored data for this vertex
+                stored_idx, x, y, z = vertex_data[i]
+
+                # Check if this is a border vertex (positive index) or interior vertex (negative index)
+                if stored_idx > 0:
+                    # Border vertices have positive indices (1-based)
+                    assert stored_idx == idx + 1
+                else:
+                    # Interior vertices have negative indices (1-based, but negative)
+                    assert stored_idx == -(idx + 1)
+
+                # Verify the coordinates match (within floating point precision)
+                np.testing.assert_allclose([x, y, z], coord, rtol=1e-5)
 
 
 def test_read_freesurfer_label():
