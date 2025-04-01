@@ -153,7 +153,7 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     vertex_dict : dict
         Dictionary containing lists of vertex indices for:
         - 'mwall': medial wall vertices to exclude
-        - 'cut1' through 'cut5': vertices for the five cuts to exclude
+        - 'calcarine', 'medial1', 'medial2', 'medial3', 'temporal': vertices for cuts to exclude
     coords : array-like, optional
         Alternative coordinates to use (e.g., inflated). If None, uses vertices.
 
@@ -169,8 +169,10 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
 
     # Collect all vertices to exclude (medial wall and all cuts)
     excluded_vertices = set(vertex_dict["mwall"])
-    for i in range(1, 6):
-        cut_key = f"cut{i}"
+
+    # Add vertices from each cut type
+    cut_keys = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
+    for cut_key in cut_keys:
         if cut_key in vertex_dict:
             excluded_vertices.update(vertex_dict[cut_key])
 
@@ -184,11 +186,12 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
             adjacency[face[i]].update([face[j] for j in range(3) if j != i])
 
     # Find vertices adjacent to cuts but not in cuts themselves
-    for cut_key in [f"cut{i}" for i in range(1, 6) if f"cut{i}" in vertex_dict]:
-        for v in vertex_dict[cut_key]:
-            for neighbor in adjacency[v]:
-                if neighbor not in excluded_vertices:
-                    border_vertices.add(neighbor)
+    for cut_key in cut_keys:
+        if cut_key in vertex_dict:
+            for v in vertex_dict[cut_key]:
+                for neighbor in adjacency[v]:
+                    if neighbor not in excluded_vertices:
+                        border_vertices.add(neighbor)
 
     # Collect vertices used in faces (excluding the excluded vertices)
     included_vertices = set()

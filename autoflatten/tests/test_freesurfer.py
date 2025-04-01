@@ -43,7 +43,7 @@ def mock_surface_data():
     # Create vertex dictionary with mock medial wall and cuts
     vertex_dict = {
         "mwall": [0],  # Vertex 0 is in the medial wall
-        "cut1": [1],  # Vertex 1 is in cut1
+        "calcarine": [1],  # Vertex 1 is in calcarine cut
     }
 
     return {"vertices": vertices, "faces": faces, "vertex_dict": vertex_dict}
