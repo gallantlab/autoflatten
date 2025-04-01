@@ -16,6 +16,7 @@ setup(
         "numpy",
         "networkx",
         "pycortex",
+        "scikit-learn",
     ],
     extras_require={
         "test": [
