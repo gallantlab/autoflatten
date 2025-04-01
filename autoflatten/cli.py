@@ -17,11 +17,11 @@ import cortex
 
 # Import necessary functions from your helpers module
 from autoflatten.core import (
-    create_patch_file,
     ensure_continuous_cuts,
-    get_mwall_and_cuts_verts,
     map_cuts_to_subject,
 )
+from autoflatten.freesurfer import create_patch_file, run_mris_flatten
+from autoflatten.template import identify_surface_components
 
 
 def check_freesurfer_environment():
@@ -75,104 +75,6 @@ def check_freesurfer_environment():
         return False, env_vars
 
     return True, env_vars
-
-
-def run_mris_flatten(
-    subject, hemi, patch_file, output_dir, iterations=None, overwrite=False
-):
-    """
-    Run mris_flatten on a patch file to create a flattened surface.
-
-    Parameters
-    ----------
-    subject : str
-        FreeSurfer subject identifier
-    hemi : str
-        Hemisphere ('lh' or 'rh')
-    patch_file : str
-        Path to the patch file
-    output_dir : str
-        Directory to save output files
-    iterations : int or None, optional
-        Number of iterations for flattening. If None, use mris_flatten default.
-    overwrite : bool, optional
-        Whether to overwrite existing files
-
-    Returns
-    -------
-    str
-        Path to the output flat surface
-    """
-    # Construct output path
-    flat_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.3d")
-
-    # Check if output file exists and whether to overwrite
-    if os.path.exists(flat_file) and not overwrite:
-        print(
-            f"Flat patch file {flat_file} already exists, skipping (use --overwrite to force)"
-        )
-        return flat_file
-
-    # Get the subject's surf directory from SUBJECTS_DIR
-    subjects_dir = os.environ.get("SUBJECTS_DIR")
-    subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
-
-    # If output_dir is not the subject's surf directory, we need to ensure mris_flatten can find
-    # the necessary surface files by running it from the surf directory
-    if os.path.normpath(output_dir) != os.path.normpath(subject_surf_dir):
-        # Copy the patch file to the subject's surf directory
-        temp_patch_file = os.path.join(subject_surf_dir, os.path.basename(patch_file))
-        temp_flat_file = os.path.join(subject_surf_dir, os.path.basename(flat_file))
-
-        print(f"Copying patch file to subject's surf directory: {temp_patch_file}")
-        shutil.copy2(patch_file, temp_patch_file)
-
-        # Change to the subject's surf directory
-        original_dir = os.getcwd()
-        os.chdir(subject_surf_dir)
-
-        try:
-            # Construct mris_flatten command
-            cmd = ["mris_flatten"]
-
-            # Add iterations parameter only if specified
-            if iterations is not None:
-                cmd.extend(["-w", str(iterations)])
-
-            # Add input and output files (just the basenames since we're in the surf directory)
-            cmd.extend(
-                [os.path.basename(temp_patch_file), os.path.basename(temp_flat_file)]
-            )
-
-            print(f"Running from {subject_surf_dir}: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True)
-
-            # Copy the flat file back to the output directory
-            print(f"Copying flat file back to output directory: {flat_file}")
-            shutil.copy2(temp_flat_file, flat_file)
-
-            # Clean up the temporary files
-            os.remove(temp_patch_file)
-            os.remove(temp_flat_file)
-
-        finally:
-            # Change back to the original directory
-            os.chdir(original_dir)
-    else:
-        # We're already in the subject's surf directory, so we can run mris_flatten directly
-        cmd = ["mris_flatten"]
-
-        # Add iterations parameter only if specified
-        if iterations is not None:
-            cmd.extend(["-w", str(iterations)])
-
-        # Add input and output files
-        cmd.extend([patch_file, flat_file])
-
-        print(f"Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-
-    return flat_file
 
 
 def process_hemisphere(
@@ -233,7 +135,7 @@ def process_hemisphere(
 
     # Step 1: Get medial wall and cuts from fsaverage
     print(f"Getting medial wall and cuts from fsaverage for {hemi}")
-    vertex_dict = get_mwall_and_cuts_verts("fsaverage", hemi)
+    vertex_dict = identify_surface_components("fsaverage", hemi)
 
     # Step 2: Map cuts to target subject
     print(f"Mapping cuts from fsaverage to {subject} for {hemi}")
