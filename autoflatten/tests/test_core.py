@@ -83,8 +83,8 @@ def test_ensure_continuous_cuts(mock_surface_data, monkeypatch):
     disconnected cuts and handles them appropriately.
     """
 
-    # Mock cortex.db.get_surf function
-    def mock_get_surf(subject, surf_type, hemisphere=None):
+    # Mock load_surface function directly at the module level where it's imported
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
         if surf_type == "inflated":
             return mock_surface_data["vertices_inflated"], mock_surface_data["faces"]
         elif surf_type == "fiducial":
@@ -92,8 +92,8 @@ def test_ensure_continuous_cuts(mock_surface_data, monkeypatch):
         else:
             raise ValueError(f"Unexpected surface type: {surf_type}")
 
-    # Apply the monkeypatch
-    monkeypatch.setattr("cortex.db.get_surf", mock_get_surf)
+    # Apply the monkeypatch to the imported function in core.py
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
 
     # Run the function with the mock data
     vertex_dict = mock_surface_data["vertex_dict"].copy()
@@ -185,8 +185,8 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
     This test verifies that the function correctly adds vertices to make disconnected cuts continuous.
     """
 
-    # Mock cortex.db.get_surf function
-    def mock_get_surf(subject, surf_type, hemisphere=None):
+    # Mock load_surface function directly at the module level where it's imported
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
         if surf_type == "inflated":
             return mock_surface_data_with_disconnected_cut[
                 "vertices_inflated"
@@ -198,8 +198,8 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
         else:
             raise ValueError(f"Unexpected surface type: {surf_type}")
 
-    # Apply the monkeypatch
-    monkeypatch.setattr("cortex.db.get_surf", mock_get_surf)
+    # Apply the monkeypatch to the imported function in core.py
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
 
     # Run the function with the mock data
     vertex_dict = mock_surface_data_with_disconnected_cut["vertex_dict"].copy()

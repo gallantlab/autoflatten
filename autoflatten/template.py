@@ -5,6 +5,8 @@ import networkx as nx
 import numpy as np
 from sklearn.decomposition import PCA
 
+from .freesurfer import load_surface
+
 
 def get_surface_data(subject, hemi):
     """
@@ -27,9 +29,9 @@ def get_surface_data(subject, hemi):
         - 'polys_full': Triangles of the full surface
         - 'polys_flat': Triangles of the flat surface
     """
-    pts_fiducial, polys_full = cortex.db.get_surf(subject, "fiducial", hemisphere=hemi)
-    pts_flat, polys_flat = cortex.db.get_surf(subject, "flat", hemisphere=hemi)
-    pts_inflated, _ = cortex.db.get_surf(subject, "inflated", hemisphere=hemi)
+    pts_fiducial, polys_full = load_surface(subject, "fiducial", hemi)
+    pts_flat, polys_flat = load_surface(subject, "flat", hemi)
+    pts_inflated, _ = load_surface(subject, "inflated", hemi)
 
     return {
         "fiducial_points": pts_fiducial,

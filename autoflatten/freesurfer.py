@@ -5,8 +5,53 @@ import shutil
 import struct
 import subprocess
 
-import cortex
+import nibabel as nib
 import numpy as np
+
+
+def load_surface(subject, type, hemi, subjects_dir=None):
+    """Load FreeSurfer surface information.
+
+    Parameters
+    ----------
+    subject : str
+        PyCortex or FreeSurfer subject identifier
+    type : str
+        Type of surface ('white', 'pial', 'inflated', etc.)
+    hemi : str
+        Hemisphere ('lh' or 'rh')
+    subjects_dir : str, optional
+        Path to the FreeSurfer subjects directory. If None, uses the
+        SUBJECTS_DIR environment variable.
+
+    Returns
+    -------
+    coords : ndarray
+        Array of vertex coordinates with shape (n_vertices, 3)
+    faces : ndarray
+        Array of face indices with shape (n_faces, 3)
+    """
+    try:
+        # Try to load from PyCortex database first for backward compatibility
+        import cortex
+
+        coords, faces = cortex.db.get_surf(subject, type, hemi)
+    except KeyError:
+        # We don't have the subject in the database,
+        # so we need to load it from FreeSurfer
+        # Get the subject's surf directory from SUBJECTS_DIR
+        subjects_dir = os.environ.get("SUBJECTS_DIR", subjects_dir)
+        if subjects_dir is None:
+            raise ValueError("SUBJECTS_DIR environment variable not set")
+        subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
+        # Construct the file path
+        surf_file = os.path.join(subject_surf_dir, f"{hemi}.{type}")
+        if not os.path.exists(surf_file):
+            raise FileNotFoundError(f"Surface file {surf_file} not found")
+        # Load the surface using nibabel
+        surf_data = nib.freesurfer.read_geometry(surf_file)
+        coords, faces = surf_data
+    return coords, faces
 
 
 def is_freesurfer_available():
@@ -249,9 +294,7 @@ def create_label_file(vertex_ids, subject, hemi, output_file):
     # We need to get the coordinates for each vertex
 
     # Get the surface coordinates from the subject's surface file
-    # You can use nibabel for this, or call a FreeSurfer command
-
-    coords, polys = cortex.db.get_surf(subject, "inflated", hemi)
+    coords, polys = load_surface(subject, "inflated", hemi)
 
     # Create the label data
     n_vertices = len(vertex_ids)

@@ -5,11 +5,10 @@ import shutil
 import subprocess
 import tempfile
 
-import cortex
 import networkx as nx
 import numpy as np
 
-from .freesurfer import create_label_file, read_freesurfer_label
+from .freesurfer import create_label_file, load_surface, read_freesurfer_label
 
 
 def ensure_continuous_cuts(vertex_dict, subject, hemi):
@@ -32,16 +31,16 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     """
     # Get INFLATED surface geometry instead of fiducial
     print("Loading inflated surface...")
-    pts_inflated, polys = cortex.db.get_surf(subject, "inflated", hemisphere=hemi)
+    pts_inflated, polys = load_surface(subject, "inflated", hemi)
 
     # Also get fiducial for accurate path finding
     try:
-        pts_fiducial, _ = cortex.db.get_surf(subject, "fiducial", hemisphere=hemi)
+        pts_fiducial, _ = load_surface(subject, "fiducial", hemi)
     except FileNotFoundError:
         print("Fiducial surface not found, computing it from smoothwm and pial.")
         # Need to compute it from smoothwm and pial
-        pts_wm, _ = cortex.db.get_surf(subject, "smoothwm", hemisphere=hemi)
-        pts_pial, _ = cortex.db.get_surf(subject, "pial", hemisphere=hemi)
+        pts_wm, _ = load_surface(subject, "smoothwm", hemi)
+        pts_pial, _ = load_surface(subject, "pial", hemi)
         pts_fiducial = (pts_wm + pts_pial) / 2.0
 
     # Create surface graph for path finding (using fiducial)

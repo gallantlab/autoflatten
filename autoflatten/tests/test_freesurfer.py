@@ -127,23 +127,22 @@ def test_create_label_file(monkeypatch):
     """
     Test creating a FreeSurfer label file.
 
-    This test mocks the cortex.db.get_surf function and verifies that
+    This test mocks the autoflatten.freesurfer.load_surface function and verifies that
     create_label_file correctly creates a label file.
     """
 
-    # Mock cortex.db.get_surf function
-    def mock_get_surf(subject, surface, hemi):
+    # Mock load_surface function
+    def mock_load_surface(subject, surface, hemi, subjects_dir=None):
         # Return mock coords and polys
         coords = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
         polys = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
         return coords, polys
 
     # Apply the monkeypatch
-    monkeypatch.setattr("cortex.db.get_surf", mock_get_surf)
+    monkeypatch.setattr("autoflatten.freesurfer.load_surface", mock_load_surface)
 
     # Test vertex IDs
     vertex_ids = [0, 2, 3]
-
     with tempfile.TemporaryDirectory() as temp_dir:
         label_file = os.path.join(temp_dir, "test.label")
 
