@@ -19,4 +19,4 @@ vertex_dict = {f"lh_{key}": value for key, value in vertex_dict_lh.items()}
 vertex_dict.update({f"rh_{key}": value for key, value in vertex_dict_rh.items()})
 
 print(f"Saving fsaverage cut template to {fsaverage_cut_template}")
-save_json(fsaverage_cut_template, vertex_dict, indent=2)
+save_json(fsaverage_cut_template, vertex_dict)
