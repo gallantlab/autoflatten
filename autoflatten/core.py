@@ -35,7 +35,14 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     pts_inflated, polys = cortex.db.get_surf(subject, "inflated", hemisphere=hemi)
 
     # Also get fiducial for accurate path finding
-    pts_fiducial, _ = cortex.db.get_surf(subject, "fiducial", hemisphere=hemi)
+    try:
+        pts_fiducial, _ = cortex.db.get_surf(subject, "fiducial", hemisphere=hemi)
+    except FileNotFoundError:
+        print("Fiducial surface not found, computing it from smoothwm and pial.")
+        # Need to compute it from smoothwm and pial
+        pts_wm, _ = cortex.db.get_surf(subject, "smoothwm", hemisphere=hemi)
+        pts_pial, _ = cortex.db.get_surf(subject, "pial", hemisphere=hemi)
+        pts_fiducial = (pts_wm + pts_pial) / 2.0
 
     # Create surface graph for path finding (using fiducial)
     print("Creating surface graph...")
