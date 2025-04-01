@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 import cortex
 
 # Import necessary functions from your helpers module
-from helpers import (
+from autoflatten.core import (
     create_patch_file,
     ensure_continuous_cuts,
     get_mwall_and_cuts_verts,
