@@ -21,7 +21,7 @@ from autoflatten.core import (
     ensure_continuous_cuts,
     map_cuts_to_subject,
 )
-from autoflatten.freesurfer import create_patch_file, run_mris_flatten
+from autoflatten.freesurfer import create_patch_file, load_surface, run_mris_flatten
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
 
@@ -189,7 +189,7 @@ def process_hemisphere(
     vertex_dict_fixed = ensure_continuous_cuts(vertex_dict_mapped.copy(), subject, hemi)
 
     # Get subject surface data
-    pts, polys = cortex.db.get_surf(subject, "inflated", hemisphere=hemi)
+    pts, polys = load_surface(subject, "inflated", hemi)
 
     # Create patch file
     print(f"Creating patch file for {subject} {hemi}")
