@@ -22,7 +22,6 @@ setup(
         "test": [
             "pytest",
             "pytest-cov",
-            "flake8",
             "codecov",
         ],
     },
