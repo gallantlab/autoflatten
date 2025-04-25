@@ -358,8 +358,77 @@ def read_freesurfer_label(label_file):
     return np.array(sorted(vertices))
 
 
+def _build_mris_flatten_cmd(
+    norand, seed, threads, distances, n, dilate, extra_params=None
+):
+    """
+    Build the command list for mris_flatten.
+
+    Parameters
+    ----------
+    norand : bool
+        Whether to use the -norand flag
+    seed : int
+        Random seed value to use with -seed flag
+    threads : int
+        Number of threads to use
+    distances : tuple of int
+        Distance parameters as a tuple (distance1, distance2)
+    n : int
+        Maximum number of iterations to run, used with -n flag
+    dilate : int
+        Number of dilations to perform, used with -dilate flag
+    extra_params : dict, optional
+        Dictionary of additional parameters to pass to mris_flatten as -key value pairs
+
+    Returns
+    -------
+    list
+        List of command line arguments for mris_flatten
+    """
+    cmd = ["mris_flatten"]
+
+    # Add mandatory parameters
+    if norand:
+        cmd.append("-norand")
+    cmd.extend(["-seed", str(seed)])
+    cmd.extend(["-threads", str(threads)])
+    cmd.extend(["-distances", str(distances[0]), str(distances[1])])
+    cmd.extend(["-n", str(n)])
+    cmd.extend(["-dilate", str(dilate)])
+
+    # Add any extra parameters
+    if extra_params:
+        for key, value in extra_params.items():
+            if value is None:
+                cmd.append(f"-{key}")
+            elif isinstance(value, bool):
+                if value:  # Only add flag if True
+                    cmd.append(f"-{key}")
+            elif isinstance(value, (list, tuple)):
+                cmd.append(f"-{key}")
+                cmd.extend([str(v) for v in value])
+            else:
+                cmd.append(f"-{key}")
+                cmd.append(str(value))
+
+    return cmd
+
+
 def run_mris_flatten(
-    subject, hemi, patch_file, output_dir, iterations=None, overwrite=False
+    subject,
+    hemi,
+    patch_file,
+    output_dir,
+    output_name=None,
+    norand=True,
+    seed=0,
+    threads=16,
+    distances=(30, 30),
+    n=80,
+    dilate=1,
+    extra_params=None,
+    overwrite=False,
 ):
     """
     Run mris_flatten on a patch file to create a flattened surface.
@@ -374,31 +443,57 @@ def run_mris_flatten(
         Path to the patch file
     output_dir : str
         Directory to save output files
-    iterations : int or None, optional
-        Save intermediate flattening patches after this many iterations.
-        If None, only the final flat patch is saved.
+    output_name : str, optional
+        Name for output file. If None, a default name will be generated
+    norand : bool, optional
+        Whether to use the -norand flag (default True)
+    seed : int, optional
+        Random seed value to use with -seed flag (default 0)
+    threads : int, optional
+        Number of threads to use (default 32)
+    distances : tuple of int, optional
+        Distance parameters as a tuple (distance1, distance2) (default (30, 30))
+    n : int, optional
+        Maximum number of iterations to run, used with -n flag (default 80)
+    dilate : int, optional
+        Number of dilations to perform, used with -dilate flag (default 1)
+    extra_params : dict, optional
+        Dictionary of additional parameters to pass to mris_flatten as -key value pairs
     overwrite : bool, optional
-        Whether to overwrite existing files
+        Whether to overwrite existing files (default False)
 
     Returns
     -------
     str
         Path to the output flat surface
     """
-    # Construct output path
-    flat_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.3d")
+    # Generate output filename based on parameters if not provided
+    if output_name is None:
+        distances_str = f"distances{distances[0]}{distances[1]}"
+        output_name = (
+            f"{hemi}.autoflatten_{distances_str}_n{n}_dilate{dilate}.flat.patch.3d"
+        )
+
+    flat_file = os.path.join(output_dir, output_name)
 
     # Check if output file exists and whether to overwrite
     if os.path.exists(flat_file) and not overwrite:
         print(
-            f"Flat patch file {flat_file} already exists, skipping (use --overwrite to force)"
+            f"Flat patch file {flat_file} already exists, skipping (use overwrite=True to force)"
         )
         return flat_file
 
     # Get the subject's surf directory from SUBJECTS_DIR
     subjects_dir = os.environ.get("SUBJECTS_DIR")
+    if subjects_dir is None:
+        raise ValueError("SUBJECTS_DIR environment variable not set")
+
     subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
 
+    # Build the command
+    cmd = _build_mris_flatten_cmd(
+        norand, seed, threads, distances, n, dilate, extra_params
+    )
     # If output_dir is not the subject's surf directory, we need to ensure mris_flatten can find
     # the necessary surface files by running it from the surf directory
     if os.path.normpath(output_dir) != os.path.normpath(subject_surf_dir):
@@ -412,15 +507,7 @@ def run_mris_flatten(
         # Change to the subject's surf directory
         original_dir = os.getcwd()
         os.chdir(subject_surf_dir)
-
         try:
-            # Construct mris_flatten command
-            cmd = ["mris_flatten"]
-
-            # Add iterations parameter only if specified
-            if iterations is not None:
-                cmd.extend(["-w", str(iterations)])
-
             # Add input and output files (just the basenames since we're in the surf directory)
             cmd.extend(
                 [os.path.basename(temp_patch_file), os.path.basename(temp_flat_file)]
@@ -442,11 +529,6 @@ def run_mris_flatten(
             os.chdir(original_dir)
     else:
         # We're already in the subject's surf directory, so we can run mris_flatten directly
-        cmd = ["mris_flatten"]
-
-        # Add iterations parameter only if specified
-        if iterations is not None:
-            cmd.extend(["-w", str(iterations)])
 
         # Add input and output files
         cmd.extend([patch_file, flat_file])
