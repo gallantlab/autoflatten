@@ -17,10 +17,7 @@ import cortex
 import numpy as np
 
 from autoflatten.config import fsaverage_cut_template
-from autoflatten.core import (
-    ensure_continuous_cuts,
-    map_cuts_to_subject,
-)
+from autoflatten.core import ensure_continuous_cuts, map_cuts_to_subject
 from autoflatten.freesurfer import create_patch_file, load_surface, run_mris_flatten
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
@@ -93,8 +90,14 @@ def process_hemisphere(
     output_dir,
     template_file=None,
     run_flatten=True,
-    iterations=None,
     overwrite=False,
+    norand=True,
+    seed=0,
+    threads=32,
+    distances=(30, 30),
+    n=80,
+    dilate=1,
+    extra_params=None,
 ):
     """
     Process a single hemisphere through the flattening pipeline.
@@ -111,10 +114,22 @@ def process_hemisphere(
         Path to the template file containing cut definitions. If None, uses the default template.
     run_flatten : bool, optional
         Whether to run mris_flatten (default: True)
-    iterations : int or None, optional
-        Number of iterations for flattening. If None, use mris_flatten default.
     overwrite : bool, optional
         Whether to overwrite existing files
+    norand : bool, optional
+        Whether to use the -norand flag for mris_flatten (default: True)
+    seed : int, optional
+        Random seed value to use with -seed flag (default: 0)
+    threads : int, optional
+        Number of threads to use (default: 32)
+    distances : tuple of int, optional
+        Distance parameters as a tuple (distance1, distance2) (default: (30, 30))
+    n : int, optional
+        Maximum number of iterations to run, used with -n flag (default: 80)
+    dilate : int, optional
+        Number of dilations to perform, used with -dilate flag (default: 1)
+    extra_params : dict, optional
+        Dictionary of additional parameters to pass to mris_flatten as -key value pairs
 
     Returns
     -------
@@ -145,7 +160,19 @@ def process_hemisphere(
         if run_flatten:
             print(f"Running mris_flatten for {subject} {hemi}")
             flat_file = run_mris_flatten(
-                subject, hemi, patch_file, output_dir, iterations, overwrite
+                subject,
+                hemi,
+                patch_file,
+                output_dir,
+                output_name=None,
+                norand=norand,
+                seed=seed,
+                threads=threads,
+                distances=distances,
+                n=n,
+                dilate=dilate,
+                extra_params=extra_params,
+                overwrite=overwrite,
             )
             result["flat_file"] = flat_file
 
@@ -209,7 +236,19 @@ def process_hemisphere(
     if run_flatten:
         print(f"Running mris_flatten for {subject} {hemi}")
         flat_file = run_mris_flatten(
-            subject, hemi, patch_file, output_dir, iterations, overwrite
+            subject,
+            hemi,
+            patch_file,
+            output_dir,
+            output_name=None,
+            norand=norand,
+            seed=seed,
+            threads=threads,
+            distances=distances,
+            n=n,
+            dilate=dilate,
+            extra_params=extra_params,
+            overwrite=overwrite,
         )
         result["flat_file"] = flat_file
 
@@ -255,6 +294,58 @@ def main():
         "--overwrite", action="store_true", help="Overwrite existing files"
     )
 
+    # Add new mris_flatten parameters
+    parser.add_argument(
+        "--norand",
+        action="store_true",
+        help="Use -norand option for mris_flatten (default: True)",
+        default=True,
+    )
+    parser.add_argument(
+        "--rand",
+        action="store_false",
+        dest="norand",
+        help="Disable -norand option for mris_flatten",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for mris_flatten (default: 0)",
+    )
+    parser.add_argument(
+        "--nthreads",
+        type=int,
+        default=32,
+        help="Number of threads to use for mris_flatten (default: 32)",
+    )
+    parser.add_argument(
+        "--distances",
+        type=int,
+        nargs=2,
+        default=[30, 30],
+        help="Distance parameters for mris_flatten as two integers (default: 30 30)",
+        metavar=("DIST1", "DIST2"),
+    )
+    parser.add_argument(
+        "--n-iterations",
+        type=int,
+        default=80,
+        help="Maximum number of iterations for mris_flatten (default: 80)",
+        dest="n",
+    )
+    parser.add_argument(
+        "--dilate",
+        type=int,
+        default=1,
+        help="Number of dilations for mris_flatten (default: 1)",
+    )
+    parser.add_argument(
+        "--flatten-extra",
+        type=str,
+        help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
+    )
+
     args = parser.parse_args()
 
     # Check FreeSurfer environment
@@ -281,6 +372,31 @@ def main():
 
     print(f"Using output directory: {output_dir}")
 
+    # Parse the flatten-extra parameter if provided
+    extra_params = {}
+    if args.flatten_extra:
+        try:
+            for param in args.flatten_extra.split(","):
+                if "=" in param:
+                    key, value = param.split("=", 1)
+                    # Try to convert value to int or float if possible
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        try:
+                            value = float(value)
+                        except ValueError:
+                            # Keep as string if not a number
+                            pass
+                    extra_params[key] = value
+                else:
+                    # If no value provided, set to True (flag parameter)
+                    extra_params[param] = True
+        except Exception as e:
+            print(f"Error parsing flatten-extra parameter: {e}")
+            print("Format should be: key1=value1,key2=value2")
+            return 1
+
     # Determine which hemispheres to process
     if args.hemispheres == "both":
         hemispheres = ["lh", "rh"]
@@ -294,6 +410,13 @@ def main():
     # Set the flatten parameter (default is True, unless --no-flatten is specified)
     run_flatten = not args.no_flatten
 
+    # Calculate threads per hemisphere when running in parallel
+    threads_per_hemisphere = args.nthreads
+    if args.parallel and len(hemispheres) > 1:
+        # Distribute threads evenly, but at least 1 per hemisphere
+        threads_per_hemisphere = max(1, args.nthreads // len(hemispheres))
+        print(f"Using {threads_per_hemisphere} threads per hemisphere")
+
     # Process hemispheres (parallel or sequential)
     if args.parallel and len(hemispheres) > 1:
         print("Processing hemispheres in parallel")
@@ -306,8 +429,14 @@ def main():
                     output_dir,
                     args.template_file,
                     run_flatten,
-                    None,  # No iterations parameter anymore
                     args.overwrite,
+                    args.norand,
+                    args.seed,
+                    threads_per_hemisphere,  # Distributed threads
+                    tuple(args.distances),
+                    args.n,
+                    args.dilate,
+                    extra_params,
                 ): hemi
                 for hemi in hemispheres
             }
@@ -334,8 +463,14 @@ def main():
                     output_dir,
                     args.template_file,
                     run_flatten,
-                    None,  # No iterations parameter anymore
                     args.overwrite,
+                    args.norand,
+                    args.seed,
+                    args.nthreads,  # Full threads since not parallel
+                    tuple(args.distances),
+                    args.n,
+                    args.dilate,
+                    extra_params,
                 )
             except Exception as e:
                 print(f"Error processing {hemi} hemisphere: {e}")
