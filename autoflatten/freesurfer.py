@@ -359,7 +359,13 @@ def read_freesurfer_label(label_file):
 
 
 def _build_mris_flatten_cmd(
-    norand, seed, threads, distances, n, dilate, extra_params=None
+    norand=None,
+    seed=None,
+    threads=None,
+    distances=None,
+    n=None,
+    dilate=None,
+    extra_params=None,
 ):
     """
     Build the command list for mris_flatten.
@@ -389,13 +395,18 @@ def _build_mris_flatten_cmd(
     cmd = ["mris_flatten"]
 
     # Add mandatory parameters
-    if norand:
+    if norand is not None and norand:
         cmd.append("-norand")
-    cmd.extend(["-seed", str(seed)])
-    cmd.extend(["-threads", str(threads)])
-    cmd.extend(["-distances", str(distances[0]), str(distances[1])])
-    cmd.extend(["-n", str(n)])
-    cmd.extend(["-dilate", str(dilate)])
+    if seed is not None:
+        cmd.extend(["-seed", str(seed)])
+    if threads is not None:
+        cmd.extend(["-threads", str(threads)])
+    if distances is not None:
+        cmd.extend(["-distances", str(distances[0]), str(distances[1])])
+    if n is not None:
+        cmd.extend(["-n", str(n)])
+    if dilate is not None:
+        cmd.extend(["-dilate", str(dilate)])
 
     # Add any extra parameters
     if extra_params:
@@ -440,100 +451,210 @@ def run_mris_flatten(
     hemi : str
         Hemisphere ('lh' or 'rh')
     patch_file : str
-        Path to the patch file
+        Path to the input patch file. Must exist.
     output_dir : str
-        Directory to save output files
+        Directory to save the final output flat patch file and its log.
     output_name : str, optional
-        Name for output file. If None, a default name will be generated
+        Base name for the output flat patch file (e.g., 'lh.myflat.patch.3d').
+        If None, a default name based on parameters will be generated.
     norand : bool, optional
-        Whether to use the -norand flag (default True)
+        Whether to use the -norand flag (default True).
     seed : int, optional
-        Random seed value to use with -seed flag (default 0)
+        Random seed value to use with -seed flag (default 0).
     threads : int, optional
-        Number of threads to use (default 32)
+        Number of threads to use (default 16).
     distances : tuple of int, optional
-        Distance parameters as a tuple (distance1, distance2) (default (30, 30))
+        Distance parameters as a tuple (distance1, distance2) (default (30, 30)).
     n : int, optional
-        Maximum number of iterations to run, used with -n flag (default 80)
+        Maximum number of iterations to run, used with -n flag (default 80).
     dilate : int, optional
-        Number of dilations to perform, used with -dilate flag (default 1)
+        Number of dilations to perform, used with -dilate flag (default 1).
     extra_params : dict, optional
-        Dictionary of additional parameters to pass to mris_flatten as -key value pairs
+        Dictionary of additional parameters to pass to mris_flatten as -key value pairs.
     overwrite : bool, optional
-        Whether to overwrite existing files (default False)
+        Whether to overwrite existing output files (default False).
 
     Returns
     -------
     str
-        Path to the output flat surface
+        Path to the final output flat surface file in `output_dir`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input `patch_file` does not exist or the subject's surf directory cannot be found.
+    ValueError
+        If the `SUBJECTS_DIR` environment variable is not set.
+    RuntimeError
+        If the `mris_flatten` command fails.
     """
-    # Generate output filename based on parameters if not provided
+    # --- Input Validation and Setup ---
+    if not os.path.exists(patch_file):
+        raise FileNotFoundError(f"Input patch file not found: {patch_file}")
+
+    subjects_dir = os.environ.get("SUBJECTS_DIR")
+    if subjects_dir is None:
+        raise ValueError("SUBJECTS_DIR environment variable not set")
+    subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
+    if not os.path.isdir(subject_surf_dir):
+        raise FileNotFoundError(f"Subject surf directory not found: {subject_surf_dir}")
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Generate output filename if not provided
     if output_name is None:
-        distances_str = f"distances{distances[0]}{distances[1]}"
+        distances_str = f"distances{distances[0]:02d}{distances[1]:02d}"
         output_name = (
             f"{hemi}.autoflatten_{distances_str}_n{n}_dilate{dilate}.flat.patch.3d"
         )
 
-    flat_file = os.path.join(output_dir, output_name)
+    final_flat_file = os.path.join(output_dir, output_name)
+    # Define final log file paths (.log for stdout/stderr, .out for mris_flatten's own log)
+    final_log_file = os.path.splitext(final_flat_file)[0] + ".log"
+    final_out_file = (
+        final_flat_file + ".out"
+    )  # Keep the original .out extension for mris_flatten's log
 
-    # Check if output file exists and whether to overwrite
-    if os.path.exists(flat_file) and not overwrite:
+    # Check if final output file exists and whether to overwrite
+    if os.path.exists(final_flat_file) and not overwrite:
         print(
-            f"Flat patch file {flat_file} already exists, skipping (use overwrite=True to force)"
+            f"Flat patch file {final_flat_file} already exists, skipping "
+            "(use overwrite=True to force)"
         )
-        return flat_file
+        return final_flat_file
+    elif os.path.exists(final_flat_file) and overwrite:
+        print(f"Overwriting existing file: {final_flat_file}")
+        # Optionally remove existing log files as well if overwriting
+        if os.path.exists(final_log_file):
+            os.remove(final_log_file)
+        if os.path.exists(final_out_file):
+            os.remove(final_out_file)
 
-    # Get the subject's surf directory from SUBJECTS_DIR
-    subjects_dir = os.environ.get("SUBJECTS_DIR")
-    if subjects_dir is None:
-        raise ValueError("SUBJECTS_DIR environment variable not set")
-
-    subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
+    # --- Prepare for Execution ---
+    # Define temporary file paths within the subject's surf directory
+    patch_basename = os.path.basename(patch_file)
+    flat_basename = os.path.basename(final_flat_file)
+    temp_patch_file = os.path.join(subject_surf_dir, patch_basename)
+    temp_flat_file = os.path.join(subject_surf_dir, flat_basename)
+    # Define temporary log file paths
+    temp_log_file = os.path.splitext(temp_flat_file)[0] + ".log"  # For stdout/stderr
+    temp_out_file = temp_flat_file + ".out"  # For mris_flatten's own log
 
     # Build the command
     cmd = _build_mris_flatten_cmd(
         norand, seed, threads, distances, n, dilate, extra_params
     )
-    # If output_dir is not the subject's surf directory, we need to ensure mris_flatten can find
-    # the necessary surface files by running it from the surf directory
-    if os.path.normpath(output_dir) != os.path.normpath(subject_surf_dir):
-        # Copy the patch file to the subject's surf directory
-        temp_patch_file = os.path.join(subject_surf_dir, os.path.basename(patch_file))
-        temp_flat_file = os.path.join(subject_surf_dir, os.path.basename(flat_file))
+    cmd.extend([patch_basename, flat_basename])  # Use basenames as we run from surf dir
 
-        print(f"Copying patch file to subject's surf directory: {temp_patch_file}")
-        shutil.copy2(patch_file, temp_patch_file)
+    # --- Execute mris_flatten ---
+    original_dir = os.getcwd()
+    copied_patch = False  # Initialize flag
+    files_were_copied = False  # Flag to track if output files were copied
+    try:
+        # Copy patch file to surf directory if it's not already there
+        # Use copy2 to preserve metadata, which might be useful
+        if os.path.abspath(patch_file) != os.path.abspath(temp_patch_file):
+            print(f"Copying patch file to: {temp_patch_file}")
+            shutil.copy2(patch_file, temp_patch_file)
+            copied_patch = True
+        else:
+            print(f"Using existing patch file in surf directory: {temp_patch_file}")
+            copied_patch = False
 
-        # Change to the subject's surf directory
-        original_dir = os.getcwd()
+        # Change to the subject's surf directory to run the command
         os.chdir(subject_surf_dir)
-        try:
-            # Add input and output files (just the basenames since we're in the surf directory)
-            cmd.extend(
-                [os.path.basename(temp_patch_file), os.path.basename(temp_flat_file)]
+        print(f"Running from {subject_surf_dir}: {' '.join(cmd)}")
+
+        # Run the command, capturing output
+        process = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+        # Write stdout and stderr to the .log file regardless of success
+        print(f"Writing stdout/stderr to log file: {temp_log_file}")
+        with open(temp_log_file, "w") as log_f:
+            log_f.write("--- STDOUT ---\n")
+            log_f.write(process.stdout)
+            log_f.write("\n--- STDERR ---\n")
+            log_f.write(process.stderr)
+
+        # Check for errors
+        if process.returncode != 0:
+            error_message = (
+                f"mris_flatten failed with return code {process.returncode}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Log file with stdout/stderr: {temp_log_file}\n"  # Refer to the log file
+                f"Stderr tail:\n{process.stderr[-500:]}"  # Show last bit of stderr
             )
+            # Clean up the copied patch file before raising error, if it exists
+            if copied_patch and os.path.exists(temp_patch_file):
+                try:
+                    os.remove(temp_patch_file)
+                    print(f"Cleaned up temporary patch file: {temp_patch_file}")
+                except OSError as e:
+                    print(
+                        f"Warning: Could not remove temporary patch file {temp_patch_file}: {e}"
+                    )
+            # Attempt to copy the log file even on failure
+            if os.path.abspath(temp_log_file) != os.path.abspath(final_log_file):
+                try:
+                    print(f"Copying failure log file to: {final_log_file}")
+                    shutil.copy2(temp_log_file, final_log_file)
+                except Exception as e:
+                    print(
+                        f"Warning: Could not copy failure log file {temp_log_file} to {final_log_file}: {e}"
+                    )
+            raise RuntimeError(error_message)
 
-            print(f"Running from {subject_surf_dir}: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True)
+        print(f"mris_flatten completed successfully. Output file: {temp_flat_file}")
+        if os.path.exists(temp_out_file):
+            print(f"mris_flatten log file: {temp_out_file}")
+        else:
+            print(f"mris_flatten did not create an output log file (.out).")
 
-            # Copy the flat file back to the output directory
-            print(f"Copying flat file back to output directory: {flat_file}")
-            shutil.copy2(temp_flat_file, flat_file)
+        # --- Copy Results and Cleanup ---
+        # Check if source and destination are different before copying
+        if os.path.abspath(temp_flat_file) != os.path.abspath(final_flat_file):
+            files_were_copied = True  # Mark that files will be copied
+            # Copy the generated flat file to the final output directory
+            print(f"Copying flat file to: {final_flat_file}")
+            shutil.copy2(temp_flat_file, final_flat_file)
 
-            # Clean up the temporary files
+            # Copy the .log file (stdout/stderr)
+            if os.path.exists(temp_log_file):
+                print(f"Copying stdout/stderr log file to: {final_log_file}")
+                shutil.copy2(temp_log_file, final_log_file)
+            else:
+                # This shouldn't happen as we always create it now
+                print(f"Warning: Log file {temp_log_file} not found, cannot copy.")
+
+            # Copy the .out file (mris_flatten's own log) if it exists
+            if os.path.exists(temp_out_file):
+                print(f"Copying mris_flatten log file to: {final_out_file}")
+                shutil.copy2(temp_out_file, final_out_file)
+            else:
+                print(
+                    f"Info: mris_flatten log file {temp_out_file} not found, cannot copy."
+                )
+        else:
+            print(f"Output files are already in the target directory: {output_dir}")
+            files_were_copied = False  # Files were not copied
+
+        # Clean up temporary files in the surf directory
+        print("Cleaning up temporary files in surf directory...")
+        # Only remove the patch file if we copied it in
+        if copied_patch and os.path.exists(temp_patch_file):
             os.remove(temp_patch_file)
-            os.remove(temp_flat_file)
+        # Only remove the flat/log files if they were copied elsewhere
+        if files_were_copied:
+            if os.path.exists(temp_flat_file):
+                os.remove(temp_flat_file)
+            if os.path.exists(temp_log_file):  # Remove .log file
+                os.remove(temp_log_file)
+            if os.path.exists(temp_out_file):  # Remove .out file
+                os.remove(temp_out_file)
 
-        finally:
-            # Change back to the original directory
-            os.chdir(original_dir)
-    else:
-        # We're already in the subject's surf directory, so we can run mris_flatten directly
+    finally:
+        # Always change back to the original directory
+        os.chdir(original_dir)
 
-        # Add input and output files
-        cmd.extend([patch_file, flat_file])
-
-        print(f"Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-
-    return flat_file
+    return final_flat_file
