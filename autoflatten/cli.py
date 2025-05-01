@@ -4,10 +4,13 @@ Automatic Surface Flattening Pipeline
 
 This script implements a pipeline for automatic flattening of cortical surfaces
 using medial wall and cut vertices from fsaverage mapped to a target subject.
+It also provides functionality to plot the results.
 """
 
 import argparse
+import glob
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -21,6 +24,7 @@ from autoflatten.core import ensure_continuous_cuts, map_cuts_to_subject
 from autoflatten.freesurfer import create_patch_file, load_surface, run_mris_flatten
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
+from autoflatten.viz import plot_patch
 
 
 def check_freesurfer_environment():
@@ -91,12 +95,13 @@ def process_hemisphere(
     template_file=None,
     run_flatten=True,
     overwrite=False,
-    norand=True,
+    norand=None,
     seed=0,
     threads=32,
     distances=(30, 30),
     n=80,
     dilate=1,
+    passes=1,
     extra_params=None,
 ):
     """
@@ -116,10 +121,10 @@ def process_hemisphere(
         Whether to run mris_flatten (default: True)
     overwrite : bool, optional
         Whether to overwrite existing files
-    norand : bool, optional
-        Whether to use the -norand flag for mris_flatten (default: True)
-    seed : int, optional
-        Random seed value to use with -seed flag (default: 0)
+    norand : bool or None, optional
+        Whether to use the -norand flag for mris_flatten (default: None, flag not used)
+    seed : int
+        Random seed value to use with -seed flag for mris_flatten.
     threads : int, optional
         Number of threads to use (default: 32)
     distances : tuple of int, optional
@@ -128,37 +133,46 @@ def process_hemisphere(
         Maximum number of iterations to run, used with -n flag (default: 80)
     dilate : int, optional
         Number of dilations to perform, used with -dilate flag (default: 1)
+    passes : int, optional
+        Number of passes for mris_flatten, used with -p flag (default: 1)
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs
 
     Returns
     -------
     dict
-        Information about the processed hemisphere
+        Information about the processed hemisphere, including the seed used for flattening.
     """
-    print(f"\nProcessing {hemi} hemisphere for subject {subject}")
+    print(
+        f"\nProcessing {hemi} hemisphere for subject {subject} (flattening seed: {seed})"
+    )
     start_time = time.time()
 
-    # Create patch file name
+    # Create patch file name (deterministic, no seed)
     patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
 
     # Check if patch file exists and whether to overwrite
     if os.path.exists(patch_file) and not overwrite:
         print(
-            f"Patch file {patch_file} already exists, skipping. Use --overwrite to force regeneration."
+            f"Patch file {patch_file} already exists, skipping patch generation. Use --overwrite to force regeneration."
         )
-
         result = {
             "subject": subject,
             "hemi": hemi,
             "patch_file": patch_file,
             "patch_vertices": None,
             "vertex_dict": None,
+            "seed": seed,
         }
 
         # If flattening is requested and patch file exists, still run flattening
         if run_flatten:
-            print(f"Running mris_flatten for {subject} {hemi}")
+            print(
+                f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
+            )
+            current_extra_params = extra_params.copy() if extra_params else {}
+            current_extra_params["-p"] = passes
+
             flat_file = run_mris_flatten(
                 subject,
                 hemi,
@@ -171,10 +185,11 @@ def process_hemisphere(
                 distances=distances,
                 n=n,
                 dilate=dilate,
-                extra_params=extra_params,
+                extra_params=current_extra_params,
                 overwrite=overwrite,
             )
             result["flat_file"] = flat_file
+            result["passes"] = passes
 
         return result
 
@@ -219,7 +234,7 @@ def process_hemisphere(
     pts, polys = load_surface(subject, "inflated", hemi)
 
     # Create patch file
-    print(f"Creating patch file for {subject} {hemi}")
+    print(f"Creating patch file: {patch_file}")
     patch_file, patch_vertices = create_patch_file(
         patch_file, pts, polys, vertex_dict_fixed
     )
@@ -230,11 +245,17 @@ def process_hemisphere(
         "patch_file": patch_file,
         "patch_vertices": patch_vertices,
         "vertex_dict": vertex_dict_fixed,
+        "seed": seed,
     }
 
     # Run flattening if requested
     if run_flatten:
-        print(f"Running mris_flatten for {subject} {hemi}")
+        print(
+            f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
+        )
+        current_extra_params = extra_params.copy() if extra_params else {}
+        current_extra_params["p"] = passes
+
         flat_file = run_mris_flatten(
             subject,
             hemi,
@@ -247,10 +268,11 @@ def process_hemisphere(
             distances=distances,
             n=n,
             dilate=dilate,
-            extra_params=extra_params,
+            extra_params=current_extra_params,
             overwrite=overwrite,
         )
         result["flat_file"] = flat_file
+        result["passes"] = passes
 
     elapsed_time = time.time() - start_time
     print(f"Completed {hemi} hemisphere in {elapsed_time:.2f} seconds")
@@ -258,95 +280,9 @@ def process_hemisphere(
     return result
 
 
-def main():
-    """Main function to run the automatic flattening pipeline."""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description="Automatic Surface Flattening Pipeline"
-    )
-    parser.add_argument("subject", help="FreeSurfer subject identifier")
-    parser.add_argument(
-        "--output-dir",
-        help=(
-            "Directory to save output files (default: subject's FreeSurfer surf directory)"
-        ),
-    )
-    parser.add_argument(
-        "--no-flatten",
-        action="store_true",
-        help="Do not run mris_flatten after creating patch files (flattening is done by default)",
-    )
-    parser.add_argument(
-        "--template-file",
-        help="Path to a custom JSON template file defining cuts (default: uses built-in fsaverage template)",
-    )
-    parser.add_argument(
-        "--parallel", action="store_true", help="Process hemispheres in parallel"
-    )
-    parser.add_argument(
-        "--hemispheres",
-        type=str,
-        choices=["lh", "rh", "both"],
-        default="both",
-        help="Hemispheres to process: left (lh), right (rh), or both (default)",
-    )
-    parser.add_argument(
-        "--overwrite", action="store_true", help="Overwrite existing files"
-    )
-
-    # Add new mris_flatten parameters
-    parser.add_argument(
-        "--norand",
-        action="store_true",
-        help="Use -norand option for mris_flatten (default: True)",
-        default=True,
-    )
-    parser.add_argument(
-        "--rand",
-        action="store_false",
-        dest="norand",
-        help="Disable -norand option for mris_flatten",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="Random seed for mris_flatten (default: 0)",
-    )
-    parser.add_argument(
-        "--nthreads",
-        type=int,
-        default=32,
-        help="Number of threads to use for mris_flatten (default: 32)",
-    )
-    parser.add_argument(
-        "--distances",
-        type=int,
-        nargs=2,
-        default=[30, 30],
-        help="Distance parameters for mris_flatten as two integers (default: 30 30)",
-        metavar=("DIST1", "DIST2"),
-    )
-    parser.add_argument(
-        "--n-iterations",
-        type=int,
-        default=80,
-        help="Maximum number of iterations for mris_flatten (default: 80)",
-        dest="n",
-    )
-    parser.add_argument(
-        "--dilate",
-        type=int,
-        default=1,
-        help="Number of dilations for mris_flatten (default: 1)",
-    )
-    parser.add_argument(
-        "--flatten-extra",
-        type=str,
-        help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
-    )
-
-    args = parser.parse_args()
+def run_flattening(args):
+    """Handles the 'run' subcommand to perform flattening."""
+    print("Starting Autoflatten Run Pipeline...")
 
     # Check FreeSurfer environment
     fs_check, env_vars = check_freesurfer_environment()
@@ -397,6 +333,16 @@ def main():
             print("Format should be: key1=value1,key2=value2")
             return 1
 
+    # Determine seed to use
+    if args.seed is None:
+        selected_seed = random.randint(0, 99999)
+        print(
+            f"No seed provided, using randomly generated seed for flattening: {selected_seed}"
+        )
+    else:
+        selected_seed = args.seed
+        print(f"Using provided seed for flattening: {selected_seed}")
+
     # Determine which hemispheres to process
     if args.hemispheres == "both":
         hemispheres = ["lh", "rh"]
@@ -431,11 +377,12 @@ def main():
                     run_flatten,
                     args.overwrite,
                     args.norand,
-                    args.seed,
-                    threads_per_hemisphere,  # Distributed threads
+                    selected_seed,
+                    threads_per_hemisphere,
                     tuple(args.distances),
                     args.n,
                     args.dilate,
+                    args.passes,
                     extra_params,
                 ): hemi
                 for hemi in hemispheres
@@ -465,11 +412,12 @@ def main():
                     run_flatten,
                     args.overwrite,
                     args.norand,
-                    args.seed,
-                    args.nthreads,  # Full threads since not parallel
+                    selected_seed,
+                    args.nthreads,
                     tuple(args.distances),
                     args.n,
                     args.dilate,
+                    args.passes,
                     extra_params,
                 )
             except Exception as e:
@@ -482,13 +430,225 @@ def main():
         if hemi in results:
             patch_file = results[hemi].get("patch_file", "Not created")
             flat_file = results[hemi].get("flat_file", "Not created")
+            passes_used = results[hemi].get("passes", args.passes)
+            seed_used = results[hemi].get("seed", "Unknown")
 
             print(f"{hemi.upper()} Hemisphere:")
             print(f"  Patch file: {patch_file}")
             if run_flatten:
-                print(f"  Flat file: {flat_file}")
+                print(
+                    f"  Flat file (seed={seed_used}, passes={passes_used}): {flat_file}"
+                )
+            elif not run_flatten:
+                print("  Flattening skipped.")
 
     return 0
+
+
+def run_plotting(args):
+    """Handles the 'plot' subcommand to generate visualizations."""
+    print("Starting Autoflatten Plotting...")
+
+    # Check FreeSurfer environment needed for pycortex potentially
+    fs_check, env_vars = check_freesurfer_environment()
+
+    # Determine output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        subjects_dir = env_vars.get("SUBJECTS_DIR")
+        if not subjects_dir:
+            print("Error: SUBJECTS_DIR not found and --output-dir not specified.")
+            return 1
+        output_dir = os.path.join(subjects_dir, args.subject, "surf")
+
+    if not os.path.isdir(output_dir):
+        print(f"Error: Output directory {output_dir} does not exist.")
+        return 1
+
+    print(f"Looking for flat patches in: {output_dir} for subject {args.subject}")
+
+    plot_count = 0
+    error_count = 0
+
+    for hemi in ["lh", "rh"]:
+        print(f"\nProcessing {hemi.upper()} Hemisphere:")
+        # This is the patch definition file used to create the flat map
+        base_patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
+
+        if not os.path.exists(base_patch_file):
+            print(
+                f"  Base patch definition file not found: {base_patch_file}. Skipping {hemi}."
+            )
+            continue
+
+        # Find all *flat surface files* generated by autoflatten for this hemisphere
+        flat_surface_pattern = os.path.join(
+            output_dir, f"{hemi}.autoflatten*.flat.patch.3d"
+        )
+        flat_surface_files = glob.glob(flat_surface_pattern)
+
+        if not flat_surface_files:
+            print(
+                f"  No autoflatten flat surface files found matching pattern: {flat_surface_pattern}"
+            )
+            continue
+
+        print(f"  Found {len(flat_surface_files)} flat surface file(s).")
+        print(f"  Using base patch definition file: {base_patch_file}")
+
+        for flat_surf_file in flat_surface_files:
+            flat_filename_full = os.path.basename(flat_surf_file)
+            viz_output_filename = flat_filename_full.replace(
+                ".flat.patch.3d", ".flat.png"
+            )
+            viz_output_file = os.path.join(output_dir, viz_output_filename)
+
+            print(f"  Generating plot for: {flat_filename_full}")
+            print(f"    Using patch definition: {os.path.basename(base_patch_file)}")
+            print(f"    Output image: {viz_output_file}")
+
+            try:
+                # Pass the flat surface file and the original patch definition file
+                plot_patch(
+                    flat_surf_file,  # The actual flat surface file (*.flat.patch.3d)
+                    os.path.dirname(
+                        flat_surf_file
+                    ),  # Directory of the flat surface file
+                    surface=f"{hemi}.inflated",  # The surface to plot on
+                )
+                print(f"    Successfully saved plot: {viz_output_file}")
+                plot_count += 1
+            except ImportError as e:
+                print(f"    Failed to generate plot for {flat_filename_full}: {e}")
+                print("    Make sure pycortex is installed and configured correctly.")
+                error_count += 1
+                # Stop trying further plots if pycortex is missing
+                print("    Aborting further plotting attempts due to import error.")
+                return 1  # Indicate failure
+            except Exception as e:
+                print(f"    Failed to generate plot for {flat_filename_full}: {e}")
+                # import traceback
+                # traceback.print_exc() # Uncomment for detailed debugging
+                error_count += 1
+
+    print("\n--- Plotting Summary ---")
+    print(f"Generated {plot_count} plot(s).")
+    if error_count > 0:
+        print(f"Encountered {error_count} error(s) during plotting.")
+        return 1
+    else:
+        print("Autoflatten Plotting Finished Successfully.")
+        return 0
+
+
+def main():
+    """Main function to parse arguments and dispatch subcommands."""
+    parser = argparse.ArgumentParser(
+        description="Autoflatten: Automatic Surface Flattening and Plotting Pipeline"
+    )
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, help="Subcommand to run"
+    )
+
+    # 'run' subcommand
+    parser_run = subparsers.add_parser("run", help="Run the flattening pipeline")
+    parser_run.add_argument("subject", help="FreeSurfer subject identifier")
+    parser_run.add_argument(
+        "--output-dir",
+        help=(
+            "Directory to save output files (default: subject's FreeSurfer surf directory)"
+        ),
+    )
+    parser_run.add_argument(
+        "--no-flatten",
+        action="store_true",
+        help="Do not run mris_flatten after creating patch files (flattening is done by default)",
+    )
+    parser_run.add_argument(
+        "--template-file",
+        help="Path to a custom JSON template file defining cuts (default: uses built-in fsaverage template)",
+    )
+    parser_run.add_argument(
+        "--parallel", action="store_true", help="Process hemispheres in parallel"
+    )
+    parser_run.add_argument(
+        "--hemispheres",
+        type=str,
+        choices=["lh", "rh", "both"],
+        default="both",
+        help="Hemispheres to process: left (lh), right (rh), or both (default)",
+    )
+    parser_run.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing files"
+    )
+    parser_run.add_argument(
+        "--norand",
+        action="store_true",
+        default=None,
+        help="Use -norand option for mris_flatten",
+    )
+    parser_run.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for mris_flatten. If not provided, a random seed will be generated.",
+    )
+    parser_run.add_argument(
+        "--nthreads",
+        type=int,
+        default=32,
+        help="Number of threads to use for mris_flatten (default: 32)",
+    )
+    parser_run.add_argument(
+        "--distances",
+        type=int,
+        nargs=2,
+        default=[30, 40],
+        help="Distance parameters for mris_flatten as two integers (default: 30 40)",
+        metavar=("DIST1", "DIST2"),
+    )
+    parser_run.add_argument(
+        "--n-iterations",
+        type=int,
+        default=80,
+        help="Maximum number of iterations for mris_flatten (default: 80)",
+        dest="n",
+    )
+    parser_run.add_argument(
+        "--dilate",
+        type=int,
+        default=1,
+        help="Number of dilations for mris_flatten (default: 1)",
+    )
+    parser_run.add_argument(
+        "--passes",
+        type=int,
+        default=1,
+        help="Number of passes for mris_flatten (-p flag) (default: 1)",
+    )
+    parser_run.add_argument(
+        "--flatten-extra",
+        type=str,
+        help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
+    )
+    parser_run.set_defaults(func=run_flattening)
+
+    # 'plot' subcommand
+    parser_plot = subparsers.add_parser(
+        "plot", help="Plot existing autoflatten results"
+    )
+    parser_plot.add_argument("subject", help="FreeSurfer subject identifier")
+    parser_plot.add_argument(
+        "--output-dir",
+        help=(
+            "Directory containing the autoflatten output files (default: $SUBJECTS_DIR/subject/surf)"
+        ),
+    )
+    parser_plot.set_defaults(func=run_plotting)
+
+    args = parser.parse_args()
+    return args.func(args)
 
 
 if __name__ == "__main__":

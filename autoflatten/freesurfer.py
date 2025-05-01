@@ -505,9 +505,13 @@ def run_mris_flatten(
     # Generate output filename if not provided
     if output_name is None:
         distances_str = f"distances{distances[0]:02d}{distances[1]:02d}"
-        output_name = (
-            f"{hemi}.autoflatten_{distances_str}_n{n}_dilate{dilate}.flat.patch.3d"
-        )
+        output_name = f"{hemi}.autoflatten_{distances_str}_n{n}_dilate{dilate}"
+        if extra_params:
+            passes = extra_params.get("p", 1)
+            if passes > 1:
+                output_name += f"_passes{passes}"
+        output_name += f"_seed{seed}"
+        output_name += ".flat.patch.3d"
 
     final_flat_file = os.path.join(output_dir, output_name)
     # Define final log file paths (.log for stdout/stderr, .out for mris_flatten's own log)
@@ -609,7 +613,7 @@ def run_mris_flatten(
         if os.path.exists(temp_out_file):
             print(f"mris_flatten log file: {temp_out_file}")
         else:
-            print(f"mris_flatten did not create an output log file (.out).")
+            print("mris_flatten did not create an output log file (.out).")
 
         # --- Copy Results and Cleanup ---
         # Check if source and destination are different before copying
