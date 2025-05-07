@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import autoflatten.freesurfer as fs
 from autoflatten.freesurfer import (
     create_label_file,
     create_patch_file,
@@ -175,97 +176,145 @@ def test_create_label_file(monkeypatch):
         assert np.array_equal(vertices, np.array(vertex_ids))
 
 
-def test_run_mris_flatten(monkeypatch):
+class TestRunMrisFlatten:
     """
-    Test running mris_flatten.
-
-    This test mocks the subprocess.run function and verifies that
-    run_mris_flatten correctly calls mris_flatten with the expected arguments.
+    Tests for the run_mris_flatten function.
     """
-    # Mock subprocess.run
-    mock_run_calls = []
 
-    def mock_run(cmd, check=False):
-        mock_run_calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, returncode=0)
-
-    # Apply the monkeypatch
-    monkeypatch.setattr("subprocess.run", mock_run)
-
-    # Mock os.path.exists to always return False (forcing the command to run)
-    monkeypatch.setattr("os.path.exists", lambda x: False)
-
-    # Create temporary directory
-    with tempfile.TemporaryDirectory() as temp_dir:
-        patch_file = os.path.join(temp_dir, "test.patch")
-        # Make sure the patch file exists
-        Path(patch_file).touch()
-
-        # Set up environment for testing
-        os.environ["SUBJECTS_DIR"] = temp_dir
-        subject = "test_subject"
+    def test_input_patch_not_exists(self, tmp_path, monkeypatch):
+        subject = "subj"
         hemi = "lh"
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        # Create subject directories
-        subject_dir = os.path.join(temp_dir, subject)
-        surf_dir = os.path.join(subject_dir, "surf")
-        os.makedirs(surf_dir, exist_ok=True)
+        with pytest.raises(FileNotFoundError):
+            run_mris_flatten(
+                subject, hemi, str(tmp_path / "no.patch"), str(tmp_path / "outdir")
+            )
 
-        # Run the function with default parameters
-        flat_file = run_mris_flatten(subject, hemi, patch_file, surf_dir)
+    def test_output_exists_no_overwrite(self, tmp_path, monkeypatch):
+        subject = "subj"
+        hemi = "lh"
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        patch_file = tmp_path / "in.patch"
+        patch_file.write_text("patch")
+        output_dir = tmp_path / "outdir"
+        output_dir.mkdir()
+        output_name = "out.patch"
+        existing_output = output_dir / output_name
+        existing_output.write_text("old")
 
-        # Check that mris_flatten was called with the correct arguments
-        assert len(mock_run_calls) > 0
-        last_call = mock_run_calls[-1]
-        assert "mris_flatten" == last_call[0]
-        assert "-norand" in last_call
-        assert "-seed" in last_call
-        assert "0" in last_call
-        assert "-threads" in last_call
-        assert "16" in last_call
-        assert "-distances" in last_call
-        assert "30" in last_call
-        assert "-n" in last_call
-        assert "80" in last_call
-        assert "-dilate" in last_call
-        assert "1" in last_call
-        assert patch_file == last_call[-2]
-        assert flat_file == last_call[-1]
-
-        # Test with custom parameters
-        mock_run_calls.clear()
-        extra_params = {"test_key": "test_value", "flag": True}
-        flat_file = run_mris_flatten(
-            subject,
-            hemi,
-            patch_file,
-            surf_dir,
-            norand=False,
-            seed=42,
-            threads=8,
-            distances=(20, 25),
-            n=100,
-            dilate=2,
-            extra_params=extra_params,
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(
+            fs,
+            "_run_command",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("_run_command should not be called")
+            ),
         )
 
-        # Check the command was constructed correctly
-        last_call = mock_run_calls[-1]
-        assert "mris_flatten" == last_call[0]
-        assert "-norand" not in last_call
-        assert "-seed" in last_call
-        assert "42" in last_call
-        assert "-threads" in last_call
-        assert "8" in last_call
-        assert "-distances" in last_call
-        assert "20" in last_call
-        assert "25" in last_call
-        assert "-n" in last_call
-        assert "100" in last_call
-        assert "-dilate" in last_call
-        assert "2" in last_call
-        assert "-test_key" in last_call
-        assert "test_value" in last_call
-        assert "-flag" in last_call
-        assert patch_file == last_call[-2]
-        assert flat_file == last_call[-1]
+        result = run_mris_flatten(
+            subject,
+            hemi,
+            str(patch_file),
+            str(output_dir),
+            output_name=output_name,
+            overwrite=False,
+        )
+        assert result == str(existing_output)
+        assert existing_output.read_text() == "old"
+
+    def test_overwrite_true_creates_and_cleans(self, tmp_path, monkeypatch):
+        subject = "subj"
+        hemi = "lh"
+        subjects_root = tmp_path / "subjects"
+        surf_dir = subjects_root / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        patch_file = tmp_path / "in.patch"
+        patch_file.write_text("patch")
+        output_dir = tmp_path / "outdir"
+        output_dir.mkdir()
+        output_name = "out.patch"
+        existing_output = output_dir / output_name
+        existing_output.write_text("old")
+
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+
+        def fake_run_command(cmd, cwd, log_path):
+            flat = cmd[-1]
+            with open(os.path.join(cwd, flat), "w") as f:
+                f.write("new")
+            with open(os.path.join(cwd, flat + ".out"), "w") as f:
+                f.write("out")
+            with open(log_path, "w") as f:
+                f.write("log")
+            return 0
+
+        monkeypatch.setattr(fs, "_run_command", fake_run_command)
+
+        result = run_mris_flatten(
+            subject,
+            hemi,
+            str(patch_file),
+            str(output_dir),
+            output_name=output_name,
+            overwrite=True,
+        )
+        assert result == str(existing_output)
+        assert existing_output.read_text() == "new"
+        assert not (surf_dir / "in.patch").exists()
+        assert not (surf_dir / output_name).exists()
+        assert not (surf_dir / (output_name + ".log")).exists()
+        assert not (surf_dir / (output_name + ".out")).exists()
+
+    def test_command_failure_raises(self, tmp_path, monkeypatch):
+        subject = "subj"
+        hemi = "lh"
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        patch_file = tmp_path / "in.patch"
+        patch_file.write_text("patch")
+        output_dir = tmp_path / "outdir"
+        output_dir.mkdir()
+
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+
+        def fake_fail(cmd, cwd, log_path):
+            with open(log_path, "w") as f:
+                f.write("error")
+            return 1
+
+        monkeypatch.setattr(fs, "_run_command", fake_fail)
+
+        with pytest.raises(RuntimeError):
+            run_mris_flatten(
+                subject, hemi, str(patch_file), str(output_dir), overwrite=True
+            )
+
+    def test_default_output_name(self, tmp_path, monkeypatch):
+        subject = "subj"
+        hemi = "rh"
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        patch_file = tmp_path / "in.patch"
+        patch_file.write_text("patch")
+        output_dir = tmp_path / "outdir"
+        output_dir.mkdir()
+
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+
+        def fake_run(cmd, cwd, log_path):
+            flat = cmd[-1]
+            with open(os.path.join(cwd, flat), "w") as f:
+                f.write("ok")
+            with open(log_path, "w") as f:
+                f.write("log")
+            return 0
+
+        monkeypatch.setattr(fs, "_run_command", fake_run)
+        result = run_mris_flatten(subject, hemi, str(patch_file), str(output_dir))
+        fname = os.path.basename(result)
+        assert fname.startswith("rh.autoflatten") and fname.endswith(".flat.patch.3d")
+        assert os.path.isfile(result)

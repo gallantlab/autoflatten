@@ -426,6 +426,90 @@ def _build_mris_flatten_cmd(
     return cmd
 
 
+def _resolve_subject_dir(subject, subjects_dir=None):
+    """
+    Resolve the subject's surf directory.
+
+    Parameters
+    ----------
+    subject : str
+        FreeSurfer subject identifier
+    subjects_dir : str, optional
+        Path to the FreeSurfer subjects directory. If None, uses the
+        SUBJECTS_DIR environment variable.
+
+    Returns
+    -------
+    str
+        Path to the subject's surf directory.
+
+    Raises
+    ------
+    ValueError
+        If the SUBJECTS_DIR environment variable is not set.
+    FileNotFoundError
+        If the subject's surf directory does not exist.
+    """
+    subjects_dir = os.environ.get("SUBJECTS_DIR", subjects_dir)
+    if not subjects_dir:
+        raise ValueError("SUBJECTS_DIR environment variable not set")
+    surf_dir = os.path.join(subjects_dir, subject, "surf")
+    if not os.path.isdir(surf_dir):
+        raise FileNotFoundError(f"Subject surf directory not found: {surf_dir}")
+    return surf_dir
+
+
+def _stage_patch_file(patch_file, surf_dir):
+    """
+    Stage the patch file in the subject's surf directory.
+
+    Parameters
+    ----------
+    patch_file : str
+        Path to the input patch file.
+    surf_dir : str
+        Path to the subject's surf directory.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the basename of the patch file, the staged file path,
+        and a boolean indicating whether the file was copied.
+    """
+    basename = os.path.basename(patch_file)
+    dest = os.path.join(surf_dir, basename)
+    copied = False
+    if os.path.abspath(patch_file) != os.path.abspath(dest):
+        shutil.copy2(patch_file, dest)
+        copied = True
+    return basename, dest, copied
+
+
+def _run_command(cmd, cwd, log_path):
+    """
+    Run a command and log its output.
+
+    Parameters
+    ----------
+    cmd : list
+        Command to execute as a list of arguments.
+    cwd : str
+        Working directory to execute the command in.
+    log_path : str
+        Path to the log file to write stdout and stderr.
+
+    Returns
+    -------
+    int
+        Return code of the command.
+    """
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    with open(log_path, "w") as f:
+        f.write(proc.stdout)
+        f.write(proc.stderr)
+    return proc.returncode
+
+
 def run_mris_flatten(
     subject,
     hemi,
@@ -488,18 +572,11 @@ def run_mris_flatten(
     RuntimeError
         If the `mris_flatten` command fails.
     """
-    # --- Input Validation and Setup ---
-    if not os.path.exists(patch_file):
+    # validate input patch
+    if not os.path.isfile(patch_file):
         raise FileNotFoundError(f"Input patch file not found: {patch_file}")
 
-    subjects_dir = os.environ.get("SUBJECTS_DIR")
-    if subjects_dir is None:
-        raise ValueError("SUBJECTS_DIR environment variable not set")
-    subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
-    if not os.path.isdir(subject_surf_dir):
-        raise FileNotFoundError(f"Subject surf directory not found: {subject_surf_dir}")
-
-    # Ensure output directory exists
+    surf_dir = _resolve_subject_dir(subject)
     os.makedirs(output_dir, exist_ok=True)
 
     # Generate output filename if not provided
@@ -514,151 +591,56 @@ def run_mris_flatten(
         output_name += ".flat.patch.3d"
 
     final_flat_file = os.path.join(output_dir, output_name)
-    # Define final log file paths (.log for stdout/stderr, .out for mris_flatten's own log)
     final_log_file = os.path.splitext(final_flat_file)[0] + ".log"
-    final_out_file = (
-        final_flat_file + ".out"
-    )  # Keep the original .out extension for mris_flatten's log
+    final_out_file = final_flat_file + ".out"
 
-    # Check if final output file exists and whether to overwrite
-    if os.path.exists(final_flat_file) and not overwrite:
-        print(
-            f"Flat patch file {final_flat_file} already exists, skipping "
-            "(use overwrite=True to force)"
-        )
-        return final_flat_file
-    elif os.path.exists(final_flat_file) and overwrite:
-        print(f"Overwriting existing file: {final_flat_file}")
-        # Optionally remove existing log files as well if overwriting
-        if os.path.exists(final_log_file):
-            os.remove(final_log_file)
-        if os.path.exists(final_out_file):
-            os.remove(final_out_file)
+    # skip or remove existing outputs
+    if os.path.exists(final_flat_file):
+        if not overwrite:
+            print(f"{final_flat_file} exists, skipping (overwrite=False)")
+            return final_flat_file
+        for f in (final_flat_file, final_log_file, final_out_file):
+            if os.path.exists(f):
+                os.remove(f)
 
-    # --- Prepare for Execution ---
-    # Define temporary file paths within the subject's surf directory
-    patch_basename = os.path.basename(patch_file)
+    # prepare basenames and temp paths
     flat_basename = os.path.basename(final_flat_file)
-    temp_patch_file = os.path.join(subject_surf_dir, patch_basename)
-    temp_flat_file = os.path.join(subject_surf_dir, flat_basename)
-    # Define temporary log file paths
-    temp_log_file = os.path.splitext(temp_flat_file)[0] + ".log"  # For stdout/stderr
-    temp_out_file = temp_flat_file + ".out"  # For mris_flatten's own log
+    temp_log = os.path.splitext(os.path.join(surf_dir, flat_basename))[0] + ".log"
+    temp_out = os.path.join(surf_dir, flat_basename + ".out")
 
-    # Build the command
+    # stage patch
+    patch_basename, temp_patch, copied = _stage_patch_file(patch_file, surf_dir)
+
+    # build and run
     cmd = _build_mris_flatten_cmd(
         norand, seed, threads, distances, n, dilate, extra_params
     )
-    cmd.extend([patch_basename, flat_basename])  # Use basenames as we run from surf dir
+    cmd += [patch_basename, flat_basename]
+    ret = _run_command(cmd, cwd=surf_dir, log_path=temp_log)
 
-    # --- Execute mris_flatten ---
-    original_dir = os.getcwd()
-    copied_patch = False  # Initialize flag
-    files_were_copied = False  # Flag to track if output files were copied
-    try:
-        # Copy patch file to surf directory if it's not already there
-        # Use copy2 to preserve metadata, which might be useful
-        if os.path.abspath(patch_file) != os.path.abspath(temp_patch_file):
-            print(f"Copying patch file to: {temp_patch_file}")
-            shutil.copy2(patch_file, temp_patch_file)
-            copied_patch = True
-        else:
-            print(f"Using existing patch file in surf directory: {temp_patch_file}")
-            copied_patch = False
+    # on failure: copy logs back, clean staged patch, then error
+    if ret != 0:
+        # copy stderr/stdout log
+        shutil.copy2(temp_log, final_log_file)
+        # copy mris_flatten .out if exists
+        if os.path.exists(temp_out):
+            shutil.copy2(temp_out, final_out_file)
+        if copied:
+            os.remove(temp_patch)
+        raise RuntimeError(f"mris_flatten failed (see {final_log_file})")
 
-        # Change to the subject's surf directory to run the command
-        os.chdir(subject_surf_dir)
-        print(f"Running from {subject_surf_dir}: {' '.join(cmd)}")
+    # on success: copy outputs
+    shutil.copy2(os.path.join(surf_dir, flat_basename), final_flat_file)
+    shutil.copy2(temp_log, final_log_file)
+    if os.path.exists(temp_out):
+        shutil.copy2(temp_out, final_out_file)
 
-        # Run the command, capturing output
-        process = subprocess.run(cmd, capture_output=True, text=True, check=False)
-
-        # Write stdout and stderr to the .log file regardless of success
-        print(f"Writing stdout/stderr to log file: {temp_log_file}")
-        with open(temp_log_file, "w") as log_f:
-            log_f.write("--- STDOUT ---\n")
-            log_f.write(process.stdout)
-            log_f.write("\n--- STDERR ---\n")
-            log_f.write(process.stderr)
-
-        # Check for errors
-        if process.returncode != 0:
-            error_message = (
-                f"mris_flatten failed with return code {process.returncode}.\n"
-                f"Command: {' '.join(cmd)}\n"
-                f"Log file with stdout/stderr: {temp_log_file}\n"  # Refer to the log file
-                f"Stderr tail:\n{process.stderr[-500:]}"  # Show last bit of stderr
-            )
-            # Clean up the copied patch file before raising error, if it exists
-            if copied_patch and os.path.exists(temp_patch_file):
-                try:
-                    os.remove(temp_patch_file)
-                    print(f"Cleaned up temporary patch file: {temp_patch_file}")
-                except OSError as e:
-                    print(
-                        f"Warning: Could not remove temporary patch file {temp_patch_file}: {e}"
-                    )
-            # Attempt to copy the log file even on failure
-            if os.path.abspath(temp_log_file) != os.path.abspath(final_log_file):
-                try:
-                    print(f"Copying failure log file to: {final_log_file}")
-                    shutil.copy2(temp_log_file, final_log_file)
-                except Exception as e:
-                    print(
-                        f"Warning: Could not copy failure log file {temp_log_file} to {final_log_file}: {e}"
-                    )
-            raise RuntimeError(error_message)
-
-        print(f"mris_flatten completed successfully. Output file: {temp_flat_file}")
-        if os.path.exists(temp_out_file):
-            print(f"mris_flatten log file: {temp_out_file}")
-        else:
-            print("mris_flatten did not create an output log file (.out).")
-
-        # --- Copy Results and Cleanup ---
-        # Check if source and destination are different before copying
-        if os.path.abspath(temp_flat_file) != os.path.abspath(final_flat_file):
-            files_were_copied = True  # Mark that files will be copied
-            # Copy the generated flat file to the final output directory
-            print(f"Copying flat file to: {final_flat_file}")
-            shutil.copy2(temp_flat_file, final_flat_file)
-
-            # Copy the .log file (stdout/stderr)
-            if os.path.exists(temp_log_file):
-                print(f"Copying stdout/stderr log file to: {final_log_file}")
-                shutil.copy2(temp_log_file, final_log_file)
-            else:
-                # This shouldn't happen as we always create it now
-                print(f"Warning: Log file {temp_log_file} not found, cannot copy.")
-
-            # Copy the .out file (mris_flatten's own log) if it exists
-            if os.path.exists(temp_out_file):
-                print(f"Copying mris_flatten log file to: {final_out_file}")
-                shutil.copy2(temp_out_file, final_out_file)
-            else:
-                print(
-                    f"Info: mris_flatten log file {temp_out_file} not found, cannot copy."
-                )
-        else:
-            print(f"Output files are already in the target directory: {output_dir}")
-            files_were_copied = False  # Files were not copied
-
-        # Clean up temporary files in the surf directory
-        print("Cleaning up temporary files in surf directory...")
-        # Only remove the patch file if we copied it in
-        if copied_patch and os.path.exists(temp_patch_file):
-            os.remove(temp_patch_file)
-        # Only remove the flat/log files if they were copied elsewhere
-        if files_were_copied:
-            if os.path.exists(temp_flat_file):
-                os.remove(temp_flat_file)
-            if os.path.exists(temp_log_file):  # Remove .log file
-                os.remove(temp_log_file)
-            if os.path.exists(temp_out_file):  # Remove .out file
-                os.remove(temp_out_file)
-
-    finally:
-        # Always change back to the original directory
-        os.chdir(original_dir)
+    # cleanup only if patch was copied and surf_dir != output_dir
+    if copied and os.path.abspath(surf_dir) != os.path.abspath(output_dir):
+        os.remove(temp_patch)
+        os.remove(os.path.join(surf_dir, flat_basename))
+        os.remove(temp_log)
+        if os.path.exists(temp_out):
+            os.remove(temp_out)
 
     return final_flat_file
