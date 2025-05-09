@@ -116,7 +116,8 @@ def process_hemisphere(
     output_dir : str
         Directory to save output files
     template_file : str, optional
-        Path to the template file containing cut definitions. If None, uses the default template.
+        Path to the template file containing cut definitions.
+        If None, uses the default template.
     run_flatten : bool, optional
         Whether to run mris_flatten (default: True)
     overwrite : bool, optional
@@ -154,7 +155,8 @@ def process_hemisphere(
     # Check if patch file exists and whether to overwrite
     if os.path.exists(patch_file) and not overwrite:
         print(
-            f"Patch file {patch_file} already exists, skipping patch generation. Use --overwrite to force regeneration."
+            f"Patch file {patch_file} already exists, skipping patch generation. "
+            "Use --overwrite to force regeneration."
         )
         result = {
             "subject": subject,
