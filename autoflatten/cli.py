@@ -14,6 +14,7 @@ import random
 import shutil
 import subprocess
 import time
+import traceback
 from concurrent.futures import ProcessPoolExecutor
 
 import cortex
@@ -98,7 +99,7 @@ def process_hemisphere(
     norand=None,
     seed=0,
     threads=32,
-    distances=(30, 30),
+    distances=(15, 80),
     n=80,
     dilate=1,
     passes=1,
@@ -129,7 +130,7 @@ def process_hemisphere(
     threads : int, optional
         Number of threads to use (default: 32)
     distances : tuple of int, optional
-        Distance parameters as a tuple (distance1, distance2) (default: (30, 30))
+        Distance parameters as a tuple (distance1, distance2) (default: (15, 80))
     n : int, optional
         Maximum number of iterations to run, used with -n flag (default: 80)
     dilate : int, optional
@@ -173,7 +174,7 @@ def process_hemisphere(
                 f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
             )
             current_extra_params = extra_params.copy() if extra_params else {}
-            current_extra_params["-p"] = passes
+            current_extra_params["p"] = passes
 
             flat_file = run_mris_flatten(
                 subject,
@@ -422,9 +423,10 @@ def run_flattening(args):
                     args.passes,
                     extra_params,
                 )
-            except Exception as e:
-                print(f"Error processing {hemi} hemisphere: {e}")
-                print(f"Traceback: {e.__traceback__}")
+            except Exception:
+                print(f"Error processing {hemi} hemisphere:")
+                traceback.print_exc()  # This prints the full exception traceback
+                return 1
 
     # Print summary
     print("\nSummary:")
@@ -606,8 +608,8 @@ def main():
         "--distances",
         type=int,
         nargs=2,
-        default=[30, 40],
-        help="Distance parameters for mris_flatten as two integers (default: 30 40)",
+        default=[15, 80],
+        help="Distance parameters for mris_flatten as two integers (default: 15 80)",
         metavar=("DIST1", "DIST2"),
     )
     parser_run.add_argument(

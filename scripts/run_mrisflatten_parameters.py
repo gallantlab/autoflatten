@@ -16,31 +16,43 @@ distances_param = [
     # (40, 20),
     # (50, 20),
     # (60, 20),  # too many, gives MRISsampleDistances: too many neighbors
-    (20, 40),
-    (30, 40),
+    # (20, 40),
+    # (30, 40),
+    (15, 80),
+    (15, 100),
 ]
 
 # I know that distances = (30, 30) and dilate = 1 works well.
 # But I want to figure out if we can avoid dilating (and thus removing vertices.)
-dilate = 1
-n_threads = 16  # make it fast
-n = 80  # number of max iterations
-passes = 3  # number of passes
+dilate = 2
+n_threads = 32  # make it fast
+n = 40  # number of max iterations
+passes = 1  # number of passes
+tol = 0.1  # tolerance for convergence
+dt = 0.5  # step size
 
 # Patch file
 HERE = os.path.dirname(os.path.abspath(__file__))
 test_patch = os.path.join(HERE, "lh.MVauto_autoflatten.patch.3d")
 output_dir = os.path.join(HERE, "test_params")
 hemi = "lh"
+seed = 0
 
 for distances in distances_param:
     print(f"Running mris_flatten with distances = {distances} and dilate = {dilate}")
     distances_str = f"distances{distances[0]:02d}{distances[1]:02d}"
     output_name = f"{hemi}.MVauto_autoflatten_{distances_str}_n{n}_dilate{dilate}"
-    extra_params = None
+    extra_params = dict()
     if passes > 1:
         output_name += f"_passes{passes}"
-        extra_params = {"p": passes}
+        extra_params["p"] = passes
+    if tol:
+        output_name += f"_tol{tol}"
+        extra_params["tol"] = tol
+    if dt:
+        output_name += f"_dt{dt}"
+        extra_params["dt"] = dt
+    output_name += f"_seed{seed}"
     output_name += ".flat.patch.3d"
     run_mris_flatten(
         "MVauto",
@@ -53,4 +65,6 @@ for distances in distances_param:
         distances=distances,
         dilate=dilate,
         extra_params=extra_params,
+        norand=False,
+        seed=seed,
     )
