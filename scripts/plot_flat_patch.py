@@ -8,8 +8,8 @@ setup_freesurfer("/data2/freesurfer-6.0", "/data2/freesurfer_subjects/all-subjec
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 subject_dir = "/data2/freesurfer_subjects/all-subjects/REDACTED_SUBJ/surf"
-patch_dir = os.path.join(HERE, "test_params")
-img_dir = os.path.join(HERE, "test_params", "images")
+patch_dir = os.path.join(HERE, "20250510_test_params")
+img_dir = os.path.join(patch_dir, "images")
 os.makedirs(img_dir, exist_ok=True)
 
 patch_files = sorted(glob(os.path.join(patch_dir, "*.3d")))

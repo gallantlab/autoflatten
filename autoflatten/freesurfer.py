@@ -503,6 +503,7 @@ def _run_command(cmd, cwd, log_path):
     int
         Return code of the command.
     """
+    print(f"Running command: {' '.join(cmd)}")
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     with open(log_path, "w") as f:
         f.write(proc.stdout)
@@ -519,7 +520,7 @@ def run_mris_flatten(
     norand=True,
     seed=0,
     threads=16,
-    distances=(30, 30),
+    distances=(15, 80),
     n=80,
     dilate=1,
     extra_params=None,
@@ -548,7 +549,7 @@ def run_mris_flatten(
     threads : int, optional
         Number of threads to use (default 16).
     distances : tuple of int, optional
-        Distance parameters as a tuple (distance1, distance2) (default (30, 30)).
+        Distance parameters as a tuple (distance1, distance2) (default: (15, 80)).
     n : int, optional
         Maximum number of iterations to run, used with -n flag (default 80).
     dilate : int, optional
@@ -621,19 +622,26 @@ def run_mris_flatten(
     # on failure: copy logs back, clean staged patch, then error
     if ret != 0:
         # copy stderr/stdout log
-        shutil.copy2(temp_log, final_log_file)
+        if os.path.abspath(temp_log) != os.path.abspath(final_log_file):
+            shutil.copy2(temp_log, final_log_file)
         # copy mris_flatten .out if exists
         if os.path.exists(temp_out):
-            shutil.copy2(temp_out, final_out_file)
+            if os.path.abspath(temp_out) != os.path.abspath(final_out_file):
+                shutil.copy2(temp_out, final_out_file)
         if copied:
             os.remove(temp_patch)
         raise RuntimeError(f"mris_flatten failed (see {final_log_file})")
 
     # on success: copy outputs
-    shutil.copy2(os.path.join(surf_dir, flat_basename), final_flat_file)
-    shutil.copy2(temp_log, final_log_file)
+    src_flat = os.path.join(surf_dir, flat_basename)
+    if os.path.abspath(src_flat) != os.path.abspath(final_flat_file):
+        shutil.copy2(src_flat, final_flat_file)
+    src_log = temp_log
+    if os.path.abspath(src_log) != os.path.abspath(final_log_file):
+        shutil.copy2(src_log, final_log_file)
     if os.path.exists(temp_out):
-        shutil.copy2(temp_out, final_out_file)
+        if os.path.abspath(temp_out) != os.path.abspath(final_out_file):
+            shutil.copy2(temp_out, final_out_file)
 
     # cleanup only if patch was copied and surf_dir != output_dir
     if copied and os.path.abspath(surf_dir) != os.path.abspath(output_dir):
