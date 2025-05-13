@@ -16,8 +16,8 @@ import subprocess
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
+from distutils.version import LooseVersion
 
-import cortex
 import numpy as np
 
 from autoflatten.config import fsaverage_cut_template
@@ -70,19 +70,26 @@ def check_freesurfer_environment():
             fs_version = result.stdout.strip()
             print(f"FreeSurfer version: {fs_version}")
 
-            # Check if it's stable6 version
-            if "stable6" not in fs_version:
-                print(
-                    "Warning: FreeSurfer version does not appear to be 'stable6'. "
-                    "mris_flatten may not work properly with this version."
-                )
+            # Extract number from version text, removing "stable" prefix if present
+            version_number = fs_version.replace("stable", "").strip()
+            try:
+                if LooseVersion(version_number) < LooseVersion("7.0"):
+                    raise ValueError(
+                        f"FreeSurfer version {fs_version} is below 7.0. "
+                        "This tool requires FreeSurfer 7.0 or higher."
+                    )
+            except ValueError as e:
+                print(f"Error: {str(e)}")
+                return False, env_vars
         else:
             print(
-                "Warning: Could not determine FreeSurfer version, but commands are available."
+                "Warning: Could not determine FreeSurfer version, "
+                "but commands are available."
             )
     except FileNotFoundError:
         print(
-            "Error: mri_info not found in PATH. FreeSurfer may not be properly installed."
+            "Error: mri_info not found in PATH. "
+            "FreeSurfer may not be properly installed."
         )
         return False, env_vars
 
@@ -97,9 +104,9 @@ def process_hemisphere(
     run_flatten=True,
     overwrite=False,
     seed=0,
-    threads=32,
+    threads=1,
     distances=(15, 80),
-    n=80,
+    n=200,
     dilate=1,
     passes=1,
     extra_params=None,
@@ -125,11 +132,11 @@ def process_hemisphere(
     seed : int
         Random seed value to use with -seed flag for mris_flatten.
     threads : int, optional
-        Number of threads to use (default: 32)
+        Number of threads to use (default: 1)
     distances : tuple of int, optional
         Distance parameters as a tuple (distance1, distance2) (default: (15, 80))
     n : int, optional
-        Maximum number of iterations to run, used with -n flag (default: 80)
+        Maximum number of iterations to run, used with -n flag (default: 200)
     dilate : int, optional
         Number of dilations to perform, used with -dilate flag (default: 1)
     passes : int, optional
