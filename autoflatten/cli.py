@@ -96,7 +96,6 @@ def process_hemisphere(
     template_file=None,
     run_flatten=True,
     overwrite=False,
-    norand=None,
     seed=0,
     threads=32,
     distances=(15, 80),
@@ -123,8 +122,6 @@ def process_hemisphere(
         Whether to run mris_flatten (default: True)
     overwrite : bool, optional
         Whether to overwrite existing files
-    norand : bool or None, optional
-        Whether to use the -norand flag for mris_flatten (default: None, flag not used)
     seed : int
         Random seed value to use with -seed flag for mris_flatten.
     threads : int, optional
@@ -182,7 +179,6 @@ def process_hemisphere(
                 patch_file,
                 output_dir,
                 output_name=None,
-                norand=norand,
                 seed=seed,
                 threads=threads,
                 distances=distances,
@@ -265,7 +261,6 @@ def process_hemisphere(
             patch_file,
             output_dir,
             output_name=None,
-            norand=norand,
             seed=seed,
             threads=threads,
             distances=distances,
@@ -379,7 +374,6 @@ def run_flattening(args):
                     args.template_file,
                     run_flatten,
                     args.overwrite,
-                    args.norand,
                     selected_seed,
                     threads_per_hemisphere,
                     tuple(args.distances),
@@ -414,7 +408,6 @@ def run_flattening(args):
                     args.template_file,
                     run_flatten,
                     args.overwrite,
-                    args.norand,
                     selected_seed,
                     args.nthreads,
                     tuple(args.distances),
@@ -585,12 +578,6 @@ def main():
     )
     parser_run.add_argument(
         "--overwrite", action="store_true", help="Overwrite existing files"
-    )
-    parser_run.add_argument(
-        "--norand",
-        action="store_true",
-        default=None,
-        help="Use -norand option for mris_flatten",
     )
     parser_run.add_argument(
         "--seed",
