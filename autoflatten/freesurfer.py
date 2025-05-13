@@ -359,7 +359,6 @@ def read_freesurfer_label(label_file):
 
 
 def _build_mris_flatten_cmd(
-    norand=None,
     seed=None,
     threads=None,
     distances=None,
@@ -372,8 +371,6 @@ def _build_mris_flatten_cmd(
 
     Parameters
     ----------
-    norand : bool
-        Whether to use the -norand flag
     seed : int
         Random seed value to use with -seed flag
     threads : int
@@ -395,8 +392,6 @@ def _build_mris_flatten_cmd(
     cmd = ["mris_flatten"]
 
     # Add mandatory parameters
-    if norand is not None and norand:
-        cmd.append("-norand")
     if seed is not None:
         cmd.extend(["-seed", str(seed)])
     if threads is not None:
@@ -517,7 +512,6 @@ def run_mris_flatten(
     patch_file,
     output_dir,
     output_name=None,
-    norand=True,
     seed=0,
     threads=16,
     distances=(15, 80),
@@ -542,8 +536,6 @@ def run_mris_flatten(
     output_name : str, optional
         Base name for the output flat patch file (e.g., 'lh.myflat.patch.3d').
         If None, a default name based on parameters will be generated.
-    norand : bool, optional
-        Whether to use the -norand flag (default True).
     seed : int, optional
         Random seed value to use with -seed flag (default 0).
     threads : int, optional
@@ -613,9 +605,7 @@ def run_mris_flatten(
     patch_basename, temp_patch, copied = _stage_patch_file(patch_file, surf_dir)
 
     # build and run
-    cmd = _build_mris_flatten_cmd(
-        norand, seed, threads, distances, n, dilate, extra_params
-    )
+    cmd = _build_mris_flatten_cmd(seed, threads, distances, n, dilate, extra_params)
     cmd += [patch_basename, flat_basename]
     ret = _run_command(cmd, cwd=surf_dir, log_path=temp_log)
 
