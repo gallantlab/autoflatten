@@ -160,51 +160,26 @@ def process_hemisphere(
     # Create patch file name (deterministic, no seed)
     patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
 
-    # Check if patch file exists and whether to overwrite
-    if os.path.exists(patch_file) and not overwrite:
-        print(
-            f"Patch file {patch_file} already exists, skipping patch generation. "
-            "Use --overwrite to force regeneration."
-        )
-        result = {
-            "subject": subject,
-            "hemi": hemi,
-            "patch_file": patch_file,
-            "patch_vertices": None,
-            "vertex_dict": None,
-            "seed": seed,
-        }
+    # Initialize result dictionary with common fields
+    result = {
+        "subject": subject,
+        "hemi": hemi,
+        "patch_file": patch_file,
+        "seed": seed,
+        "distances": distances,
+        "n": n,
+        "dilate": dilate,
+        "passes": passes,
+        "tol": tol,
+        "extra_params": extra_params,
+    }
 
-        # If flattening is requested and patch file exists, still run flattening
-        if run_flatten:
-            # print(
-            #     f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
-            # )
-            current_extra_params = extra_params.copy() if extra_params else {}
-            current_extra_params["p"] = passes
-
-            flat_file = run_mris_flatten(
-                subject,
-                hemi,
-                patch_file,
-                output_dir,
-                output_name=None,
-                seed=seed,
-                threads=threads,
-                distances=distances,
-                n=n,
-                dilate=dilate,
-                tol=tol,
-                extra_params=current_extra_params,
-                overwrite=overwrite,
-            )
-            result["flat_file"] = flat_file
-            result["passes"] = passes
-
-        return result
-
-    # Step 1: Get cuts template
-    if template_file:
+    # STEP 1: Create patch file if it doesn't exist or if overwriting
+    if not os.path.exists(patch_file) or overwrite:
+        # Get cuts template
+        if template_file is None:
+            # Use default fsaverage cuts template
+            template_file = fsaverage_cut_template
         print(f"Loading cuts template from {template_file}")
         template_data = load_json(template_file)
         vertex_dict = {}
@@ -215,54 +190,36 @@ def process_hemisphere(
                 # Remove the hemisphere prefix
                 new_key = key[len(prefix) :]
                 vertex_dict[new_key] = np.array(value)
+
+        # Map cuts to target subject
+        print(f"Mapping cuts to {subject} for {hemi}")
+        vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
+
+        # Ensure cuts are continuous in target subject
+        print(f"Ensuring continuous cuts for {subject} {hemi}")
+        vertex_dict_fixed = ensure_continuous_cuts(
+            vertex_dict_mapped.copy(), subject, hemi
+        )
+
+        # Get subject surface data
+        pts, polys = load_surface(subject, "inflated", hemi)
+
+        # Create patch file
+        print(f"Creating patch file: {patch_file}")
+        patch_file, patch_vertices = create_patch_file(
+            patch_file, pts, polys, vertex_dict_fixed
+        )
+
+        result["patch_vertices"] = patch_vertices
+        result["vertex_dict"] = vertex_dict_fixed
     else:
-        print(f"Using default fsaverage cuts template for {hemi}")
-        # Load predefined template
-        if os.path.exists(fsaverage_cut_template):
-            template_data = load_json(fsaverage_cut_template)
-            vertex_dict = {}
-            # Extract hemisphere-specific data from the template
-            prefix = f"{hemi}_"
-            for key, value in template_data.items():
-                if key.startswith(prefix):
-                    # Remove the hemisphere prefix
-                    new_key = key[len(prefix) :]
-                    vertex_dict[new_key] = np.array(value)
-        else:
-            print(f"Default template not found, generating from fsaverage for {hemi}")
-            vertex_dict = identify_surface_components("fsaverage", hemi)
+        print(
+            f"Patch file {patch_file} already exists, skipping patch generation. "
+            "Use --overwrite to force regeneration."
+        )
 
-    # Step 2: Map cuts to target subject
-    print(f"Mapping cuts to {subject} for {hemi}")
-    vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
-
-    # Step 3: Ensure cuts are continuous in target subject
-    print(f"Ensuring continuous cuts for {subject} {hemi}")
-    vertex_dict_fixed = ensure_continuous_cuts(vertex_dict_mapped.copy(), subject, hemi)
-
-    # Get subject surface data
-    pts, polys = load_surface(subject, "inflated", hemi)
-
-    # Create patch file
-    print(f"Creating patch file: {patch_file}")
-    patch_file, patch_vertices = create_patch_file(
-        patch_file, pts, polys, vertex_dict_fixed
-    )
-
-    result = {
-        "subject": subject,
-        "hemi": hemi,
-        "patch_file": patch_file,
-        "patch_vertices": patch_vertices,
-        "vertex_dict": vertex_dict_fixed,
-        "seed": seed,
-    }
-
-    # Run flattening if requested
+    # STEP 2: Run flattening if requested
     if run_flatten:
-        # print(
-        #     f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
-        # )
         flat_file = run_mris_flatten(
             subject,
             hemi,
@@ -280,6 +237,7 @@ def process_hemisphere(
             overwrite=overwrite,
         )
         result["flat_file"] = flat_file
+        result["passes"] = passes
 
     elapsed_time = time.time() - start_time
     print(f"Completed {hemi} hemisphere in {elapsed_time:.2f} seconds")
