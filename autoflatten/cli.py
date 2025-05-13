@@ -109,6 +109,7 @@ def process_hemisphere(
     n=200,
     dilate=1,
     passes=1,
+    tol=0.005,
     extra_params=None,
 ):
     """
@@ -141,6 +142,8 @@ def process_hemisphere(
         Number of dilations to perform, used with -dilate flag (default: 1)
     passes : int, optional
         Number of passes for mris_flatten, used with -p flag (default: 1)
+    tol : float, optional
+        Tolerance for the flatness of the surface, used with -tol flag (default: 0.005)
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs
 
@@ -174,9 +177,9 @@ def process_hemisphere(
 
         # If flattening is requested and patch file exists, still run flattening
         if run_flatten:
-            print(
-                f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
-            )
+            # print(
+            #     f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
+            # )
             current_extra_params = extra_params.copy() if extra_params else {}
             current_extra_params["p"] = passes
 
@@ -191,6 +194,7 @@ def process_hemisphere(
                 distances=distances,
                 n=n,
                 dilate=dilate,
+                tol=tol,
                 extra_params=current_extra_params,
                 overwrite=overwrite,
             )
@@ -256,12 +260,9 @@ def process_hemisphere(
 
     # Run flattening if requested
     if run_flatten:
-        print(
-            f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
-        )
-        current_extra_params = extra_params.copy() if extra_params else {}
-        current_extra_params["p"] = passes
-
+        # print(
+        #     f"Running mris_flatten for {subject} {hemi} with {passes} passes, seed {seed}"
+        # )
         flat_file = run_mris_flatten(
             subject,
             hemi,
@@ -273,11 +274,12 @@ def process_hemisphere(
             distances=distances,
             n=n,
             dilate=dilate,
-            extra_params=current_extra_params,
+            passes=passes,
+            tol=tol,
+            extra_params=extra_params,
             overwrite=overwrite,
         )
         result["flat_file"] = flat_file
-        result["passes"] = passes
 
     elapsed_time = time.time() - start_time
     print(f"Completed {hemi} hemisphere in {elapsed_time:.2f} seconds")
@@ -387,6 +389,7 @@ def run_flattening(args):
                     args.n,
                     args.dilate,
                     args.passes,
+                    args.tol,
                     extra_params,
                 ): hemi
                 for hemi in hemispheres
@@ -421,6 +424,7 @@ def run_flattening(args):
                     args.n,
                     args.dilate,
                     args.passes,
+                    args.tol,
                     extra_params,
                 )
             except Exception:
@@ -561,17 +565,24 @@ def main():
     parser_run.add_argument(
         "--output-dir",
         help=(
-            "Directory to save output files (default: subject's FreeSurfer surf directory)"
+            "Directory to save output files "
+            "(default: subject's FreeSurfer surf directory)"
         ),
     )
     parser_run.add_argument(
         "--no-flatten",
         action="store_true",
-        help="Do not run mris_flatten after creating patch files (flattening is done by default)",
+        help=(
+            "Do not run mris_flatten after creating patch files "
+            "(flattening is done by default)"
+        ),
     )
     parser_run.add_argument(
         "--template-file",
-        help="Path to a custom JSON template file defining cuts (default: uses built-in fsaverage template)",
+        help=(
+            "Path to a custom JSON template file defining cuts "
+            "(default: uses built-in fsaverage template)"
+        ),
     )
     parser_run.add_argument(
         "--parallel", action="store_true", help="Process hemispheres in parallel"
@@ -595,8 +606,8 @@ def main():
     parser_run.add_argument(
         "--nthreads",
         type=int,
-        default=32,
-        help="Number of threads to use for mris_flatten (default: 32)",
+        default=1,
+        help="Number of threads to use for mris_flatten (default: 1)",
     )
     parser_run.add_argument(
         "--distances",
@@ -609,7 +620,7 @@ def main():
     parser_run.add_argument(
         "--n-iterations",
         type=int,
-        default=80,
+        default=200,
         help="Maximum number of iterations for mris_flatten (default: 80)",
         dest="n",
     )
@@ -624,6 +635,12 @@ def main():
         type=int,
         default=1,
         help="Number of passes for mris_flatten (-p flag) (default: 1)",
+    )
+    parser_run.add_argument(
+        "--tol",
+        type=float,
+        default=0.005,
+        help="Tolerance for mris_flatten flatness (default: 0.005)",
     )
     parser_run.add_argument(
         "--flatten-extra",

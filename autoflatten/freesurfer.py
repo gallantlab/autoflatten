@@ -364,6 +364,8 @@ def _build_mris_flatten_cmd(
     distances=None,
     n=None,
     dilate=None,
+    passes=None,
+    tol=None,
     extra_params=None,
 ):
     """
@@ -381,6 +383,10 @@ def _build_mris_flatten_cmd(
         Maximum number of iterations to run, used with -n flag
     dilate : int
         Number of dilations to perform, used with -dilate flag
+    passes : int
+        Number of passes to perform, used with -p flag
+    tol : float
+        Tolerance, used with -tol flag
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs
 
@@ -402,6 +408,10 @@ def _build_mris_flatten_cmd(
         cmd.extend(["-n", str(n)])
     if dilate is not None:
         cmd.extend(["-dilate", str(dilate)])
+    if passes is not None:
+        cmd.extend(["-p", str(passes)])
+    if tol is not None:
+        cmd.extend(["-tol", str(tol)])
 
     # Add any extra parameters
     if extra_params:
@@ -515,8 +525,10 @@ def run_mris_flatten(
     seed=0,
     threads=16,
     distances=(15, 80),
-    n=80,
+    n=200,
     dilate=1,
+    passes=1,
+    tol=0.005,
     extra_params=None,
     overwrite=False,
 ):
@@ -543,9 +555,13 @@ def run_mris_flatten(
     distances : tuple of int, optional
         Distance parameters as a tuple (distance1, distance2) (default: (15, 80)).
     n : int, optional
-        Maximum number of iterations to run, used with -n flag (default 80).
+        Maximum number of iterations to run, used with -n flag (default 200).
     dilate : int, optional
         Number of dilations to perform, used with -dilate flag (default 1).
+    passes : int, optional
+        Number of passes to perform, used with -p flag (default 1).
+    tol : float, optional
+        Tolerance passed with -tol flag (default 0.005).
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs.
     overwrite : bool, optional
@@ -576,10 +592,8 @@ def run_mris_flatten(
     if output_name is None:
         distances_str = f"distances{distances[0]:02d}{distances[1]:02d}"
         output_name = f"{hemi}.autoflatten_{distances_str}_n{n}_dilate{dilate}"
-        if extra_params:
-            passes = extra_params.get("p", 1)
-            if passes > 1:
-                output_name += f"_passes{passes}"
+        if passes > 1:
+            output_name += f"_passes{passes}"
         output_name += f"_seed{seed}"
         output_name += ".flat.patch.3d"
 
@@ -605,7 +619,9 @@ def run_mris_flatten(
     patch_basename, temp_patch, copied = _stage_patch_file(patch_file, surf_dir)
 
     # build and run
-    cmd = _build_mris_flatten_cmd(seed, threads, distances, n, dilate, extra_params)
+    cmd = _build_mris_flatten_cmd(
+        seed, threads, distances, n, dilate, tol, extra_params
+    )
     cmd += [patch_basename, flat_basename]
     ret = _run_command(cmd, cwd=surf_dir, log_path=temp_log)
 
