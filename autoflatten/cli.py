@@ -21,7 +21,11 @@ from distutils.version import LooseVersion
 import numpy as np
 
 from autoflatten.config import fsaverage_cut_template
-from autoflatten.core import ensure_continuous_cuts, map_cuts_to_subject
+from autoflatten.core import (
+    ensure_continuous_cuts,
+    map_cuts_to_subject,
+    refine_cuts_with_geodesic,
+)
 from autoflatten.freesurfer import create_patch_file, load_surface, run_mris_flatten
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
@@ -111,6 +115,7 @@ def process_hemisphere(
     passes=1,
     tol=0.005,
     extra_params=None,
+    refine_geodesic=False,
 ):
     """
     Process a single hemisphere through the flattening pipeline.
@@ -146,6 +151,8 @@ def process_hemisphere(
         Tolerance for the flatness of the surface, used with -tol flag (default: 0.005)
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs
+    refine_geodesic : bool, optional
+        Whether to refine cuts using geodesic shortest paths after mapping (default: False)
 
     Returns
     -------
@@ -200,6 +207,16 @@ def process_hemisphere(
         vertex_dict_fixed = ensure_continuous_cuts(
             vertex_dict_mapped.copy(), subject, hemi
         )
+
+        # Optionally refine cuts with geodesic shortest paths
+        if refine_geodesic:
+            print(f"Refining cuts with geodesic shortest paths for {subject} {hemi}")
+            vertex_dict_fixed = refine_cuts_with_geodesic(
+                vertex_dict_fixed,
+                subject,
+                hemi,
+                medial_wall_vertices=vertex_dict_fixed.get("mwall"),
+            )
 
         # Get subject surface data
         pts, polys = load_surface(subject, "inflated", hemi)
@@ -349,6 +366,7 @@ def run_flattening(args):
                     args.passes,
                     args.tol,
                     extra_params,
+                    args.refine_geodesic,
                 ): hemi
                 for hemi in hemispheres
             }
@@ -384,6 +402,7 @@ def run_flattening(args):
                     args.passes,
                     args.tol,
                     extra_params,
+                    args.refine_geodesic,
                 )
             except Exception:
                 print(f"Error processing {hemi} hemisphere:")
@@ -604,6 +623,15 @@ def main():
         "--flatten-extra",
         type=str,
         help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
+    )
+    parser_run.add_argument(
+        "--refine-geodesic",
+        action="store_true",
+        help=(
+            "Refine projected cuts using geodesic shortest paths. "
+            "This replaces each cut with the shortest geodesic path between its endpoints, "
+            "which may reduce distortion during flattening (default: False)"
+        ),
     )
     parser_run.set_defaults(func=run_flattening)
 

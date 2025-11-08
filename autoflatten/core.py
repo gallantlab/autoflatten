@@ -281,6 +281,144 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     return vertex_dict
 
 
+def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=None):
+    """
+    Refine cuts by replacing them with geodesic shortest paths between endpoints.
+
+    This function takes projected cuts (which may have some wiggling from registration)
+    and replaces them with the shortest geodesic path on the target surface between
+    the cut endpoints. This should produce more anatomically direct cuts and reduce
+    distortion during flattening.
+
+    Parameters
+    ----------
+    vertex_dict : dict
+        Dictionary containing medial wall and cut vertices.
+    subject : str
+        Subject identifier.
+    hemi : str
+        Hemisphere identifier ('lh' or 'rh').
+    medial_wall_vertices : array-like, optional
+        Vertices of the medial wall. If provided, endpoints will be chosen from
+        vertices that border the medial wall. If None, uses geometric endpoints.
+
+    Returns
+    -------
+    vertex_dict : dict
+        Updated dictionary with geodesically refined cuts.
+    """
+    print("\n=== Refining cuts with geodesic shortest paths ===")
+
+    # Load fiducial surface for accurate geodesic distances
+    print("Loading fiducial surface...")
+    try:
+        pts_fiducial, polys = load_surface(subject, "fiducial", hemi)
+    except FileNotFoundError:
+        print("Fiducial surface not found, computing it from smoothwm and pial.")
+        pts_wm, _ = load_surface(subject, "smoothwm", hemi)
+        pts_pial, _ = load_surface(subject, "pial", hemi)
+        pts_fiducial = (pts_wm + pts_pial) / 2.0
+        _, polys = load_surface(subject, "smoothwm", hemi)
+
+    # Also load inflated for reference
+    pts_inflated, _ = load_surface(subject, "inflated", hemi)
+
+    # Create surface graph with geodesic weights
+    print("Creating surface graph with geodesic weights...")
+    G = nx.Graph()
+    G.add_nodes_from(range(len(pts_fiducial)))
+
+    for triangle in polys:
+        for i in range(3):
+            v1 = triangle[i]
+            for j in range(i + 1, 3):
+                v2 = triangle[j]
+                # Use fiducial surface for accurate geodesic distances
+                weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
+                G.add_edge(v1, v2, weight=weight)
+
+    # Convert medial wall to set for fast lookup
+    mwall_set = set(medial_wall_vertices) if medial_wall_vertices is not None else set()
+
+    # Process each cut
+    for i in range(1, 6):
+        cut_key = f"cut{i}"
+        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+            continue
+
+        print(f"\nRefining {cut_key}...")
+        cut_vertices = vertex_dict[cut_key]
+
+        if len(cut_vertices) < 2:
+            print(f"  {cut_key} has fewer than 2 vertices, skipping")
+            continue
+
+        # Step 1: Find endpoints of the cut
+        # If medial wall is provided, find vertices that border it
+        if mwall_set:
+            # Find cut vertices that are neighbors of medial wall vertices
+            endpoints = []
+            for v in cut_vertices:
+                for neighbor in G.neighbors(v):
+                    if neighbor in mwall_set:
+                        endpoints.append(v)
+                        break
+
+            # If we found exactly 2 endpoints, great!
+            if len(endpoints) == 2:
+                start, end = endpoints[0], endpoints[1]
+                print(f"  Found endpoints at medial wall border: {start}, {end}")
+            else:
+                print(f"  Found {len(endpoints)} medial wall border vertices, using geometric endpoints instead")
+                endpoints = None
+        else:
+            endpoints = None
+
+        # Fallback: use geometric endpoints (most distant vertices)
+        if endpoints is None or len(endpoints) != 2:
+            # Find the two most distant vertices in the cut using inflated surface
+            max_dist = 0
+            start, end = cut_vertices[0], cut_vertices[0]
+
+            for idx1, v1 in enumerate(cut_vertices):
+                pos1 = pts_inflated[v1]
+                for v2 in cut_vertices[idx1 + 1:]:
+                    dist = np.linalg.norm(pos1 - pts_inflated[v2])
+                    if dist > max_dist:
+                        max_dist = dist
+                        start, end = v1, v2
+
+            print(f"  Using geometric endpoints: {start}, {end} (distance: {max_dist:.2f})")
+
+        # Step 2: Compute geodesic shortest path between endpoints
+        try:
+            geodesic_path = nx.shortest_path(G, start, end, weight='weight')
+
+            # Calculate path length
+            path_length = sum(
+                G[geodesic_path[i]][geodesic_path[i+1]]['weight']
+                for i in range(len(geodesic_path) - 1)
+            )
+
+            print(f"  Original cut: {len(cut_vertices)} vertices")
+            print(f"  Geodesic path: {len(geodesic_path)} vertices, length: {path_length:.2f}")
+
+            # Step 3: Replace cut with geodesic path
+            vertex_dict[cut_key] = np.array(geodesic_path)
+
+            # Calculate reduction
+            reduction_pct = 100 * (1 - len(geodesic_path) / len(cut_vertices))
+            print(f"  Reduced by {reduction_pct:.1f}%")
+
+        except nx.NetworkXNoPath:
+            print(f"  WARNING: No path found between {start} and {end}, keeping original cut")
+        except Exception as e:
+            print(f"  ERROR: Failed to compute geodesic path: {e}")
+            print(f"  Keeping original cut")
+
+    return vertex_dict
+
+
 def map_cuts_to_subject(vertex_dict, target_subject, hemi, source_subject="fsaverage"):
     """
     Map cutting vertices from a source subject to a target subject using FreeSurfer's
