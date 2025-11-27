@@ -10,6 +10,7 @@ It also provides functionality to plot the results.
 import argparse
 import glob
 import os
+import re
 import random
 import shutil
 import subprocess
@@ -74,17 +75,23 @@ def check_freesurfer_environment():
             fs_version = result.stdout.strip()
             print(f"FreeSurfer version: {fs_version}")
 
-            # Extract number from version text, removing "stable" prefix if present
-            version_number = fs_version.replace("stable", "").strip()
-            try:
-                if LooseVersion(version_number) < LooseVersion("7.0"):
-                    raise ValueError(
-                        f"FreeSurfer version {fs_version} is below 7.0. "
-                        "This tool requires FreeSurfer 7.0 or higher."
-                    )
-            except ValueError as e:
-                print(f"Error: {str(e)}")
-                return False, env_vars
+            # Extract version number using regex (e.g., "8.0.0" from "mri_info freesurfer 8.0.0")
+            version_match = re.search(r"(\d+\.\d+(?:\.\d+)?)", fs_version)
+            if not version_match:
+                print(
+                    f"Warning: Could not parse FreeSurfer version from '{fs_version}'"
+                )
+            else:
+                version_number = version_match.group(1)
+                try:
+                    if LooseVersion(version_number) < LooseVersion("7.0"):
+                        raise ValueError(
+                            f"FreeSurfer version {version_number} is below 7.0. "
+                            "This tool requires FreeSurfer 7.0 or higher."
+                        )
+                except ValueError as e:
+                    print(f"Error: {str(e)}")
+                    return False, env_vars
         else:
             print(
                 "Warning: Could not determine FreeSurfer version, "
@@ -116,6 +123,7 @@ def process_hemisphere(
     tol=0.005,
     extra_params=None,
     refine_geodesic=False,
+    debug=False,
 ):
     """
     Process a single hemisphere through the flattening pipeline.
@@ -252,6 +260,7 @@ def process_hemisphere(
             tol=tol,
             extra_params=extra_params,
             overwrite=overwrite,
+            debug=debug,
         )
         result["flat_file"] = flat_file
         result["passes"] = passes
@@ -278,6 +287,12 @@ def run_flattening(args):
     else:
         subjects_dir = env_vars["SUBJECTS_DIR"]
         output_dir = os.path.join(subjects_dir, args.subject, "surf")
+        print(
+            f"Warning: No --output-dir specified. Outputs will be written to FreeSurfer subject directory: {output_dir}"
+        )
+        print(
+            "Consider using --output-dir for easier testing and to keep outputs separate from subject data."
+        )
 
     # Verify that the output directory exists
     if not os.path.isdir(output_dir):
@@ -367,6 +382,7 @@ def run_flattening(args):
                     args.tol,
                     extra_params,
                     args.refine_geodesic,
+                    args.debug,
                 ): hemi
                 for hemi in hemispheres
             }
@@ -403,6 +419,7 @@ def run_flattening(args):
                     args.tol,
                     extra_params,
                     args.refine_geodesic,
+                    args.debug,
                 )
             except Exception:
                 print(f"Error processing {hemi} hemisphere:")
@@ -632,6 +649,11 @@ def main():
             "This replaces each cut with the shortest geodesic path between its endpoints, "
             "which may reduce distortion during flattening (default: False)"
         ),
+    )
+    parser_run.add_argument(
+        "--debug",
+        action="store_true",
+        help="Keep temporary files for debugging (preserves temporary directory)",
     )
     parser_run.set_defaults(func=run_flattening)
 
