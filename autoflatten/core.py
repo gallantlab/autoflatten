@@ -340,10 +340,11 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
     # Convert medial wall to set for fast lookup
     mwall_set = set(medial_wall_vertices) if medial_wall_vertices is not None else set()
 
-    # Process each cut
-    for i in range(1, 6):
-        cut_key = f"cut{i}"
-        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+    # Process each cut in the vertex_dict (excluding medial wall)
+    for cut_key in vertex_dict.keys():
+        if cut_key == "mwall":  # Skip medial wall
+            continue
+        if len(vertex_dict[cut_key]) == 0:
             continue
 
         print(f"\nRefining {cut_key}...")
@@ -369,7 +370,9 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                 start, end = endpoints[0], endpoints[1]
                 print(f"  Found endpoints at medial wall border: {start}, {end}")
             else:
-                print(f"  Found {len(endpoints)} medial wall border vertices, using geometric endpoints instead")
+                print(
+                    f"  Found {len(endpoints)} medial wall border vertices, using geometric endpoints instead"
+                )
                 endpoints = None
         else:
             endpoints = None
@@ -382,26 +385,30 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
 
             for idx1, v1 in enumerate(cut_vertices):
                 pos1 = pts_inflated[v1]
-                for v2 in cut_vertices[idx1 + 1:]:
+                for v2 in cut_vertices[idx1 + 1 :]:
                     dist = np.linalg.norm(pos1 - pts_inflated[v2])
                     if dist > max_dist:
                         max_dist = dist
                         start, end = v1, v2
 
-            print(f"  Using geometric endpoints: {start}, {end} (distance: {max_dist:.2f})")
+            print(
+                f"  Using geometric endpoints: {start}, {end} (distance: {max_dist:.2f})"
+            )
 
         # Step 2: Compute geodesic shortest path between endpoints
         try:
-            geodesic_path = nx.shortest_path(G, start, end, weight='weight')
+            geodesic_path = nx.shortest_path(G, start, end, weight="weight")
 
             # Calculate path length
             path_length = sum(
-                G[geodesic_path[i]][geodesic_path[i+1]]['weight']
+                G[geodesic_path[i]][geodesic_path[i + 1]]["weight"]
                 for i in range(len(geodesic_path) - 1)
             )
 
             print(f"  Original cut: {len(cut_vertices)} vertices")
-            print(f"  Geodesic path: {len(geodesic_path)} vertices, length: {path_length:.2f}")
+            print(
+                f"  Geodesic path: {len(geodesic_path)} vertices, length: {path_length:.2f}"
+            )
 
             # Step 3: Replace cut with geodesic path
             vertex_dict[cut_key] = np.array(geodesic_path)
@@ -411,7 +418,9 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
             print(f"  Reduced by {reduction_pct:.1f}%")
 
         except nx.NetworkXNoPath:
-            print(f"  WARNING: No path found between {start} and {end}, keeping original cut")
+            print(
+                f"  WARNING: No path found between {start} and {end}, keeping original cut"
+            )
         except Exception as e:
             print(f"  ERROR: Failed to compute geodesic path: {e}")
             print(f"  Keeping original cut")
