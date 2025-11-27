@@ -232,6 +232,9 @@ class TestRunMrisFlatten:
         subjects_root = tmp_path / "subjects"
         surf_dir = subjects_root / subject / "surf"
         surf_dir.mkdir(parents=True)
+        # Create some dummy surface files for symlinking
+        (surf_dir / "lh.white").write_text("white")
+        (surf_dir / "lh.pial").write_text("pial")
         patch_file = tmp_path / "in.patch"
         patch_file.write_text("patch")
         output_dir = tmp_path / "outdir"
@@ -242,7 +245,7 @@ class TestRunMrisFlatten:
 
         monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        def fake_run_command(cmd, cwd, log_path):
+        def fake_run_command(cmd, cwd, log_path, env=None):
             flat = cmd[-1]
             with open(os.path.join(cwd, flat), "w") as f:
                 f.write("new")
@@ -252,7 +255,7 @@ class TestRunMrisFlatten:
                 f.write("log")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command", fake_run_command)
+        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
 
         result = run_mris_flatten(
             subject,
@@ -264,16 +267,18 @@ class TestRunMrisFlatten:
         )
         assert result == str(existing_output)
         assert existing_output.read_text() == "new"
+        # Original surf directory should not be modified
         assert not (surf_dir / "in.patch").exists()
         assert not (surf_dir / output_name).exists()
-        assert not (surf_dir / (output_name + ".log")).exists()
-        assert not (surf_dir / (output_name + ".out")).exists()
 
     def test_command_failure_raises(self, tmp_path, monkeypatch):
         subject = "subj"
         hemi = "lh"
         surf_dir = tmp_path / "subjects" / subject / "surf"
         surf_dir.mkdir(parents=True)
+        # Create some dummy surface files for symlinking
+        (surf_dir / "lh.white").write_text("white")
+        (surf_dir / "lh.pial").write_text("pial")
         patch_file = tmp_path / "in.patch"
         patch_file.write_text("patch")
         output_dir = tmp_path / "outdir"
@@ -281,12 +286,12 @@ class TestRunMrisFlatten:
 
         monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        def fake_fail(cmd, cwd, log_path):
+        def fake_fail(cmd, cwd, log_path, env=None):
             with open(log_path, "w") as f:
                 f.write("error")
             return 1
 
-        monkeypatch.setattr(fs, "_run_command", fake_fail)
+        monkeypatch.setattr(fs, "_run_command_with_env", fake_fail)
 
         with pytest.raises(RuntimeError):
             run_mris_flatten(
@@ -298,6 +303,9 @@ class TestRunMrisFlatten:
         hemi = "rh"
         surf_dir = tmp_path / "subjects" / subject / "surf"
         surf_dir.mkdir(parents=True)
+        # Create some dummy surface files for symlinking
+        (surf_dir / "rh.white").write_text("white")
+        (surf_dir / "rh.pial").write_text("pial")
         patch_file = tmp_path / "in.patch"
         patch_file.write_text("patch")
         output_dir = tmp_path / "outdir"
@@ -305,7 +313,7 @@ class TestRunMrisFlatten:
 
         monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        def fake_run(cmd, cwd, log_path):
+        def fake_run(cmd, cwd, log_path, env=None):
             flat = cmd[-1]
             with open(os.path.join(cwd, flat), "w") as f:
                 f.write("ok")
@@ -313,8 +321,215 @@ class TestRunMrisFlatten:
                 f.write("log")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command", fake_run)
+        monkeypatch.setattr(fs, "_run_command_with_env", fake_run)
         result = run_mris_flatten(subject, hemi, str(patch_file), str(output_dir))
         fname = os.path.basename(result)
         assert fname.startswith("rh.autoflatten") and fname.endswith(".flat.patch.3d")
         assert os.path.isfile(result)
+
+    def test_create_temp_surf_directory(self, tmp_path):
+        """
+        Test creating temporary surf directory with symlinks.
+
+        Verifies that the helper function correctly creates the directory structure
+        and symlinks to original surface files.
+        """
+        # Create mock original surf directory with surface files
+        subject = "test_subj"
+        original_surf = tmp_path / "subjects" / subject / "surf"
+        original_surf.mkdir(parents=True)
+
+        # Create mock surface files
+        (original_surf / "lh.white").write_text("white_surface_data")
+        (original_surf / "lh.pial").write_text("pial_surface_data")
+        (original_surf / "lh.inflated").write_text("inflated_surface_data")
+        (original_surf / "lh.sphere").write_text("sphere_surface_data")
+        (original_surf / "rh.white").write_text("rh_white_data")
+
+        # Create temp root
+        temp_root = tmp_path / "temp"
+        temp_root.mkdir()
+
+        # Create temp surf directory with symlinks
+        temp_surf = fs._create_temp_surf_directory(
+            subject, str(original_surf), str(temp_root)
+        )
+
+        # Verify directory structure created
+        assert os.path.isdir(temp_surf)
+        assert temp_surf == str(temp_root / subject / "surf")
+
+        # Verify symlinks created
+        assert os.path.islink(os.path.join(temp_surf, "lh.white"))
+        assert os.path.islink(os.path.join(temp_surf, "lh.pial"))
+        assert os.path.islink(os.path.join(temp_surf, "lh.inflated"))
+        assert os.path.islink(os.path.join(temp_surf, "lh.sphere"))
+        assert os.path.islink(os.path.join(temp_surf, "rh.white"))
+
+        # Verify symlinks point to correct original files
+        assert os.readlink(os.path.join(temp_surf, "lh.white")) == str(
+            original_surf / "lh.white"
+        )
+        assert os.readlink(os.path.join(temp_surf, "lh.pial")) == str(
+            original_surf / "lh.pial"
+        )
+
+        # Verify we can read through symlinks (read-only access)
+        with open(os.path.join(temp_surf, "lh.white")) as f:
+            assert f.read() == "white_surface_data"
+
+    def test_run_mris_flatten_preserves_original_surf_dir(self, tmp_path, monkeypatch):
+        """
+        Test that run_mris_flatten never modifies original surf directory.
+
+        This is the critical test ensuring our implementation meets the requirement
+        to never touch the original FreeSurfer subject directory.
+        """
+        subject = "test_subj"
+        hemi = "lh"
+
+        # Create original surf directory with surface files
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+
+        # Create mock surface files
+        (surf_dir / f"{hemi}.white").write_text("original_white")
+        (surf_dir / f"{hemi}.pial").write_text("original_pial")
+        (surf_dir / f"{hemi}.inflated").write_text("original_inflated")
+
+        # Record initial state of surf directory
+        initial_files = sorted(os.listdir(surf_dir))
+        initial_mtimes = {f: os.path.getmtime(surf_dir / f) for f in initial_files}
+
+        # Create patch file in different location
+        patch_file = tmp_path / "input" / "test.patch"
+        patch_file.parent.mkdir()
+        patch_file.write_text("patch_data_content")
+
+        # Output to yet another different directory
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Mock _resolve_subject_dir to return our test surf_dir
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+
+        # Mock _run_command_with_env to simulate successful mris_flatten
+        def fake_run_command(cmd, cwd, log_path, env=None):
+            # Verify it's running in a temp directory, not original
+            assert str(surf_dir) not in cwd, "Running in original surf directory!"
+            assert "autoflatten_" in cwd, "Not running in expected temp directory"
+
+            # Verify SUBJECTS_DIR override
+            assert env is not None
+            assert "SUBJECTS_DIR" in env
+            assert str(surf_dir) not in env["SUBJECTS_DIR"]
+
+            # Simulate mris_flatten creating output files
+            flat_file = os.path.join(cwd, cmd[-1])
+            with open(flat_file, "w") as f:
+                f.write("flattened_surface_data")
+            with open(log_path, "w") as f:
+                f.write("mris_flatten log output")
+            with open(flat_file + ".out", "w") as f:
+                f.write("mris_flatten out file")
+            return 0
+
+        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
+
+        # Run mris_flatten
+        result = run_mris_flatten(
+            subject, hemi, str(patch_file), str(output_dir), overwrite=True
+        )
+
+        # ===== CRITICAL VERIFICATION =====
+        # Verify original surf directory completely unchanged
+        final_files = sorted(os.listdir(surf_dir))
+        assert initial_files == final_files, (
+            f"Original surf directory was modified! "
+            f"Before: {initial_files}, After: {final_files}"
+        )
+
+        # Verify no files were modified (check mtimes)
+        for filename in initial_files:
+            original_mtime = initial_mtimes[filename]
+            current_mtime = os.path.getmtime(surf_dir / filename)
+            assert original_mtime == current_mtime, (
+                f"File {filename} was modified (mtime changed)"
+            )
+
+        # Verify output files exist in output_dir (not surf_dir)
+        assert os.path.exists(result)
+        assert str(output_dir) in result
+        # Log file has pattern: base.flat.patch.log (not base.log)
+        log_file = os.path.splitext(result)[0] + ".log"
+        assert os.path.exists(log_file), f"Log file not found: {log_file}"
+
+        # Verify output content correct
+        with open(result) as f:
+            assert f.read() == "flattened_surface_data"
+
+    def test_debug_flag_preserves_temp_directory(self, tmp_path, monkeypatch):
+        """
+        Test that debug=True preserves temporary directory.
+
+        Verifies that when debug mode is enabled, the temporary directory
+        is not deleted after execution.
+        """
+        subject = "test_subj"
+        hemi = "lh"
+
+        # Create original surf directory with surface files
+        surf_dir = tmp_path / "subjects" / subject / "surf"
+        surf_dir.mkdir(parents=True)
+        (surf_dir / f"{hemi}.white").write_text("white")
+        (surf_dir / f"{hemi}.pial").write_text("pial")
+
+        # Create patch file
+        patch_file = tmp_path / "test.patch"
+        patch_file.write_text("patch")
+
+        # Output directory
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Track the temp directory created
+        temp_dirs = []
+
+        # Mock _resolve_subject_dir
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+
+        # Mock _run_command_with_env and capture temp directory
+        def fake_run_command(cmd, cwd, log_path, env=None):
+            # Track the working directory (which is in the temp directory)
+            temp_dirs.append(cwd)
+            flat_file = os.path.join(cwd, cmd[-1])
+            with open(flat_file, "w") as f:
+                f.write("data")
+            with open(log_path, "w") as f:
+                f.write("log")
+            return 0
+
+        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
+
+        # Run with debug=True
+        result = run_mris_flatten(
+            subject, hemi, str(patch_file), str(output_dir), debug=True
+        )
+
+        # Verify temporary directory was preserved
+        assert len(temp_dirs) == 1
+        temp_dir = temp_dirs[0]
+
+        # The temp directory should still exist
+        # Extract temp root from the temp_surf_dir path
+        temp_root = os.path.dirname(os.path.dirname(temp_dir))
+        assert os.path.exists(temp_root), (
+            "Temporary directory should be preserved in debug mode"
+        )
+        assert "autoflatten_" in temp_root
+
+        # Clean up manually (since debug mode doesn't clean up)
+        import shutil
+
+        if os.path.exists(temp_root):
+            shutil.rmtree(temp_root)
