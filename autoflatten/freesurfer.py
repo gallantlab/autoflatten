@@ -4,6 +4,7 @@ import os
 import shutil
 import struct
 import subprocess
+import tempfile
 
 import nibabel as nib
 import numpy as np
@@ -464,30 +465,73 @@ def _resolve_subject_dir(subject, subjects_dir=None):
     return surf_dir
 
 
-def _stage_patch_file(patch_file, surf_dir):
+def _create_temp_surf_directory(subject, surf_dir, temp_root):
     """
-    Stage the patch file in the subject's surf directory.
+    Create a temporary surf directory with symlinks to original FreeSurfer files.
+
+    This allows mris_flatten to run in an isolated environment without modifying
+    the original subject directory. Creates the structure:
+    {temp_root}/{subject}/surf/ with symlinks to all surface files.
 
     Parameters
     ----------
-    patch_file : str
-        Path to the input patch file.
+    subject : str
+        FreeSurfer subject identifier
     surf_dir : str
-        Path to the subject's surf directory.
+        Original subject's surf directory (absolute path)
+    temp_root : str
+        Temporary directory root (from tempfile.mkdtemp)
 
     Returns
     -------
-    tuple
-        A tuple containing the basename of the patch file, the staged file path,
-        and a boolean indicating whether the file was copied.
+    str
+        Path to temporary surf directory where mris_flatten should execute
+
+    Raises
+    ------
+    OSError
+        If temporary directory creation fails
     """
-    basename = os.path.basename(patch_file)
-    dest = os.path.join(surf_dir, basename)
-    copied = False
-    if os.path.abspath(patch_file) != os.path.abspath(dest):
-        shutil.copy2(patch_file, dest)
-        copied = True
-    return basename, dest, copied
+    import glob
+
+    # Create temp structure: {temp_root}/{subject}/surf/
+    temp_surf_dir = os.path.join(temp_root, subject, "surf")
+    os.makedirs(temp_surf_dir, exist_ok=True)
+
+    # Surface file patterns that mris_flatten might need
+    # These are common FreeSurfer surface files that should be accessible
+    surface_patterns = [
+        "*.white",  # White matter surface
+        "*.pial",  # Pial surface
+        "*.inflated",  # Inflated surface
+        "*.sphere",  # Spherical surface
+        "*.sphere.reg",  # Registered sphere
+        "*.smoothwm",  # Smoothed white matter
+        "*.orig",  # Original surface
+        "*.jacobian_white",  # Jacobian
+        "*.sulc",  # Sulcal depth
+        "*.curv",  # Curvature
+        "*.thickness",  # Cortical thickness
+        "*.area",  # Surface area
+        "*.volume",  # Volume
+        "*.avg_curv",  # Average curvature
+    ]
+
+    # Create symlinks for all existing surface files
+    linked_count = 0
+    for pattern in surface_patterns:
+        for orig_file in glob.glob(os.path.join(surf_dir, pattern)):
+            basename = os.path.basename(orig_file)
+            link_path = os.path.join(temp_surf_dir, basename)
+            if not os.path.exists(link_path):
+                try:
+                    os.symlink(orig_file, link_path)
+                    linked_count += 1
+                except OSError as e:
+                    print(f"Warning: Failed to create symlink for {basename}: {e}")
+
+    print(f"Created temporary surf directory with {linked_count} symlinked files")
+    return temp_surf_dir
 
 
 def _run_command(cmd, cwd, log_path):
@@ -516,6 +560,44 @@ def _run_command(cmd, cwd, log_path):
     return proc.returncode
 
 
+def _run_command_with_env(cmd, cwd, log_path, env=None):
+    """
+    Run a command with custom environment and log its output.
+
+    This is similar to _run_command but allows overriding environment variables,
+    particularly SUBJECTS_DIR to point to a temporary location.
+
+    Parameters
+    ----------
+    cmd : list
+        Command to execute as a list of arguments.
+    cwd : str
+        Working directory to execute the command in.
+    log_path : str
+        Path to the log file to write stdout and stderr.
+    env : dict, optional
+        Environment variables for the subprocess. If None, inherits current environment.
+
+    Returns
+    -------
+    int
+        Return code of the command.
+    """
+    print(f"Running command: {' '.join(cmd)}")
+    print(f"Working directory: {cwd}")
+    if env and "SUBJECTS_DIR" in env:
+        print(f"Using temporary SUBJECTS_DIR: {env['SUBJECTS_DIR']}")
+
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+
+    # Write combined output to log file
+    with open(log_path, "w") as f:
+        f.write(proc.stdout)
+        f.write(proc.stderr)
+
+    return proc.returncode
+
+
 def run_mris_flatten(
     subject,
     hemi,
@@ -531,6 +613,7 @@ def run_mris_flatten(
     tol=0.005,
     extra_params=None,
     overwrite=False,
+    debug=False,
 ):
     """
     Run mris_flatten on a patch file to create a flattened surface.
@@ -566,6 +649,8 @@ def run_mris_flatten(
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs.
     overwrite : bool, optional
         Whether to overwrite existing output files (default False).
+    debug : bool, optional
+        If True, preserve the temporary directory for debugging (default False).
 
     Returns
     -------
@@ -581,11 +666,12 @@ def run_mris_flatten(
     RuntimeError
         If the `mris_flatten` command fails.
     """
-    # validate input patch
+    # Validate input patch
     if not os.path.isfile(patch_file):
         raise FileNotFoundError(f"Input patch file not found: {patch_file}")
 
-    surf_dir = _resolve_subject_dir(subject)
+    # Resolve original surf directory (for reading reference files only)
+    original_surf_dir = _resolve_subject_dir(subject)
     os.makedirs(output_dir, exist_ok=True)
 
     # Generate output filename if not provided
@@ -601,7 +687,7 @@ def run_mris_flatten(
     final_log_file = os.path.splitext(final_flat_file)[0] + ".log"
     final_out_file = final_flat_file + ".out"
 
-    # skip or remove existing outputs
+    # Skip or remove existing outputs
     if os.path.exists(final_flat_file):
         if not overwrite:
             print(f"{final_flat_file} exists, skipping (overwrite=False)")
@@ -610,51 +696,73 @@ def run_mris_flatten(
             if os.path.exists(f):
                 os.remove(f)
 
-    # prepare basenames and temp paths
-    flat_basename = os.path.basename(final_flat_file)
-    temp_log = os.path.splitext(os.path.join(surf_dir, flat_basename))[0] + ".log"
-    temp_out = os.path.join(surf_dir, flat_basename + ".out")
+    # Create temporary directory for isolated execution
+    temp_root = tempfile.mkdtemp(prefix="autoflatten_")
+    try:
+        # Create temporary surf directory with symlinks to original files
+        temp_surf_dir = _create_temp_surf_directory(
+            subject, original_surf_dir, temp_root
+        )
 
-    # stage patch
-    patch_basename, temp_patch, copied = _stage_patch_file(patch_file, surf_dir)
+        # Copy patch file to temp surf directory
+        patch_basename = os.path.basename(patch_file)
+        temp_patch = os.path.join(temp_surf_dir, patch_basename)
+        shutil.copy2(patch_file, temp_patch)
+        print(f"Copied patch file to temporary location: {temp_patch}")
 
-    # build and run
-    cmd = _build_mris_flatten_cmd(
-        seed, threads, distances, n, dilate, tol, extra_params
-    )
-    cmd += [patch_basename, flat_basename]
-    ret = _run_command(cmd, cwd=surf_dir, log_path=temp_log)
+        # Prepare output file paths in temp directory
+        flat_basename = os.path.basename(final_flat_file)
+        temp_log = (
+            os.path.splitext(os.path.join(temp_surf_dir, flat_basename))[0] + ".log"
+        )
+        temp_out = os.path.join(temp_surf_dir, flat_basename + ".out")
 
-    # on failure: copy logs back, clean staged patch, then error
-    if ret != 0:
-        # copy stderr/stdout log
-        if os.path.abspath(temp_log) != os.path.abspath(final_log_file):
-            shutil.copy2(temp_log, final_log_file)
-        # copy mris_flatten .out if exists
-        if os.path.exists(temp_out):
-            if os.path.abspath(temp_out) != os.path.abspath(final_out_file):
+        # Build mris_flatten command
+        cmd = _build_mris_flatten_cmd(
+            seed, threads, distances, n, dilate, passes, tol, extra_params
+        )
+        cmd += [patch_basename, flat_basename]
+
+        # Create custom environment with temporary SUBJECTS_DIR
+        env = os.environ.copy()
+        env["SUBJECTS_DIR"] = temp_root
+
+        # Run mris_flatten from temp surf directory
+        ret = _run_command_with_env(cmd, cwd=temp_surf_dir, log_path=temp_log, env=env)
+
+        # Handle failure
+        if ret != 0:
+            # Copy logs to final output directory for debugging
+            if os.path.exists(temp_log):
+                shutil.copy2(temp_log, final_log_file)
+            if os.path.exists(temp_out):
                 shutil.copy2(temp_out, final_out_file)
-        if copied:
-            os.remove(temp_patch)
-        raise RuntimeError(f"mris_flatten failed (see {final_log_file})")
+            raise RuntimeError(f"mris_flatten failed (see {final_log_file})")
 
-    # on success: copy outputs
-    src_flat = os.path.join(surf_dir, flat_basename)
-    if os.path.abspath(src_flat) != os.path.abspath(final_flat_file):
+        # On success: copy all outputs to final location
+        src_flat = os.path.join(temp_surf_dir, flat_basename)
+        if not os.path.exists(src_flat):
+            raise RuntimeError(
+                f"mris_flatten succeeded but output file not found: {src_flat}"
+            )
+
         shutil.copy2(src_flat, final_flat_file)
-    src_log = temp_log
-    if os.path.abspath(src_log) != os.path.abspath(final_log_file):
-        shutil.copy2(src_log, final_log_file)
-    if os.path.exists(temp_out):
-        if os.path.abspath(temp_out) != os.path.abspath(final_out_file):
+        shutil.copy2(temp_log, final_log_file)
+        if os.path.exists(temp_out):
             shutil.copy2(temp_out, final_out_file)
 
-    # cleanup only if patch was copied and surf_dir != output_dir
-    if copied and os.path.abspath(surf_dir) != os.path.abspath(output_dir):
-        os.remove(temp_patch)
-        os.remove(os.path.join(surf_dir, flat_basename))
-        os.remove(temp_log)
-        if os.path.exists(temp_out):
-            os.remove(temp_out)
+        print(f"Flattening completed successfully: {final_flat_file}")
+        return final_flat_file
 
-    return final_flat_file
+    finally:
+        # Clean up temporary directory unless debug mode
+        if os.path.exists(temp_root):
+            if debug:
+                print(f"Debug mode: Preserving temporary directory at {temp_root}")
+            else:
+                try:
+                    shutil.rmtree(temp_root)
+                    print(f"Cleaned up temporary directory: {temp_root}")
+                except Exception as e:
+                    print(f"Warning: Failed to clean up {temp_root}: {e}")
+                    print("You may need to manually remove it.")
