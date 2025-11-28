@@ -173,3 +173,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 output_tests
+
+# Claude Code - personal settings (not for version control)
+.claude/settings.local.json
