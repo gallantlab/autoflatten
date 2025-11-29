@@ -15,11 +15,23 @@ pip install -e ".[test]"      # Install with test dependencies
 ```
 
 ### Testing
+
+**Setup conda environment:**
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate sosem  # or stories_atl
+```
+
+**Run tests:**
 ```bash
 pytest                        # Run all tests
 pytest --cov=autoflatten      # Run tests with coverage report
 pytest -k test_name           # Run specific test by name
 pytest autoflatten/tests/test_core.py  # Run specific test file
+```
+
+**Or in a single command:**
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate sosem && pytest
 ```
 
 ### Code Quality
@@ -76,10 +88,10 @@ The core pipeline in [cli.py](autoflatten/cli.py) follows these steps:
    - Finds connected components and connects them via shortest paths
    - Uses inflated surface for Euclidean distance, fiducial for path weights
 
-4. **Optional Geodesic Refinement** ([core.py](autoflatten/core.py):`refine_cuts_with_geodesic`)
+4. **Geodesic Refinement** ([core.py](autoflatten/core.py):`refine_cuts_with_geodesic`)
    - Replaces mapped cuts with geodesic shortest paths between endpoints
-   - Reduces wiggling from registration, may reduce flattening distortion
-   - Enabled with `--refine-geodesic` flag
+   - Reduces wiggling from registration and flattening distortion
+   - **Enabled by default** (disable with `--no-refine-geodesic` flag)
 
 5. **Patch File Creation** ([freesurfer.py](autoflatten/freesurfer.py):`create_patch_file`)
    - Generates FreeSurfer-compatible patch file

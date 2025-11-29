@@ -122,7 +122,7 @@ def process_hemisphere(
     passes=1,
     tol=0.005,
     extra_params=None,
-    refine_geodesic=False,
+    refine_geodesic=True,
     debug=False,
 ):
     """
@@ -160,7 +160,7 @@ def process_hemisphere(
     extra_params : dict, optional
         Dictionary of additional parameters to pass to mris_flatten as -key value pairs
     refine_geodesic : bool, optional
-        Whether to refine cuts using geodesic shortest paths after mapping (default: False)
+        Whether to refine cuts using geodesic shortest paths after mapping (default: True)
 
     Returns
     -------
@@ -381,7 +381,7 @@ def run_flattening(args):
                     args.passes,
                     args.tol,
                     extra_params,
-                    args.refine_geodesic,
+                    not args.no_refine_geodesic,
                     args.debug,
                 ): hemi
                 for hemi in hemispheres
@@ -418,7 +418,7 @@ def run_flattening(args):
                     args.passes,
                     args.tol,
                     extra_params,
-                    args.refine_geodesic,
+                    not args.no_refine_geodesic,
                     args.debug,
                 )
             except Exception:
@@ -647,12 +647,12 @@ def main():
         help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
     )
     parser_run.add_argument(
-        "--refine-geodesic",
+        "--no-refine-geodesic",
         action="store_true",
         help=(
-            "Refine projected cuts using geodesic shortest paths. "
-            "This replaces each cut with the shortest geodesic path between its endpoints, "
-            "which may reduce distortion during flattening (default: False)"
+            "Disable geodesic refinement of projected cuts. "
+            "By default, cuts are refined using geodesic shortest paths between endpoints, "
+            "which reduces distortion during flattening. Use this flag to skip refinement."
         ),
     )
     parser_run.add_argument(
