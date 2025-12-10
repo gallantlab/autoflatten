@@ -87,6 +87,7 @@ def parse_log_file(log_path):
                 result["hemisphere"] = "rh"
 
     except (FileNotFoundError, IOError):
+        # Log file doesn't exist or can't be read - return empty result
         pass
 
     return result

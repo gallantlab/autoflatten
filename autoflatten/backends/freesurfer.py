@@ -3,11 +3,10 @@
 This module wraps FreeSurfer's mris_flatten command as a flattening backend.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 
-from .base import FlattenBackend, find_base_surface
+from .base import FlattenBackend
 from ..freesurfer import run_mris_flatten, is_freesurfer_available
 
 
