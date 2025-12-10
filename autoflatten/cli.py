@@ -679,6 +679,7 @@ def cmd_flatten(args):
                 "skip_neg_area": args.skip_neg_area,
                 "config_path": args.pyflatten_config,
                 "n_jobs": args.n_jobs,
+                "cache_distances": args.debug_save_distances,
             }
         )
     elif args.backend == "freesurfer":
@@ -876,6 +877,11 @@ def add_pyflatten_args(parser):
         type=int,
         default=-1,
         help="Number of parallel jobs (-1 = all CPUs)",
+    )
+    group.add_argument(
+        "--debug-save-distances",
+        action="store_true",
+        help="Save k-ring distances to cache file for debugging",
     )
 
 
