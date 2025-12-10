@@ -47,8 +47,6 @@ from .energy import (
 # Import I/O functions from autoflatten.freesurfer
 from ..freesurfer import extract_patch_faces, read_patch, read_surface, write_patch
 
-# Import shared logging utilities
-
 
 # =============================================================================
 # Mesh utilities
