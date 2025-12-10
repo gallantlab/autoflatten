@@ -997,22 +997,9 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Default command (when no subcommand is given, treat positional as subject_dir)
-    parser.add_argument(
-        "subject_dir",
-        nargs="?",
-        help="Path to FreeSurfer subject directory",
-    )
-    add_common_args(parser)
-    add_projection_args(parser)
-    add_backend_args(parser)
-    add_pyflatten_args(parser)
-    add_freesurfer_args(parser)
-    parser.add_argument(
-        "--no-flatten",
-        action="store_true",
-        help="Skip flattening (projection only)",
-    )
+    # Note: We don't add subject_dir to the root parser because it conflicts
+    # with subparser positional arguments. Instead, we handle the case of
+    # no subcommand by checking sys.argv directly in main().
 
     # 'project' subcommand
     parser_project = subparsers.add_parser(
@@ -1099,17 +1086,23 @@ Examples:
     )
     parser_run.set_defaults(func=cmd_run_full_pipeline)
 
+    # Handle case where no subcommand is given but a path is provided
+    # This allows "autoflatten /path/to/subject" syntax
+    known_commands = {"project", "flatten", "plot", "run"}
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1] not in known_commands
+        and not sys.argv[1].startswith("-")
+    ):
+        # Insert 'run' as the subcommand
+        sys.argv.insert(1, "run")
+
     args = parser.parse_args()
 
     # Handle default command (no subcommand specified)
     if args.command is None:
-        if args.subject_dir:
-            # If subject_dir is provided without subcommand, run full pipeline
-            args.func = cmd_run_full_pipeline
-            return args.func(args)
-        else:
-            parser.print_help()
-            return 1
+        parser.print_help()
+        return 1
 
     return args.func(args)
 
