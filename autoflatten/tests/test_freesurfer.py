@@ -50,6 +50,49 @@ def mock_surface_data():
     return {"vertices": vertices, "faces": faces, "vertex_dict": vertex_dict}
 
 
+@pytest.fixture
+def mock_surface_data_uint32():
+    """
+    Create mock surface data with uint32 faces for testing unsigned integer handling.
+
+    This fixture specifically uses uint32 dtype for faces to test that the patch
+    file creation correctly handles unsigned integer indices without overflow.
+
+    Returns
+    -------
+    dict
+        Dictionary containing vertices, faces (uint32), and vertex dictionaries
+    """
+    # Create a larger mesh to have more vertex indices
+    # Simple grid of 10x10 = 100 vertices
+    n = 10
+    vertices = []
+    for i in range(n):
+        for j in range(n):
+            vertices.append([i, j, 0])
+    vertices = np.array(vertices, dtype=np.float32)
+
+    # Create triangular faces (as uint32 - the problematic dtype)
+    faces = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            v0 = i * n + j
+            v1 = i * n + j + 1
+            v2 = (i + 1) * n + j
+            v3 = (i + 1) * n + j + 1
+            faces.append([v0, v1, v2])
+            faces.append([v1, v3, v2])
+    faces = np.array(faces, dtype=np.uint32)  # Use uint32 explicitly
+
+    # Create vertex dictionary with mock medial wall (first column)
+    vertex_dict = {
+        "mwall": list(range(0, n * n, n)),  # First column: 0, 10, 20, ...
+        "calcarine": [1, 11],  # A couple of cut vertices
+    }
+
+    return {"vertices": vertices, "faces": faces, "vertex_dict": vertex_dict}
+
+
 def test_create_patch_file(mock_surface_data):
     """
     Test creating a FreeSurfer patch file.
@@ -104,6 +147,113 @@ def test_create_patch_file(mock_surface_data):
 
                 # Verify the coordinates match (within floating point precision)
                 np.testing.assert_allclose([x, y, z], coord, rtol=1e-5)
+
+
+def test_create_patch_file_uint32_faces(mock_surface_data_uint32):
+    """
+    Test creating a patch file with uint32 face indices.
+
+    This test specifically verifies that create_patch_file correctly handles
+    surfaces where face indices have dtype uint32 (unsigned 32-bit integers).
+    Without proper handling, negating unsigned integers causes overflow:
+    -(np.uint32(0) + 1) = 4294967295 instead of -1.
+
+    This regression test ensures the fix for the unsigned integer overflow bug
+    remains in place.
+    """
+    vertices = mock_surface_data_uint32["vertices"]
+    faces = mock_surface_data_uint32["faces"]
+    vertex_dict = mock_surface_data_uint32["vertex_dict"]
+
+    # Verify we're actually testing with uint32 faces
+    assert faces.dtype == np.uint32, "Test requires uint32 faces"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        patch_file = os.path.join(temp_dir, "test_uint32.patch")
+
+        # Create the patch file - this should not raise an error
+        filename, patch_vertices = create_patch_file(
+            patch_file, vertices, faces, vertex_dict
+        )
+
+        # Check that the file was created with correct size
+        # (header 8 bytes + 16 bytes per vertex)
+        expected_size = 8 + len(patch_vertices) * 16
+        actual_size = os.path.getsize(patch_file)
+        assert actual_size == expected_size, (
+            f"File size mismatch: expected {expected_size}, got {actual_size}. "
+            "This may indicate unsigned integer overflow in vertex index handling."
+        )
+
+        # Verify the file content is valid
+        with open(patch_file, "rb") as fp:
+            header = struct.unpack(">2i", fp.read(8))
+            assert header[0] == -1, "Invalid magic number"
+            assert header[1] == len(patch_vertices), "Vertex count mismatch"
+
+            # Read and verify each vertex
+            for i in range(header[1]):
+                data = struct.unpack(">i3f", fp.read(16))
+                stored_idx = data[0]
+
+                # Critical check: indices must be in valid int32 range
+                # Overflow would result in large positive values like 4294967295
+                assert -2147483648 <= stored_idx <= 2147483647, (
+                    f"Vertex index {stored_idx} out of int32 range - "
+                    "possible unsigned integer overflow"
+                )
+
+                # Interior vertices have negative indices, border have positive
+                # Neither should be zero
+                assert stored_idx != 0, "Invalid vertex index (zero)"
+
+                # Check that negative indices are actually negative (not wrapped)
+                # Interior vertices have negative stored_idx = -(original_idx + 1)
+                # This verifies no unsigned integer overflow occurred
+                if stored_idx < 0:
+                    # Verify the stored index decodes correctly back to original
+                    decoded_idx = -(stored_idx + 1)
+                    assert decoded_idx >= 0, (
+                        f"Decoded index should be non-negative, got {decoded_idx}"
+                    )
+
+
+def test_write_patch_uint32_indices():
+    """
+    Test write_patch with uint32 original_indices.
+
+    This test verifies that write_patch correctly handles original_indices
+    arrays with uint32 dtype without unsigned integer overflow.
+    """
+    from autoflatten.freesurfer import write_patch, read_patch
+
+    # Create test data with uint32 indices (the problematic dtype)
+    n_vertices = 50
+    vertices = np.random.rand(n_vertices, 3).astype(np.float32)
+    original_indices = np.arange(n_vertices, dtype=np.uint32)
+    is_border = np.zeros(n_vertices, dtype=bool)
+    is_border[:5] = True  # First 5 vertices are border
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        patch_file = os.path.join(temp_dir, "test_write_uint32.patch")
+
+        # Write the patch file - should not raise an error
+        write_patch(patch_file, vertices, original_indices, is_border)
+
+        # Verify file size is correct
+        expected_size = 8 + n_vertices * 16
+        actual_size = os.path.getsize(patch_file)
+        assert actual_size == expected_size, (
+            f"File size mismatch: expected {expected_size}, got {actual_size}"
+        )
+
+        # Read back and verify
+        read_vertices, read_indices, read_is_border = read_patch(patch_file)
+
+        # Verify all indices were correctly round-tripped
+        np.testing.assert_array_equal(read_indices, original_indices)
+        np.testing.assert_array_equal(read_is_border, is_border)
+        np.testing.assert_allclose(read_vertices, vertices, rtol=1e-5)
 
 
 def test_read_freesurfer_label():

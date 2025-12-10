@@ -4,20 +4,25 @@ Automatic Surface Flattening Pipeline
 
 This script implements a pipeline for automatic flattening of cortical surfaces
 using medial wall and cut vertices from fsaverage mapped to a target subject.
-It also provides functionality to plot the results.
+
+CLI Structure:
+    autoflatten /path/to/subject     - Full pipeline: project + flatten (default)
+    autoflatten project /path/to/subject  - Projection only: creates patch file
+    autoflatten flatten PATCH_FILE   - Flattening only: flattens existing patch
+    autoflatten plot FLAT_PATCH      - Visualization
 """
 
 import argparse
-import glob
 import os
 import random
 import re
 import shutil
 import subprocess
+import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
-from distutils.version import LooseVersion
+from pathlib import Path
 
 import numpy as np
 
@@ -27,7 +32,8 @@ from autoflatten.core import (
     map_cuts_to_subject,
     refine_cuts_with_geodesic,
 )
-from autoflatten.freesurfer import create_patch_file, load_surface, run_mris_flatten
+from autoflatten.freesurfer import create_patch_file, load_surface
+from autoflatten.logging import restore_logging, setup_logging
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
 from autoflatten.viz import plot_patch
@@ -58,9 +64,9 @@ def check_freesurfer_environment():
         print("Error: SUBJECTS_DIR environment variable is not set.")
         return False, env_vars
 
-    # Check if mris_flatten is available in PATH
-    if shutil.which("mris_flatten") is None:
-        print("Error: mris_flatten not found in PATH.")
+    # Check if mri_label2label is available (needed for projection)
+    if shutil.which("mri_label2label") is None:
+        print("Error: mri_label2label not found in PATH.")
         return False, env_vars
 
     # Try to get FreeSurfer version to verify installation
@@ -75,16 +81,14 @@ def check_freesurfer_environment():
             fs_version = result.stdout.strip()
             print(f"FreeSurfer version: {fs_version}")
 
-            # Extract version number using regex (e.g., "8.0.0" from "mri_info freesurfer 8.0.0")
+            # Extract version number using regex
             version_match = re.search(r"(\d+\.\d+(?:\.\d+)?)", fs_version)
-            if not version_match:
-                print(
-                    f"Warning: Could not parse FreeSurfer version from '{fs_version}'"
-                )
-            else:
+            if version_match:
+                from packaging.version import Version
+
                 version_number = version_match.group(1)
                 try:
-                    if LooseVersion(version_number) < LooseVersion("7.0"):
+                    if Version(version_number) < Version("7.0"):
                         raise ValueError(
                             f"FreeSurfer version {version_number} is below 7.0. "
                             "This tool requires FreeSurfer 7.0 or higher."
@@ -107,240 +111,405 @@ def check_freesurfer_environment():
     return True, env_vars
 
 
-def process_hemisphere(
-    subject,
+def run_projection(
+    subject_dir,
     hemi,
     output_dir,
     template_file=None,
-    run_flatten=True,
     overwrite=False,
-    seed=0,
-    threads=1,
-    distances=(15, 80),
-    n=200,
-    dilate=1,
-    passes=1,
-    tol=0.005,
-    extra_params=None,
     refine_geodesic=True,
-    debug=False,
+    verbose=True,
 ):
     """
-    Process a single hemisphere through the flattening pipeline.
+    Run the projection phase to create a patch file.
 
     Parameters
     ----------
-    subject : str
-        FreeSurfer subject identifier
+    subject_dir : str
+        Path to the FreeSurfer subject directory
     hemi : str
         Hemisphere ('lh' or 'rh')
     output_dir : str
         Directory to save output files
     template_file : str, optional
-        Path to the template file containing cut definitions.
-        If None, uses the default template.
-    run_flatten : bool, optional
-        Whether to run mris_flatten (default: True)
-    overwrite : bool, optional
+        Path to the template file containing cut definitions
+    overwrite : bool
         Whether to overwrite existing files
-    seed : int
-        Random seed value to use with -seed flag for mris_flatten.
-    threads : int, optional
-        Number of threads to use (default: 1)
-    distances : tuple of int, optional
-        Distance parameters as a tuple (distance1, distance2) (default: (15, 80))
-    n : int, optional
-        Maximum number of iterations to run, used with -n flag (default: 200)
-    dilate : int, optional
-        Number of dilations to perform, used with -dilate flag (default: 1)
-    passes : int, optional
-        Number of passes for mris_flatten, used with -p flag (default: 1)
-    tol : float, optional
-        Tolerance for the flatness of the surface, used with -tol flag (default: 0.005)
-    extra_params : dict, optional
-        Dictionary of additional parameters to pass to mris_flatten as -key value pairs
-    refine_geodesic : bool, optional
-        Whether to refine cuts using geodesic shortest paths after mapping (default: True)
+    refine_geodesic : bool
+        Whether to refine cuts using geodesic shortest paths
+    verbose : bool
+        Whether to print progress messages
 
     Returns
     -------
-    dict
-        Information about the processed hemisphere, including the seed used for flattening.
+    str
+        Path to the created patch file
     """
-    print(
-        f"\nProcessing {hemi} hemisphere for subject {subject} (flattening seed: {seed})"
-    )
+    subject = Path(subject_dir).name
+    patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
+    log_base = os.path.join(output_dir, f"{hemi}.autoflatten.projection")
+
+    if os.path.exists(patch_file) and not overwrite:
+        if verbose:
+            print(
+                f"Patch file {patch_file} already exists, skipping (use --overwrite to force)"
+            )
+        return patch_file
+
+    # Setup logging - all print() output goes to both console and log file
+    # Log file will be created at log_base + ".log"
+    original_stdout, log_file = setup_logging(log_base, verbose=verbose)
     start_time = time.time()
 
-    # Create patch file name (deterministic, no seed)
-    patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
+    try:
+        # Header
+        print("Autoflatten Projection Log")
+        print("=" * 60)
+        print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print()
+        print(f"Subject: {subject}")
+        print(f"Hemisphere: {hemi}")
+        print(f"Subject directory: {subject_dir}")
+        print(f"Output directory: {output_dir}")
 
-    # Initialize result dictionary with common fields
-    result = {
-        "subject": subject,
-        "hemi": hemi,
-        "patch_file": patch_file,
-        "seed": seed,
-        "distances": distances,
-        "n": n,
-        "dilate": dilate,
-        "passes": passes,
-        "tol": tol,
-        "extra_params": extra_params,
-    }
-
-    # STEP 1: Create patch file if it doesn't exist or if overwriting
-    if not os.path.exists(patch_file) or overwrite:
         # Get cuts template
+        print("\nTemplate Loading")
+        print("-" * 16)
         if template_file is None:
-            # Use default fsaverage cuts template
             template_file = fsaverage_cut_template
-        print(f"Loading cuts template from {template_file}")
+        print(f"Template file: {template_file}")
         template_data = load_json(template_file)
+
         vertex_dict = {}
-        # Extract hemisphere-specific data from the template
         prefix = f"{hemi}_"
         for key, value in template_data.items():
             if key.startswith(prefix):
-                # Remove the hemisphere prefix
                 new_key = key[len(prefix) :]
                 vertex_dict[new_key] = np.array(value)
+                print(f"  {new_key}: {len(value)} vertices")
 
         # Map cuts to target subject
-        print(f"Mapping cuts to {subject} for {hemi}")
+        print("\nCut Mapping (mri_label2label)")
+        print("-" * 29)
+        step_start = time.time()
         vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
+        step_elapsed = time.time() - step_start
+        print(f"Mapping completed in {step_elapsed:.2f}s")
+        for key, vertices in vertex_dict_mapped.items():
+            orig_count = len(vertex_dict.get(key, []))
+            mapped_count = len(vertices)
+            print(f"  {key}: {orig_count} -> {mapped_count} vertices")
 
-        # Ensure cuts are continuous in target subject
-        print(f"Ensuring continuous cuts for {subject} {hemi}")
+        # Ensure cuts are continuous
+        print("\nContinuity Fixing")
+        print("-" * 17)
+        step_start = time.time()
         vertex_dict_fixed = ensure_continuous_cuts(
             vertex_dict_mapped.copy(), subject, hemi
         )
+        step_elapsed = time.time() - step_start
+        print(f"Continuity fixing completed in {step_elapsed:.2f}s")
+        for key, vertices in vertex_dict_fixed.items():
+            pre_count = len(vertex_dict_mapped.get(key, []))
+            post_count = len(vertices)
+            if post_count != pre_count:
+                print(
+                    f"  {key}: {pre_count} -> {post_count} vertices "
+                    f"(added {post_count - pre_count})"
+                )
+            else:
+                print(f"  {key}: {post_count} vertices (no changes)")
 
-        # Optionally refine cuts with geodesic shortest paths
+        # Optionally refine with geodesic paths
         if refine_geodesic:
-            print(f"Refining cuts with geodesic shortest paths for {subject} {hemi}")
-            vertex_dict_fixed = refine_cuts_with_geodesic(
+            print("\nGeodesic Refinement")
+            print("-" * 19)
+            step_start = time.time()
+            vertex_dict_refined = refine_cuts_with_geodesic(
                 vertex_dict_fixed,
                 subject,
                 hemi,
                 medial_wall_vertices=vertex_dict_fixed.get("mwall"),
             )
+            step_elapsed = time.time() - step_start
+            print(f"Geodesic refinement completed in {step_elapsed:.2f}s")
+            for key, vertices in vertex_dict_refined.items():
+                pre_count = len(vertex_dict_fixed.get(key, []))
+                post_count = len(vertices)
+                if post_count != pre_count:
+                    print(f"  {key}: {pre_count} -> {post_count} vertices")
+                else:
+                    print(f"  {key}: {post_count} vertices (unchanged)")
+            vertex_dict_fixed = vertex_dict_refined
+        else:
+            print("\nGeodesic Refinement")
+            print("-" * 19)
+            print("Skipped (--no-refine-geodesic)")
 
         # Get subject surface data
+        print("\nPatch Creation")
+        print("-" * 14)
         pts, polys = load_surface(subject, "inflated", hemi)
+        print(f"Surface loaded: {len(pts)} vertices, {len(polys)} faces")
 
         # Create patch file
-        print(f"Creating patch file: {patch_file}")
+        step_start = time.time()
         patch_file, patch_vertices = create_patch_file(
             patch_file, pts, polys, vertex_dict_fixed
         )
+        step_elapsed = time.time() - step_start
 
-        result["patch_vertices"] = patch_vertices
-        result["vertex_dict"] = vertex_dict_fixed
+        # Log patch statistics
+        total_excluded = sum(len(v) for v in vertex_dict_fixed.values())
+        n_patch_vertices = len(patch_vertices)
+        print(f"Patch creation completed in {step_elapsed:.2f}s")
+        print(f"  Total surface vertices: {len(pts)}")
+        print(f"  Excluded vertices (cuts + medial wall): {total_excluded}")
+        print(f"  Patch vertices: {n_patch_vertices}")
+        print(f"  Output file: {patch_file}")
+
+        print("\nRESULT")
+        print("-" * 6)
+        print(f"Patch file created: {patch_file}")
+        print(f"Log file: {log_base}.log")
+
+        # Footer
+        elapsed = time.time() - start_time
+        print()
+        print("=" * 60)
+        print(f"Total time: {elapsed:.2f} seconds")
+        print(f"Finished: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    finally:
+        restore_logging(original_stdout, log_file)
+
+    return patch_file
+
+
+def run_flatten_backend(
+    patch_path,
+    surface_path,
+    output_path,
+    backend_name=None,
+    verbose=True,
+    **backend_kwargs,
+):
+    """
+    Run flattening using the specified backend.
+
+    Parameters
+    ----------
+    patch_path : str
+        Path to the input patch file
+    surface_path : str
+        Path to the base surface file
+    output_path : str
+        Path for the output flat patch file
+    backend_name : str, optional
+        Backend name ('pyflatten' or 'freesurfer'). If None, uses default.
+    verbose : bool
+        Whether to print progress messages
+    **backend_kwargs
+        Additional arguments passed to the backend
+
+    Returns
+    -------
+    str
+        Path to the output flat patch file
+    """
+    from autoflatten.backends import get_backend, get_default_backend
+
+    if backend_name:
+        backend = get_backend(backend_name)
     else:
-        print(
-            f"Patch file {patch_file} already exists, skipping patch generation. "
-            "Use --overwrite to force regeneration."
-        )
+        backend = get_default_backend()
 
-    # STEP 2: Run flattening if requested
+    if verbose:
+        print(f"Using {backend.name} backend for flattening")
+
+    return backend.flatten(
+        patch_path=patch_path,
+        surface_path=surface_path,
+        output_path=output_path,
+        verbose=verbose,
+        **backend_kwargs,
+    )
+
+
+def process_hemisphere(
+    subject_dir,
+    hemi,
+    output_dir,
+    template_file=None,
+    run_flatten=True,
+    overwrite=False,
+    refine_geodesic=True,
+    backend=None,
+    verbose=True,
+    run_plot=True,
+    **backend_kwargs,
+):
+    """
+    Process a single hemisphere through the full pipeline.
+
+    Parameters
+    ----------
+    subject_dir : str
+        Path to the FreeSurfer subject directory
+    hemi : str
+        Hemisphere ('lh' or 'rh')
+    output_dir : str
+        Directory to save output files
+    template_file : str, optional
+        Path to template file
+    run_flatten : bool
+        Whether to run flattening after projection
+    overwrite : bool
+        Whether to overwrite existing files
+    refine_geodesic : bool
+        Whether to refine cuts with geodesic paths
+    backend : str, optional
+        Backend name for flattening
+    verbose : bool
+        Print progress messages
+    run_plot : bool
+        Whether to generate PNG plot after flattening
+    **backend_kwargs
+        Additional arguments for the backend
+
+    Returns
+    -------
+    dict
+        Results including patch_file, flat_file, and plot_file paths
+    """
+    subject = Path(subject_dir).name
+    if verbose:
+        print(f"\nProcessing {hemi} hemisphere for subject {subject}")
+    start_time = time.time()
+
+    result = {
+        "subject": subject,
+        "hemi": hemi,
+    }
+
+    # Run projection
+    patch_file = run_projection(
+        subject_dir=subject_dir,
+        hemi=hemi,
+        output_dir=output_dir,
+        template_file=template_file,
+        overwrite=overwrite,
+        refine_geodesic=refine_geodesic,
+        verbose=verbose,
+    )
+    result["patch_file"] = patch_file
+
+    # Run flattening if requested
     if run_flatten:
-        flat_file = run_mris_flatten(
-            subject,
-            hemi,
-            patch_file,
-            output_dir,
-            output_name=None,
-            seed=seed,
-            threads=threads,
-            distances=distances,
-            n=n,
-            dilate=dilate,
-            passes=passes,
-            tol=tol,
-            extra_params=extra_params,
-            overwrite=overwrite,
-            debug=debug,
-        )
+        # Determine surface path
+        surf_dir = os.path.join(subject_dir, "surf")
+        surface_path = os.path.join(surf_dir, f"{hemi}.fiducial")
+        if not os.path.exists(surface_path):
+            surface_path = os.path.join(surf_dir, f"{hemi}.white")
+
+        # Determine output path
+        flat_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.3d")
+
+        if os.path.exists(flat_file) and not overwrite:
+            if verbose:
+                print(
+                    f"Flat file {flat_file} exists, skipping (use --overwrite to force)"
+                )
+        else:
+            flat_file = run_flatten_backend(
+                patch_path=patch_file,
+                surface_path=surface_path,
+                output_path=flat_file,
+                backend_name=backend,
+                verbose=verbose,
+                **backend_kwargs,
+            )
+
         result["flat_file"] = flat_file
-        result["passes"] = passes
+
+        # Generate PNG plot if requested
+        if run_plot:
+            plot_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.png")
+            if os.path.exists(plot_file) and not overwrite:
+                if verbose:
+                    print(
+                        f"Plot file {plot_file} exists, skipping "
+                        "(use --overwrite to force)"
+                    )
+            else:
+                # Remove existing plot file if overwrite is enabled
+                if os.path.exists(plot_file) and overwrite:
+                    os.remove(plot_file)
+                surf_dir = os.path.join(subject_dir, "surf")
+                try:
+                    plot_file = plot_patch(
+                        flat_file,
+                        subject,
+                        surf_dir,
+                        output_dir=output_dir,
+                        surface=f"{hemi}.inflated",
+                    )
+                    if verbose:
+                        print(f"Generated plot: {plot_file}")
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Failed to generate plot: {e}")
+                    plot_file = None
+            result["plot_file"] = plot_file
 
     elapsed_time = time.time() - start_time
-    print(f"Completed {hemi} hemisphere in {elapsed_time:.2f} seconds")
+    if verbose:
+        print(f"Completed {hemi} hemisphere in {elapsed_time:.2f} seconds")
 
     return result
 
 
-def run_flattening(args):
-    """Handles the 'run' subcommand to perform flattening."""
-    print("Starting Autoflatten Run Pipeline...")
+# =============================================================================
+# CLI Commands
+# =============================================================================
 
-    # Check FreeSurfer environment
+
+def cmd_default(args):
+    """Default command: full pipeline (project + flatten)."""
+    return cmd_run_full_pipeline(args)
+
+
+def cmd_run_full_pipeline(args):
+    """Run the full pipeline: projection + flattening."""
+    print("Starting Autoflatten Pipeline...")
+
+    # Check FreeSurfer environment (needed for projection)
     fs_check, env_vars = check_freesurfer_environment()
     if not fs_check:
         print("FreeSurfer environment is not properly set up. Exiting.")
         return 1
 
-    # Set default output directory to the subject's surf directory if not specified
+    # Resolve subject directory
+    subject_dir = os.path.abspath(args.subject_dir)
+    if not os.path.isdir(subject_dir):
+        print(f"Error: Subject directory not found: {subject_dir}")
+        return 1
+
+    subject = Path(subject_dir).name
+    print(f"Subject: {subject}")
+    print(f"Subject directory: {subject_dir}")
+
+    # Set output directory
     if args.output_dir:
         output_dir = args.output_dir
     else:
-        subjects_dir = env_vars["SUBJECTS_DIR"]
-        output_dir = os.path.join(subjects_dir, args.subject, "surf")
-        print(
-            f"Warning: No --output-dir specified. Outputs will be written to FreeSurfer subject directory: {output_dir}"
-        )
-        print(
-            "Consider using --output-dir for easier testing and to keep outputs separate from subject data."
-        )
+        output_dir = os.path.join(subject_dir, "surf")
+        print(f"Warning: No --output-dir specified. Using: {output_dir}")
 
-    # Verify that the output directory exists
-    if not os.path.isdir(output_dir):
-        print(f"Output directory {output_dir} does not exist. Creating it...")
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except Exception as e:
-            print(f"Failed to create output directory: {e}")
-            return 1
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}")
 
-    print(f"Using output directory: {output_dir}")
-
-    # Parse the flatten-extra parameter if provided
-    extra_params = {}
-    if args.flatten_extra:
-        try:
-            for param in args.flatten_extra.split(","):
-                if "=" in param:
-                    key, value = param.split("=", 1)
-                    # Try to convert value to int or float if possible
-                    try:
-                        value = int(value)
-                    except ValueError:
-                        try:
-                            value = float(value)
-                        except ValueError:
-                            # Keep as string if not a number
-                            pass
-                    extra_params[key] = value
-                else:
-                    # If no value provided, set to True (flag parameter)
-                    extra_params[param] = True
-        except Exception as e:
-            print(f"Error parsing flatten-extra parameter: {e}")
-            print("Format should be: key1=value1,key2=value2")
-            return 1
-
-    # Determine seed to use
-    if args.seed is None:
-        selected_seed = random.randint(0, 99999)
-        print(
-            f"No seed provided, using randomly generated seed for flattening: {selected_seed}"
-        )
-    else:
-        selected_seed = args.seed
-        print(f"Using provided seed for flattening: {selected_seed}")
-
-    # Determine which hemispheres to process
+    # Determine hemispheres
     if args.hemispheres == "both":
         hemispheres = ["lh", "rh"]
     else:
@@ -348,107 +517,258 @@ def run_flattening(args):
 
     print(f"Processing hemispheres: {', '.join(hemispheres)}")
 
+    # Determine cores per hemisphere
+    n_cores = args.n_cores
+    if args.parallel and len(hemispheres) > 1 and n_cores > 0:
+        # Split cores between hemispheres when running in parallel
+        n_cores_per_hemi = max(1, n_cores // 2)
+        print(
+            f"Parallel mode: {n_cores} cores split to {n_cores_per_hemi} per hemisphere"
+        )
+    else:
+        n_cores_per_hemi = n_cores
+
+    # Collect backend kwargs
+    backend_kwargs = {}
+    if args.backend == "pyflatten":
+        backend_kwargs.update(
+            {
+                "k_ring": args.k_ring,
+                "n_neighbors_per_ring": args.n_neighbors,
+                "skip_phases": args.skip_phase,
+                "skip_spring_smoothing": args.skip_spring_smoothing,
+                "skip_neg_area": args.skip_neg_area,
+                "config_path": args.pyflatten_config,
+                "n_jobs": n_cores_per_hemi,
+                "cache_distances": args.debug_save_distances,
+            }
+        )
+    elif args.backend == "freesurfer":
+        backend_kwargs.update(
+            {
+                "seed": args.seed
+                if args.seed is not None
+                else random.randint(0, 99999),
+                "threads": args.nthreads,
+                "distances": tuple(args.distances) if args.distances else (15, 80),
+                "n": args.n_iterations,
+                "dilate": args.dilate,
+                "passes": args.passes,
+                "tol": args.tol,
+                "debug": args.debug,
+            }
+        )
+
     results = {}
-
-    # Set the flatten parameter (default is True, unless --no-flatten is specified)
     run_flatten = not args.no_flatten
+    run_plot = not args.no_plot
 
-    # Calculate threads per hemisphere when running in parallel
-    threads_per_hemisphere = args.nthreads
-    if args.parallel and len(hemispheres) > 1:
-        # Distribute threads evenly, but at least 1 per hemisphere
-        threads_per_hemisphere = max(1, args.nthreads // len(hemispheres))
-        print(f"Using {threads_per_hemisphere} threads per hemisphere")
-
-    # Process hemispheres (parallel or sequential)
+    # Process hemispheres
     if args.parallel and len(hemispheres) > 1:
         print("Processing hemispheres in parallel")
         with ProcessPoolExecutor(max_workers=len(hemispheres)) as executor:
             future_to_hemi = {
                 executor.submit(
                     process_hemisphere,
-                    args.subject,
+                    subject_dir,
                     hemi,
                     output_dir,
                     args.template_file,
                     run_flatten,
                     args.overwrite,
-                    selected_seed,
-                    threads_per_hemisphere,
-                    tuple(args.distances),
-                    args.n,
-                    args.dilate,
-                    args.passes,
-                    args.tol,
-                    extra_params,
                     not args.no_refine_geodesic,
-                    args.debug,
+                    args.backend,
+                    True,  # verbose
+                    run_plot,
+                    **backend_kwargs,
                 ): hemi
                 for hemi in hemispheres
             }
-
             for future in future_to_hemi:
                 hemi = future_to_hemi[future]
                 try:
                     results[hemi] = future.result()
                 except Exception as e:
                     print(f"Error processing {hemi} hemisphere: {e}")
+                    traceback.print_exc()
     else:
-        if args.parallel and len(hemispheres) == 1:
-            print(
-                "Parallel processing requested but only one hemisphere selected, using sequential processing"
-            )
-        else:
-            print("Processing hemispheres sequentially")
-
         for hemi in hemispheres:
             try:
                 results[hemi] = process_hemisphere(
-                    args.subject,
+                    subject_dir,
                     hemi,
                     output_dir,
                     args.template_file,
                     run_flatten,
                     args.overwrite,
-                    selected_seed,
-                    args.nthreads,
-                    tuple(args.distances),
-                    args.n,
-                    args.dilate,
-                    args.passes,
-                    args.tol,
-                    extra_params,
                     not args.no_refine_geodesic,
-                    args.debug,
+                    args.backend,
+                    True,
+                    run_plot,
+                    **backend_kwargs,
                 )
             except Exception:
                 print(f"Error processing {hemi} hemisphere:")
-                traceback.print_exc()  # This prints the full exception traceback
+                traceback.print_exc()
                 return 1
 
     # Print summary
     print("\nSummary:")
     for hemi in hemispheres:
         if hemi in results:
-            patch_file = results[hemi].get("patch_file", "Not created")
-            flat_file = results[hemi].get("flat_file", "Not created")
-            passes_used = results[hemi].get("passes", args.passes)
-            seed_used = results[hemi].get("seed", "Unknown")
-
             print(f"{hemi.upper()} Hemisphere:")
-            print(f"  Patch file: {patch_file}")
+            print(f"  Patch file: {results[hemi].get('patch_file', 'Not created')}")
             if run_flatten:
-                print(
-                    f"  Flat file (seed={seed_used}, passes={passes_used}): {flat_file}"
-                )
-            elif not run_flatten:
-                print("  Flattening skipped.")
+                print(f"  Flat file: {results[hemi].get('flat_file', 'Not created')}")
+            if run_plot and run_flatten:
+                print(f"  Plot file: {results[hemi].get('plot_file', 'Not created')}")
 
     return 0
 
 
-def run_plotting(args):
-    """Handles the 'plot' subcommand to generate visualizations."""
+def cmd_project(args):
+    """Run projection only (create patch file)."""
+    print("Starting Autoflatten Projection...")
+
+    # Check FreeSurfer environment
+    fs_check, env_vars = check_freesurfer_environment()
+    if not fs_check:
+        print("FreeSurfer environment is not properly set up. Exiting.")
+        return 1
+
+    subject_dir = os.path.abspath(args.subject_dir)
+    if not os.path.isdir(subject_dir):
+        print(f"Error: Subject directory not found: {subject_dir}")
+        return 1
+
+    subject = Path(subject_dir).name
+    print(f"Subject: {subject}")
+
+    # Set output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        output_dir = os.path.join(subject_dir, "surf")
+
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+
+    # Determine hemispheres
+    if args.hemispheres == "both":
+        hemispheres = ["lh", "rh"]
+    else:
+        hemispheres = [args.hemispheres]
+
+    results = {}
+    for hemi in hemispheres:
+        try:
+            patch_file = run_projection(
+                subject_dir=subject_dir,
+                hemi=hemi,
+                output_dir=output_dir,
+                template_file=args.template_file,
+                overwrite=args.overwrite,
+                refine_geodesic=not args.no_refine_geodesic,
+                verbose=True,
+            )
+            results[hemi] = patch_file
+            print(f"{hemi.upper()}: Created {patch_file}")
+        except Exception:
+            print(f"Error processing {hemi} hemisphere:")
+            traceback.print_exc()
+            return 1
+
+    return 0
+
+
+def cmd_flatten(args):
+    """Run flattening only on an existing patch file."""
+    print("Starting Autoflatten Flattening...")
+
+    patch_path = os.path.abspath(args.patch_file)
+    if not os.path.exists(patch_path):
+        print(f"Error: Patch file not found: {patch_path}")
+        return 1
+
+    # Auto-detect base surface if not specified
+    if args.base_surface:
+        surface_path = args.base_surface
+    else:
+        from autoflatten.backends import find_base_surface
+
+        surface_path = find_base_surface(patch_path)
+        if surface_path is None:
+            print(
+                "Error: Could not auto-detect base surface. "
+                "Please specify --base-surface."
+            )
+            return 1
+        print(f"Auto-detected base surface: {surface_path}")
+
+    # Determine output path
+    if args.output:
+        output_path = args.output
+    else:
+        # Default: replace .patch.3d with .flat.patch.3d
+        base = patch_path.replace(".patch.3d", "")
+        output_path = f"{base}.flat.patch.3d"
+
+    print(f"Input patch: {patch_path}")
+    print(f"Base surface: {surface_path}")
+    print(f"Output: {output_path}")
+
+    # Collect backend kwargs
+    backend_kwargs = {}
+    if args.backend == "pyflatten":
+        backend_kwargs.update(
+            {
+                "k_ring": args.k_ring,
+                "n_neighbors_per_ring": args.n_neighbors,
+                "skip_phases": args.skip_phase,
+                "skip_spring_smoothing": args.skip_spring_smoothing,
+                "skip_neg_area": args.skip_neg_area,
+                "config_path": args.pyflatten_config,
+                "n_jobs": args.n_cores,
+                "cache_distances": args.debug_save_distances,
+            }
+        )
+    elif args.backend == "freesurfer":
+        # For FreeSurfer backend, we need subject info
+        backend_kwargs.update(
+            {
+                "subject": args.subject,
+                "seed": args.seed
+                if args.seed is not None
+                else random.randint(0, 99999),
+                "threads": args.nthreads,
+                "distances": tuple(args.distances) if args.distances else (15, 80),
+                "n": args.n_iterations,
+                "dilate": args.dilate,
+                "passes": args.passes,
+                "tol": args.tol,
+                "debug": args.debug,
+            }
+        )
+
+    try:
+        result = run_flatten_backend(
+            patch_path=patch_path,
+            surface_path=surface_path,
+            output_path=output_path,
+            backend_name=args.backend,
+            verbose=True,
+            **backend_kwargs,
+        )
+        print(f"Successfully created: {result}")
+        return 0
+    except Exception as e:
+        print(f"Error during flattening: {e}")
+        traceback.print_exc()
+        return 1
+
+
+def cmd_plot(args):
+    """Plot a flat patch file."""
     print("Starting Autoflatten Plotting...")
 
     # Check FreeSurfer environment
@@ -469,28 +789,19 @@ def run_plotting(args):
     elif basename.startswith("rh."):
         hemi = "rh"
     else:
-        print(
-            f"Error: Could not determine hemisphere from filename: {basename}. "
-            "Expected filename to start with 'lh.' or 'rh.'"
-        )
+        print(f"Error: Could not determine hemisphere from filename: {basename}")
         return 1
 
-    # Determine subject name and subject directory
-    # First, check if --subject-dir is provided
+    # Determine subject directory
     if args.subject_dir:
         subject_dir = args.subject_dir
-        # Extract subject name from path if not explicitly provided
         if args.subject:
             subject = args.subject
         else:
-            # Extract subject from path: /path/to/subjects/fsaverage/surf -> fsaverage
-            # Get parent directory of the surf directory
             subject = os.path.basename(
                 os.path.dirname(os.path.normpath(subject_dir.rstrip(os.sep)))
             )
-            print(f"Extracted subject name from path: {subject}")
     else:
-        # Try to infer from SUBJECTS_DIR and subject name if provided
         if args.subject:
             subject = args.subject
             subjects_dir = env_vars.get("SUBJECTS_DIR")
@@ -500,13 +811,10 @@ def run_plotting(args):
                 print("Error: SUBJECTS_DIR not set and --subject-dir not specified.")
                 return 1
         else:
-            print(
-                "Error: Must specify either --subject or --subject-dir to locate "
-                "the inflated surface file."
-            )
+            print("Error: Must specify either --subject or --subject-dir.")
             return 1
 
-    # Verify subject_dir exists and contains the inflated surface
+    # Verify surface exists
     surface_file = os.path.join(subject_dir, f"{hemi}.inflated")
     if not os.path.exists(surface_file):
         print(f"Error: Inflated surface not found: {surface_file}")
@@ -516,15 +824,12 @@ def run_plotting(args):
     if args.output:
         output_dir = os.path.dirname(os.path.abspath(args.output))
         if not output_dir:
-            # If only filename provided, use current directory
             output_dir = os.path.dirname(os.path.abspath(flat_patch_file))
     else:
-        # Default: same directory as flat patch
         output_dir = os.path.dirname(os.path.abspath(flat_patch_file))
 
     print(f"Flat patch file: {flat_patch_file}")
     print(f"Subject: {subject}")
-    print(f"Subject surf directory: {subject_dir}")
 
     try:
         result = plot_patch(
@@ -534,7 +839,6 @@ def run_plotting(args):
             output_dir=output_dir,
             surface=f"{hemi}.inflated",
         )
-        # If custom output filename specified, rename the file
         if args.output:
             final_output = os.path.abspath(args.output)
             if result != final_output:
@@ -549,152 +853,307 @@ def run_plotting(args):
         return 1
 
 
-def main():
-    """Main function to parse arguments and dispatch subcommands."""
-    parser = argparse.ArgumentParser(
-        description="Autoflatten: Automatic Surface Flattening and Plotting Pipeline"
+# =============================================================================
+# Argument Parsers
+# =============================================================================
+
+
+def add_projection_args(parser):
+    """Add projection-related arguments to a parser."""
+    parser.add_argument(
+        "--template-file",
+        help="Path to custom JSON template file defining cuts",
     )
-    subparsers = parser.add_subparsers(
-        dest="command", required=True, help="Subcommand to run"
+    parser.add_argument(
+        "--no-refine-geodesic",
+        action="store_true",
+        help="Disable geodesic refinement of projected cuts",
     )
 
-    # 'run' subcommand
-    parser_run = subparsers.add_parser("run", help="Run the flattening pipeline")
-    parser_run.add_argument("subject", help="FreeSurfer subject identifier")
-    parser_run.add_argument(
-        "--output-dir",
-        help=(
-            "Directory to save output files "
-            "(default: subject's FreeSurfer surf directory)"
-        ),
+
+def add_backend_args(parser):
+    """Add backend selection arguments to a parser."""
+    parser.add_argument(
+        "--backend",
+        choices=["pyflatten", "freesurfer"],
+        default="pyflatten",
+        help="Flattening backend (default: pyflatten)",
     )
-    parser_run.add_argument(
-        "--no-flatten",
-        action="store_true",
-        help=(
-            "Do not run mris_flatten after creating patch files "
-            "(flattening is done by default)"
-        ),
+
+
+def add_pyflatten_args(parser):
+    """Add pyflatten-specific arguments to a parser."""
+    group = parser.add_argument_group("pyflatten options")
+    group.add_argument(
+        "--k-ring",
+        type=int,
+        default=20,
+        help="K-ring neighborhood size (default: 20)",
     )
-    parser_run.add_argument(
-        "--template-file",
-        help=(
-            "Path to a custom JSON template file defining cuts "
-            "(default: uses built-in fsaverage template)"
-        ),
+    group.add_argument(
+        "--n-neighbors",
+        type=int,
+        default=30,
+        help="Neighbors per ring for angular sampling (default: 30)",
     )
-    parser_run.add_argument(
-        "--parallel", action="store_true", help="Process hemispheres in parallel"
-    )
-    parser_run.add_argument(
-        "--hemispheres",
+    group.add_argument(
+        "--skip-phase",
         type=str,
-        choices=["lh", "rh", "both"],
-        default="both",
-        help="Hemispheres to process: left (lh), right (rh), or both (default)",
+        nargs="*",
+        choices=[
+            "area_dominant",
+            "balanced",
+            "distance_dominant",
+            "distance_refinement",
+        ],
+        help="Phases to skip",
     )
-    parser_run.add_argument(
-        "--overwrite", action="store_true", help="Overwrite existing files"
+    group.add_argument(
+        "--skip-spring-smoothing",
+        action="store_true",
+        help="Skip final spring smoothing",
     )
-    parser_run.add_argument(
+    group.add_argument(
+        "--skip-neg-area",
+        action="store_true",
+        help="Skip negative area removal phase",
+    )
+    group.add_argument(
+        "--pyflatten-config",
+        help="Path to JSON configuration file for pyflatten",
+    )
+    group.add_argument(
+        "--n-cores",
+        type=int,
+        default=-1,
+        help="Number of CPU cores to use (-1 = all cores). "
+        "When combined with --parallel, cores are split between hemispheres.",
+    )
+    group.add_argument(
+        "--debug-save-distances",
+        action="store_true",
+        help="Save k-ring distances to cache file for debugging",
+    )
+
+
+def add_freesurfer_args(parser):
+    """Add FreeSurfer mris_flatten arguments to a parser."""
+    group = parser.add_argument_group("freesurfer options")
+    group.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Random seed for mris_flatten. If not provided, a random seed will be generated.",
+        help="Random seed for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--nthreads",
         type=int,
         default=1,
-        help="Number of threads to use for mris_flatten (default: 1)",
+        help="Number of threads for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--distances",
         type=int,
         nargs=2,
         default=[15, 80],
-        help="Distance parameters for mris_flatten as two integers (default: 15 80)",
         metavar=("DIST1", "DIST2"),
+        help="Distance parameters for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--n-iterations",
         type=int,
         default=200,
-        help="Maximum number of iterations for mris_flatten (default: 80)",
-        dest="n",
+        help="Maximum iterations for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--dilate",
         type=int,
         default=1,
-        help="Number of dilations for mris_flatten (default: 1)",
+        help="Number of dilations for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--passes",
         type=int,
         default=1,
-        help="Number of passes for mris_flatten (-p flag) (default: 1)",
+        help="Number of passes for mris_flatten",
     )
-    parser_run.add_argument(
+    group.add_argument(
         "--tol",
         type=float,
         default=0.005,
-        help="Tolerance for mris_flatten flatness (default: 0.005)",
+        help="Tolerance for mris_flatten",
     )
-    parser_run.add_argument(
-        "--flatten-extra",
-        type=str,
-        help="Additional parameters for mris_flatten in format 'key1=value1,key2=value2'",
-    )
-    parser_run.add_argument(
-        "--no-refine-geodesic",
-        action="store_true",
-        help=(
-            "Disable geodesic refinement of projected cuts. "
-            "By default, cuts are refined using geodesic shortest paths between endpoints, "
-            "which reduces distortion during flattening. Use this flag to skip refinement."
-        ),
-    )
-    parser_run.add_argument(
+    group.add_argument(
         "--debug",
         action="store_true",
-        help="Keep temporary files for debugging (preserves temporary directory)",
+        help="Keep temporary files for debugging",
     )
-    parser_run.set_defaults(func=run_flattening)
+
+
+def add_common_args(parser):
+    """Add common arguments to a parser."""
+    parser.add_argument(
+        "--output-dir",
+        help="Directory to save output files",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files",
+    )
+    parser.add_argument(
+        "--hemispheres",
+        choices=["lh", "rh", "both"],
+        default="both",
+        help="Hemispheres to process (default: both)",
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Process hemispheres in parallel",
+    )
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Autoflatten: Automatic Cortical Surface Flattening",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Full pipeline (projection + flattening) using pyflatten backend:
+  autoflatten /path/to/subjects/sub-01
+
+  # Projection only (create patch file):
+  autoflatten project /path/to/subjects/sub-01
+
+  # Flatten an existing patch file:
+  autoflatten flatten lh.autoflatten.patch.3d
+
+  # Use FreeSurfer backend instead of pyflatten:
+  autoflatten /path/to/subjects/sub-01 --backend freesurfer
+
+  # Plot a flattened surface:
+  autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+""",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Note: We don't add subject_dir to the root parser because it conflicts
+    # with subparser positional arguments. Instead, we handle the case of
+    # no subcommand by checking sys.argv directly in main().
+
+    # 'project' subcommand
+    parser_project = subparsers.add_parser(
+        "project",
+        help="Run projection only (create patch file)",
+    )
+    parser_project.add_argument(
+        "subject_dir",
+        help="Path to FreeSurfer subject directory",
+    )
+    add_common_args(parser_project)
+    add_projection_args(parser_project)
+    parser_project.set_defaults(func=cmd_project)
+
+    # 'flatten' subcommand
+    parser_flatten = subparsers.add_parser(
+        "flatten",
+        help="Flatten an existing patch file",
+    )
+    parser_flatten.add_argument(
+        "patch_file",
+        help="Path to the input patch file",
+    )
+    parser_flatten.add_argument(
+        "--base-surface",
+        help="Path to base surface (auto-detected if in FreeSurfer structure)",
+    )
+    parser_flatten.add_argument(
+        "-o",
+        "--output",
+        help="Output path for flat patch file",
+    )
+    parser_flatten.add_argument(
+        "--subject",
+        help="FreeSurfer subject ID (needed for freesurfer backend)",
+    )
+    add_backend_args(parser_flatten)
+    add_pyflatten_args(parser_flatten)
+    add_freesurfer_args(parser_flatten)
+    parser_flatten.set_defaults(func=cmd_flatten)
 
     # 'plot' subcommand
-    parser_plot = subparsers.add_parser("plot", help="Plot an existing flat patch file")
+    parser_plot = subparsers.add_parser(
+        "plot",
+        help="Plot a flat patch file",
+    )
     parser_plot.add_argument(
         "flat_patch",
-        help="Path to the flat patch file (e.g., lh.autoflatten.flat.patch.3d)",
+        help="Path to the flat patch file",
     )
     parser_plot.add_argument(
         "--subject",
-        help=(
-            "FreeSurfer subject identifier. Used with SUBJECTS_DIR to locate "
-            "the inflated surface file."
-        ),
+        help="FreeSurfer subject identifier",
     )
     parser_plot.add_argument(
         "--subject-dir",
-        help=(
-            "Path to the subject's surf directory containing the inflated surface. "
-            "If not provided, will use $SUBJECTS_DIR/<subject>/surf."
-        ),
+        help="Path to subject's surf directory",
     )
     parser_plot.add_argument(
         "-o",
         "--output",
-        help=(
-            "Output path for the PNG image. "
-            "If not specified, saves in the same directory as the flat patch file."
-        ),
+        help="Output path for the PNG image",
     )
-    parser_plot.set_defaults(func=run_plotting)
+    parser_plot.set_defaults(func=cmd_plot)
+
+    # Legacy 'run' subcommand (alias for default behavior)
+    parser_run = subparsers.add_parser(
+        "run",
+        help="Run full pipeline (legacy, same as default)",
+    )
+    parser_run.add_argument(
+        "subject_dir",
+        help="Path to FreeSurfer subject directory (or subject ID for legacy mode)",
+    )
+    add_common_args(parser_run)
+    add_projection_args(parser_run)
+    add_backend_args(parser_run)
+    add_pyflatten_args(parser_run)
+    add_freesurfer_args(parser_run)
+    parser_run.add_argument(
+        "--no-flatten",
+        action="store_true",
+        help="Skip flattening",
+    )
+    parser_run.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Skip PNG plot generation",
+    )
+    parser_run.set_defaults(func=cmd_run_full_pipeline)
+
+    # Handle case where no subcommand is given but a path is provided
+    # This allows "autoflatten /path/to/subject" syntax
+    known_commands = {"project", "flatten", "plot", "run"}
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1] not in known_commands
+        and not sys.argv[1].startswith("-")
+    ):
+        # Insert 'run' as the subcommand
+        sys.argv.insert(1, "run")
 
     args = parser.parse_args()
+
+    # Handle default command (no subcommand specified)
+    if args.command is None:
+        parser.print_help()
+        return 1
+
     return args.func(args)
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())
