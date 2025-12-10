@@ -24,16 +24,17 @@ jobs:
         enable-cache: true
         cache-dependency-glob: "**/pyproject.toml"
 
-    - name: Set up Python
-      run: uv python install ${{ matrix.python-version }}
+    - name: Set up Python and create venv
+      run: |
+        uv venv --python ${{ matrix.python-version }}
 
     - name: Install dependencies
       run: |
-        uv pip install -e ".[test]" --system
+        uv pip install -e ".[test]"
 
     - name: Test with pytest
       run: |
-        uv run --system pytest --cov=autoflatten
+        uv run pytest --cov=autoflatten
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
