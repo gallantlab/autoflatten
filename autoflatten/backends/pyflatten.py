@@ -8,6 +8,9 @@ from typing import Optional
 
 from .base import FlattenBackend
 
+# Import threading configuration (does NOT import JAX)
+from ..flatten.threading import configure_threading
+
 
 def _check_pyflatten_available() -> bool:
     """Check if pyflatten dependencies are available."""
@@ -95,6 +98,9 @@ class PyflattenBackend(FlattenBackend):
         str
             Path to the output flat patch file
         """
+        # Configure threading BEFORE importing JAX-dependent modules
+        configure_threading(n_jobs)
+
         # Import here to allow lazy loading and graceful fallback
         from ..flatten import (
             SurfaceFlattener,

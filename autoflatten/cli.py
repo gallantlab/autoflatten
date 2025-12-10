@@ -517,6 +517,17 @@ def cmd_run_full_pipeline(args):
 
     print(f"Processing hemispheres: {', '.join(hemispheres)}")
 
+    # Determine cores per hemisphere
+    n_cores = args.n_cores
+    if args.parallel and len(hemispheres) > 1 and n_cores > 0:
+        # Split cores between hemispheres when running in parallel
+        n_cores_per_hemi = max(1, n_cores // 2)
+        print(
+            f"Parallel mode: {n_cores} cores split to {n_cores_per_hemi} per hemisphere"
+        )
+    else:
+        n_cores_per_hemi = n_cores
+
     # Collect backend kwargs
     backend_kwargs = {}
     if args.backend == "pyflatten":
@@ -528,7 +539,7 @@ def cmd_run_full_pipeline(args):
                 "skip_spring_smoothing": args.skip_spring_smoothing,
                 "skip_neg_area": args.skip_neg_area,
                 "config_path": args.pyflatten_config,
-                "n_jobs": args.n_jobs,
+                "n_jobs": n_cores_per_hemi,
             }
         )
     elif args.backend == "freesurfer":
@@ -716,7 +727,7 @@ def cmd_flatten(args):
                 "skip_spring_smoothing": args.skip_spring_smoothing,
                 "skip_neg_area": args.skip_neg_area,
                 "config_path": args.pyflatten_config,
-                "n_jobs": args.n_jobs,
+                "n_jobs": args.n_cores,
                 "cache_distances": args.debug_save_distances,
             }
         )
@@ -911,10 +922,11 @@ def add_pyflatten_args(parser):
         help="Path to JSON configuration file for pyflatten",
     )
     group.add_argument(
-        "--n-jobs",
+        "--n-cores",
         type=int,
         default=-1,
-        help="Number of parallel jobs (-1 = all CPUs)",
+        help="Number of CPU cores to use (-1 = all cores). "
+        "When combined with --parallel, cores are split between hemispheres.",
     )
     group.add_argument(
         "--debug-save-distances",
