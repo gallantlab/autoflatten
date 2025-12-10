@@ -1,0 +1,185 @@
+"""
+Tests for the backends module.
+"""
+
+import os
+import tempfile
+
+import pytest
+
+from autoflatten.backends import (
+    get_backend,
+    get_default_backend,
+    available_backends,
+    find_base_surface,
+    DEFAULT_BACKEND,
+)
+from autoflatten.backends.base import FlattenBackend
+from autoflatten.backends.pyflatten import PyflattenBackend
+from autoflatten.backends.freesurfer import FreeSurferBackend
+
+
+class TestBackendRegistry:
+    """Tests for backend registry functions."""
+
+    def test_default_backend_is_pyflatten(self):
+        """Test that the default backend is pyflatten."""
+        assert DEFAULT_BACKEND == "pyflatten"
+
+    def test_available_backends_returns_list(self):
+        """Test that available_backends returns a list."""
+        backends = available_backends()
+        assert isinstance(backends, list)
+        # At minimum, pyflatten should be available (it's always installed now)
+        assert "pyflatten" in backends
+
+    def test_get_backend_pyflatten(self):
+        """Test getting the pyflatten backend."""
+        backend = get_backend("pyflatten")
+        assert isinstance(backend, PyflattenBackend)
+        assert backend.name == "pyflatten"
+
+    def test_get_backend_freesurfer(self):
+        """Test getting the freesurfer backend."""
+        # FreeSurfer may not be available, so check first
+        fs_backend = FreeSurferBackend()
+        if not fs_backend.is_available():
+            pytest.skip("FreeSurfer not available")
+        backend = get_backend("freesurfer")
+        assert isinstance(backend, FreeSurferBackend)
+        assert backend.name == "freesurfer"
+
+    def test_get_backend_none_returns_default(self):
+        """Test that get_backend(None) returns the default backend."""
+        backend = get_backend(None)
+        assert backend.name == DEFAULT_BACKEND
+
+    def test_get_backend_invalid_raises_error(self):
+        """Test that get_backend raises ValueError for invalid backend."""
+        with pytest.raises(ValueError, match="Unknown backend"):
+            get_backend("invalid_backend")
+
+    def test_get_default_backend(self):
+        """Test get_default_backend returns a FlattenBackend."""
+        backend = get_default_backend()
+        assert isinstance(backend, FlattenBackend)
+        # Should be pyflatten since it's always installed
+        assert backend.name == "pyflatten"
+
+
+class TestPyflattenBackend:
+    """Tests for the PyflattenBackend class."""
+
+    def test_name(self):
+        """Test backend name is 'pyflatten'."""
+        backend = PyflattenBackend()
+        assert backend.name == "pyflatten"
+
+    def test_is_available(self):
+        """Test that pyflatten is available (deps are core now)."""
+        backend = PyflattenBackend()
+        assert backend.is_available() is True
+
+    def test_get_install_instructions(self):
+        """Test install instructions are returned."""
+        backend = PyflattenBackend()
+        instructions = backend.get_install_instructions()
+        assert isinstance(instructions, str)
+        assert "pip install" in instructions.lower() or "jax" in instructions.lower()
+
+
+class TestFreeSurferBackend:
+    """Tests for the FreeSurferBackend class."""
+
+    def test_name(self):
+        """Test backend name is 'freesurfer'."""
+        backend = FreeSurferBackend()
+        assert backend.name == "freesurfer"
+
+    def test_is_available_returns_bool(self):
+        """Test that is_available returns a boolean."""
+        backend = FreeSurferBackend()
+        result = backend.is_available()
+        assert isinstance(result, bool)
+
+    def test_get_install_instructions(self):
+        """Test install instructions are returned."""
+        backend = FreeSurferBackend()
+        instructions = backend.get_install_instructions()
+        assert isinstance(instructions, str)
+        assert "freesurfer" in instructions.lower()
+
+
+class TestFindBaseSurface:
+    """Tests for the find_base_surface utility function."""
+
+    def test_find_base_surface_with_fiducial(self):
+        """Test finding base surface when fiducial exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock FreeSurfer structure
+            surf_dir = os.path.join(tmpdir, "sub-01", "surf")
+            os.makedirs(surf_dir)
+
+            # Create mock patch file
+            patch_path = os.path.join(surf_dir, "lh.autoflatten.patch.3d")
+            with open(patch_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            # Create mock fiducial surface
+            fiducial_path = os.path.join(surf_dir, "lh.fiducial")
+            with open(fiducial_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            result = find_base_surface(patch_path)
+            assert result == fiducial_path
+
+    def test_find_base_surface_with_white_fallback(self):
+        """Test finding base surface falling back to white."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock FreeSurfer structure
+            surf_dir = os.path.join(tmpdir, "sub-01", "surf")
+            os.makedirs(surf_dir)
+
+            # Create mock patch file
+            patch_path = os.path.join(surf_dir, "lh.autoflatten.patch.3d")
+            with open(patch_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            # Create only white surface (no fiducial)
+            white_path = os.path.join(surf_dir, "lh.white")
+            with open(white_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            result = find_base_surface(patch_path)
+            assert result == white_path
+
+    def test_find_base_surface_rh_hemisphere(self):
+        """Test finding base surface for right hemisphere."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock FreeSurfer structure
+            surf_dir = os.path.join(tmpdir, "sub-01", "surf")
+            os.makedirs(surf_dir)
+
+            # Create mock patch file
+            patch_path = os.path.join(surf_dir, "rh.autoflatten.patch.3d")
+            with open(patch_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            # Create mock fiducial surface
+            fiducial_path = os.path.join(surf_dir, "rh.fiducial")
+            with open(fiducial_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            result = find_base_surface(patch_path)
+            assert result == fiducial_path
+
+    def test_find_base_surface_not_found(self):
+        """Test find_base_surface returns None when no surface found."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock patch file in non-FreeSurfer directory
+            patch_path = os.path.join(tmpdir, "lh.patch.3d")
+            with open(patch_path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            result = find_base_surface(patch_path)
+            assert result is None

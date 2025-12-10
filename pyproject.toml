@@ -1,3 +1,56 @@
 [build-system]
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoflatten"
+version = "0.2.0"
+description = "Automatic Surface Flattening Pipeline"
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Matteo Visconti di Oleggio Castello", email = "mvdoc@berkeley.edu"}
+]
+requires-python = ">=3.10"
+dependencies = [
+    # Core dependencies (autoflatten projection)
+    "numpy",
+    "networkx",
+    "pycortex",
+    "scikit-learn",
+    "packaging",
+    # pyflatten dependencies (flattening algorithm)
+    "jax>=0.4.0",
+    "libigl>=2.5.0",
+    "nibabel>=5.0.0",
+    "numba>=0.58.0",
+    "scipy>=1.10.0",
+    "tqdm>=4.65.0",
+    # Visualization
+    "matplotlib>=3.7.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+    "codecov",
+]
+cuda = [
+    "jax[cuda12]>=0.4.0",
+]
+viz3d = [
+    "polyscope>=2.0.0",
+]
+
+[project.scripts]
+autoflatten = "autoflatten.cli:main"
+
+[project.urls]
+Repository = "https://github.com/gallantlab/autoflatten"
+
+[tool.setuptools.packages.find]
+include = ["autoflatten*"]
+
+[tool.setuptools.package-data]
+autoflatten = ["default_templates/*.json"]

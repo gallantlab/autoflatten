@@ -11,7 +11,11 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from autoflatten.core import ensure_continuous_cuts, map_cuts_to_subject
+from autoflatten.core import (
+    ensure_continuous_cuts,
+    map_cuts_to_subject,
+    refine_cuts_with_geodesic,
+)
 from autoflatten.freesurfer import is_freesurfer_available
 
 # Mark tests to skip if FreeSurfer is not available
@@ -357,3 +361,148 @@ def test_map_cuts_to_subject_error_handling():
         assert "cut1" in result
         assert len(result["mwall"]) == 0
         assert len(result["cut1"]) == 0
+
+
+@pytest.fixture
+def mock_grid_surface():
+    """
+    Create a 5x5 grid surface for testing geodesic refinement.
+
+    Grid layout (vertex indices):
+        20 21 22 23 24
+        15 16 17 18 19
+        10 11 12 13 14
+         5  6  7  8  9
+         0  1  2  3  4
+
+    Each unit is 1mm apart.
+    """
+    # Create 5x5 grid of vertices
+    vertices = np.array([[x, y, 0] for y in range(5) for x in range(5)], dtype=float)
+
+    # Create triangular faces for the grid
+    faces = []
+    for y in range(4):
+        for x in range(4):
+            v0 = y * 5 + x
+            v1 = v0 + 1
+            v2 = v0 + 5
+            v3 = v2 + 1
+            faces.append([v0, v1, v2])
+            faces.append([v1, v3, v2])
+    faces = np.array(faces)
+
+    return {"vertices": vertices, "faces": faces}
+
+
+def test_refine_cuts_degenerate_endpoints(mock_grid_surface, monkeypatch):
+    """
+    Test that geodesic refinement handles degenerate cases where
+    medial wall border endpoints are too close (<5mm).
+
+    When the two mwall border endpoints are adjacent, the function should
+    fall back to using one mwall border endpoint + farthest cut vertex.
+    """
+    vertices = mock_grid_surface["vertices"]
+    faces = mock_grid_surface["faces"]
+
+    # Mock load_surface to return our grid
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
+        return vertices, faces
+
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
+
+    # Create a cut that has two adjacent mwall border endpoints
+    # mwall is the bottom row (0-4), cut touches mwall at vertices 1 and 2 (adjacent)
+    # but extends up to vertex 17
+    vertex_dict = {
+        "mwall": np.array([0, 1, 2, 3, 4]),  # Bottom row
+        "calcarine": np.array([6, 7, 11, 12, 17]),  # Cut: vertices 6,7 border mwall
+    }
+
+    result = refine_cuts_with_geodesic(
+        vertex_dict, "test_subject", "lh", medial_wall_vertices=vertex_dict["mwall"]
+    )
+
+    # The refined cut should have more than 2 vertices
+    # (if it had only 2, it means we used the degenerate adjacent endpoints)
+    assert len(result["calcarine"]) > 2, (
+        f"Refined cut has only {len(result['calcarine'])} vertices - "
+        "degenerate endpoints not handled correctly"
+    )
+
+    # The refined cut should span a reasonable distance
+    cut_vertices = result["calcarine"]
+    cut_positions = vertices[cut_vertices]
+    max_span = np.max(np.linalg.norm(cut_positions - cut_positions[0], axis=1))
+    assert max_span > 2.0, f"Cut span {max_span} is too small"
+
+
+def test_refine_cuts_no_mwall_border(mock_grid_surface, monkeypatch):
+    """
+    Test that geodesic refinement handles cuts with no medial wall border vertices.
+
+    When a cut has no vertices adjacent to the medial wall, the function should
+    extend the cut to connect to the nearest medial wall border.
+    """
+    vertices = mock_grid_surface["vertices"]
+    faces = mock_grid_surface["faces"]
+
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
+        return vertices, faces
+
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
+
+    # Create a cut that is completely disconnected from mwall
+    # mwall is the bottom row (0-4), cut is in the middle of the grid
+    vertex_dict = {
+        "mwall": np.array([0, 1, 2, 3, 4]),  # Bottom row
+        "medial1": np.array([12, 13, 17, 18]),  # Cut in the middle, not touching mwall
+    }
+
+    result = refine_cuts_with_geodesic(
+        vertex_dict, "test_subject", "lh", medial_wall_vertices=vertex_dict["mwall"]
+    )
+
+    # The refined cut should extend to connect to the medial wall
+    cut_vertices = result["medial1"]
+
+    # Check that the path includes a vertex near the medial wall border
+    # The mwall border vertices are 5, 6, 7, 8, 9 (row above mwall)
+    mwall_border = {5, 6, 7, 8, 9}
+    has_mwall_connection = any(v in mwall_border for v in cut_vertices)
+
+    assert has_mwall_connection, (
+        f"Refined cut {list(cut_vertices)} does not connect to medial wall border"
+    )
+
+
+def test_refine_cuts_does_not_modify_input(mock_grid_surface, monkeypatch):
+    """
+    Test that refine_cuts_with_geodesic does not modify the input dict.
+    """
+    vertices = mock_grid_surface["vertices"]
+    faces = mock_grid_surface["faces"]
+
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
+        return vertices, faces
+
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
+
+    vertex_dict = {
+        "mwall": np.array([0, 1, 2, 3, 4]),
+        "calcarine": np.array([6, 7, 11, 12]),
+    }
+    original_calcarine = vertex_dict["calcarine"].copy()
+
+    result = refine_cuts_with_geodesic(
+        vertex_dict, "test_subject", "lh", medial_wall_vertices=vertex_dict["mwall"]
+    )
+
+    # Input should be unchanged
+    assert np.array_equal(vertex_dict["calcarine"], original_calcarine), (
+        "Input vertex_dict was modified in-place"
+    )
+
+    # Result should be a different object
+    assert result is not vertex_dict

@@ -10,6 +10,27 @@ import nibabel as nib
 import numpy as np
 
 
+def read_surface(filepath):
+    """Read FreeSurfer surface file.
+
+    Low-level function to read a surface file directly by path.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to FreeSurfer surface file (.white, .pial, .inflated, etc.)
+
+    Returns
+    -------
+    vertices : ndarray of shape (N, 3)
+        Vertex coordinates.
+    faces : ndarray of shape (F, 3)
+        Triangle indices.
+    """
+    vertices, faces = nib.freesurfer.read_geometry(filepath)
+    return vertices, faces
+
+
 def load_surface(subject, type, hemi, subjects_dir=None):
     """Load FreeSurfer surface information.
 
@@ -256,12 +277,15 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
         fp.write(struct.pack(">2i", -1, len(patch_vertices)))
 
         for idx, coord in patch_vertices:
+            # Convert to Python int to avoid unsigned integer overflow
+            # (numpy uint32 indices would wrap around when negated)
+            idx_int = int(idx)
             if idx in border_vertices:
                 # Border vertices get positive indices
-                fp.write(struct.pack(">i3f", idx + 1, *coord))
+                fp.write(struct.pack(">i3f", idx_int + 1, *coord))
             else:
                 # Interior vertices get negative indices
-                fp.write(struct.pack(">i3f", -(idx + 1), *coord))
+                fp.write(struct.pack(">i3f", -(idx_int + 1), *coord))
 
     print(f"Created patch file {filename} with {len(patch_vertices)} vertices")
     print(f"Excluded {len(excluded_vertices)} vertices (medial wall and cuts)")
@@ -766,3 +790,177 @@ def run_mris_flatten(
                 except Exception as e:
                     print(f"Warning: Failed to clean up {temp_root}: {e}")
                     print("You may need to manually remove it.")
+
+
+# =============================================================================
+# Patch file I/O functions (for pyflatten integration)
+# =============================================================================
+
+
+def read_patch(filepath):
+    """
+    Read FreeSurfer binary patch file.
+
+    FreeSurfer patch files store vertices with their original surface indices.
+    Border vertices (on the cut boundary) have positive indices, interior
+    vertices have negative indices.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to patch file (e.g., 'lh.cortex.patch.3d').
+
+    Returns
+    -------
+    vertices : ndarray of shape (N, 3)
+        Vertex coordinates.
+    original_indices : ndarray of shape (N,)
+        Original vertex indices in the full surface (0-based).
+    is_border : ndarray of shape (N,) of bool
+        True for border vertices (on the patch boundary).
+
+    Notes
+    -----
+    FreeSurfer patch binary format:
+    - Header: 2 big-endian int32 [-1, n_vertices]
+    - Per vertex: 1 int32 (signed index) + 3 float32 (x, y, z)
+    - Border vertices: positive index (idx + 1)
+    - Interior vertices: negative index (-(idx + 1))
+
+    The patch file does NOT contain face information. To get faces,
+    use `extract_patch_faces` with the original surface.
+
+    Examples
+    --------
+    >>> vertices, orig_idx, is_border = read_patch('lh.cortex.patch.3d')
+    >>> # Get faces from original surface
+    >>> _, orig_faces = load_surface(subject, 'white', 'lh')
+    >>> faces = extract_patch_faces(orig_faces, orig_idx)
+    """
+    with open(filepath, "rb") as fp:
+        # Read header
+        header = struct.unpack(">2i", fp.read(8))
+        if header[0] != -1:
+            raise ValueError(f"Invalid patch file header: expected -1, got {header[0]}")
+        n_vertices = header[1]
+
+        # Read vertex data
+        vertices = np.zeros((n_vertices, 3), dtype=np.float64)
+        original_indices = np.zeros(n_vertices, dtype=np.int32)
+        is_border = np.zeros(n_vertices, dtype=bool)
+
+        for i in range(n_vertices):
+            data = struct.unpack(">i3f", fp.read(16))
+            raw_idx = data[0]
+
+            # Decode index: positive = border, negative = interior
+            if raw_idx > 0:
+                original_indices[i] = raw_idx - 1  # Convert to 0-based
+                is_border[i] = True
+            else:
+                original_indices[i] = -raw_idx - 1  # Convert to 0-based
+                is_border[i] = False
+
+            vertices[i] = data[1:4]
+
+    return vertices, original_indices, is_border
+
+
+def write_patch(filepath, vertices, original_indices, is_border=None):
+    """
+    Write FreeSurfer binary patch file.
+
+    Parameters
+    ----------
+    filepath : str
+        Output path (e.g., 'lh.cortex.flat.patch.3d').
+    vertices : ndarray of shape (N, 2) or (N, 3)
+        Vertex coordinates. If 2D, z=0 is appended.
+    original_indices : ndarray of shape (N,)
+        Original vertex indices in the full surface (0-based).
+    is_border : ndarray of shape (N,) of bool, optional
+        True for border vertices. If None, all vertices are marked as interior.
+
+    Notes
+    -----
+    FreeSurfer patch binary format:
+    - Header: 2 big-endian int32 [-1, n_vertices]
+    - Per vertex: 1 int32 (signed index) + 3 float32 (x, y, z)
+    - Border vertices: positive index (idx + 1)
+    - Interior vertices: negative index (-(idx + 1))
+
+    Examples
+    --------
+    >>> write_patch('lh.flat.patch.3d', xy_flat, orig_idx, is_border)
+    """
+    vertices = np.asarray(vertices, dtype=np.float32)
+    original_indices = np.asarray(original_indices, dtype=np.int32)
+
+    # Handle 2D input
+    if vertices.ndim == 2 and vertices.shape[1] == 2:
+        vertices = np.column_stack(
+            [vertices, np.zeros(len(vertices), dtype=np.float32)]
+        )
+
+    n_vertices = len(vertices)
+
+    if is_border is None:
+        is_border = np.zeros(n_vertices, dtype=bool)
+
+    with open(filepath, "wb") as fp:
+        # Write header
+        fp.write(struct.pack(">2i", -1, n_vertices))
+
+        # Write vertex data
+        for i in range(n_vertices):
+            # Convert to Python int to avoid unsigned integer overflow
+            # (numpy uint32 indices would wrap around when negated)
+            idx = int(original_indices[i])
+            if is_border[i]:
+                raw_idx = idx + 1  # Positive for border
+            else:
+                raw_idx = -(idx + 1)  # Negative for interior
+
+            fp.write(struct.pack(">i3f", raw_idx, *vertices[i]))
+
+
+def extract_patch_faces(faces, patch_indices):
+    """
+    Extract faces for a patch from the original surface.
+
+    Given the original surface faces and the vertex indices in the patch,
+    returns faces that have all three vertices in the patch, re-indexed
+    to patch-local indices.
+
+    Parameters
+    ----------
+    faces : ndarray of shape (F, 3)
+        Original surface faces.
+    patch_indices : ndarray of shape (N,)
+        Original vertex indices that are in the patch.
+
+    Returns
+    -------
+    patch_faces : ndarray of shape (G, 3)
+        Faces with vertices re-indexed to patch-local indices (0 to N-1).
+
+    Examples
+    --------
+    >>> vertices, orig_idx, is_border = read_patch('lh.cortex.patch.3d')
+    >>> _, orig_faces = load_surface(subject, 'white', 'lh')
+    >>> faces = extract_patch_faces(orig_faces, orig_idx)
+    """
+    # Create mapping from original index to patch index
+    idx_set = set(patch_indices)
+    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(patch_indices)}
+
+    # Filter faces where all vertices are in the patch
+    patch_faces = []
+    for face in faces:
+        if all(v in idx_set for v in face):
+            patch_faces.append([old_to_new[v] for v in face])
+
+    if len(patch_faces) == 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    return np.array(patch_faces, dtype=np.int32)
