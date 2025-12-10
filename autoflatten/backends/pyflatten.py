@@ -59,7 +59,7 @@ class PyflattenBackend(FlattenBackend):
         skip_neg_area: bool = False,
         config_path: Optional[str] = None,
         n_jobs: int = -1,
-        cache_distances: bool = True,
+        cache_distances: bool = False,
         **kwargs,
     ) -> str:
         """Flatten a cortical surface patch using pyflatten.

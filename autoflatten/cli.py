@@ -540,6 +540,7 @@ def cmd_run_full_pipeline(args):
                 "skip_neg_area": args.skip_neg_area,
                 "config_path": args.pyflatten_config,
                 "n_jobs": n_cores_per_hemi,
+                "cache_distances": args.debug_save_distances,
             }
         )
     elif args.backend == "freesurfer":
