@@ -10,6 +10,43 @@ import numpy as np
 
 from .freesurfer import create_label_file, load_surface, read_freesurfer_label
 
+# Distance thresholds for geodesic refinement anchor selection (mm)
+# NEAR_MWALL_THRESHOLD_MM: Cut vertices within this distance are considered "near" medial wall
+# ANCHOR_SEARCH_RADIUS_MM: Search for candidate anchors within this distance of the cut
+NEAR_MWALL_THRESHOLD_MM = 10.0
+ANCHOR_SEARCH_RADIUS_MM = 15.0
+
+
+def _find_geometric_endpoints(cut_vertices, pts):
+    """Find the two most geometrically distant vertices in a cut.
+
+    Parameters
+    ----------
+    cut_vertices : array-like
+        Vertex indices of the cut.
+    pts : ndarray of shape (V, 3)
+        Vertex coordinates.
+
+    Returns
+    -------
+    start : int
+        First endpoint vertex index.
+    end : int
+        Second endpoint vertex index.
+    max_dist : float
+        Euclidean distance between the endpoints.
+    """
+    max_dist = 0
+    start, end = cut_vertices[0], cut_vertices[0]
+    for idx1, v1 in enumerate(cut_vertices):
+        pos1 = pts[v1]
+        for v2 in cut_vertices[idx1 + 1 :]:
+            dist = np.linalg.norm(pos1 - pts[v2])
+            if dist > max_dist:
+                max_dist = dist
+                start, end = v1, v2
+    return start, end, max_dist
+
 
 def ensure_continuous_cuts(vertex_dict, subject, hemi):
     """
@@ -395,9 +432,7 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
 
             # Find cut vertices that are near the medial wall (potential anchor region).
             # These define the region where we should look for anchor points.
-            # 10mm threshold: chosen to capture the "end" portion of the cut near
-            # the medial wall while excluding the main body of the cut.
-            cut_near_mwall_mask = dist_to_mwall < 10.0
+            cut_near_mwall_mask = dist_to_mwall < NEAR_MWALL_THRESHOLD_MM
             if not cut_near_mwall_mask.any():
                 # If no cut vertices are near mwall, use the closest one
                 cut_near_mwall_mask = np.zeros(len(cut_vertices), dtype=bool)
@@ -407,16 +442,14 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
             cut_near_mwall_coords = pts_inflated[cut_near_mwall]
 
             # Find candidate anchor points: mwall border vertices near the cut's
-            # mwall-adjacent region. 15mm threshold: chosen to be larger than the
-            # 10mm "near mwall" threshold to ensure we find candidate anchors even
-            # when the cut doesn't perfectly touch the medial wall border.
+            # mwall-adjacent region.
             candidate_anchors = []
             for border_v in mwall_border_set:
                 border_coord = pts_inflated[border_v]
                 dist_to_cut = np.linalg.norm(
                     cut_near_mwall_coords - border_coord, axis=1
                 ).min()
-                if dist_to_cut < 15.0:
+                if dist_to_cut < ANCHOR_SEARCH_RADIUS_MM:
                     candidate_anchors.append(border_v)
 
             if not candidate_anchors:
@@ -437,16 +470,7 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                     "  WARNING: No candidate anchors found on medial wall border. "
                     "Using geometric endpoints."
                 )
-                # Fall through to the else branch logic
-                max_cut_dist = 0
-                start, end = cut_vertices[0], cut_vertices[0]
-                for idx1, v1 in enumerate(cut_vertices):
-                    pos1 = pts_inflated[v1]
-                    for v2 in cut_vertices[idx1 + 1 :]:
-                        dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                        if dist > max_cut_dist:
-                            max_cut_dist = dist
-                            start, end = v1, v2
+                start, end, _ = _find_geometric_endpoints(cut_vertices, pts_inflated)
             else:
                 print(
                     f"  Found {len(candidate_anchors)} candidate anchor points on mwall"
@@ -489,28 +513,15 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                         "  WARNING: No valid geodesic path to any anchor. "
                         "Using geometric endpoints."
                     )
-                    max_cut_dist = 0
-                    start, end = cut_vertices[0], cut_vertices[0]
-                    for idx1, v1 in enumerate(cut_vertices):
-                        pos1 = pts_inflated[v1]
-                        for v2 in cut_vertices[idx1 + 1 :]:
-                            dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                            if dist > max_cut_dist:
-                                max_cut_dist = dist
-                                start, end = v1, v2
+                    start, end, _ = _find_geometric_endpoints(
+                        cut_vertices, pts_inflated
+                    )
 
         else:
             # No medial wall provided - use geometric endpoints
-            # Find the two most distant vertices in the cut
-            max_cut_dist = 0
-            start, end = cut_vertices[0], cut_vertices[0]
-            for idx1, v1 in enumerate(cut_vertices):
-                pos1 = pts_inflated[v1]
-                for v2 in cut_vertices[idx1 + 1 :]:
-                    dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                    if dist > max_cut_dist:
-                        max_cut_dist = dist
-                        start, end = v1, v2
+            start, end, max_cut_dist = _find_geometric_endpoints(
+                cut_vertices, pts_inflated
+            )
             print(
                 f"  No medial wall provided, using geometric endpoints: "
                 f"{start}, {end} (dist: {max_cut_dist:.2f}mm)"

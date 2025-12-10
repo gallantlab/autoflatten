@@ -418,7 +418,10 @@ class TestRemoveSmallComponents:
             )
 
         # Medium component not removed (too big), warning logged
-        assert "secondary" in caplog.text.lower() or len(new_verts) == len(vertices)
+        assert "secondary" in caplog.text.lower(), (
+            "Expected warning about secondary component"
+        )
+        assert len(new_verts) == len(vertices), "Medium component should not be removed"
 
     def test_raises_topology_error_for_large_secondary(self):
         """Test that TopologyError is raised for large secondary component."""
