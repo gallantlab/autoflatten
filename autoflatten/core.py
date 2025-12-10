@@ -356,44 +356,109 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
 
         # Step 1: Find endpoints of the cut
         # If medial wall is provided, find vertices that border it
+        mwall_border_endpoints = []
         if mwall_set:
             # Find cut vertices that are neighbors of medial wall vertices
-            endpoints = []
             for v in cut_vertices:
                 for neighbor in G.neighbors(v):
                     if neighbor in mwall_set:
-                        endpoints.append(v)
+                        mwall_border_endpoints.append(v)
                         break
 
-            # If we found exactly 2 endpoints, great!
-            if len(endpoints) == 2:
-                start, end = endpoints[0], endpoints[1]
-                print(f"  Found endpoints at medial wall border: {start}, {end}")
+        # Determine endpoints based on how many medial wall border vertices we found
+        if len(mwall_border_endpoints) >= 2:
+            # Great! Use the two that are farthest apart
+            if len(mwall_border_endpoints) == 2:
+                start, end = mwall_border_endpoints[0], mwall_border_endpoints[1]
             else:
-                print(
-                    f"  Found {len(endpoints)} medial wall border vertices, using geometric endpoints instead"
-                )
-                endpoints = None
-        else:
-            endpoints = None
-
-        # Fallback: use geometric endpoints (most distant vertices)
-        if endpoints is None or len(endpoints) != 2:
-            # Find the two most distant vertices in the cut using inflated surface
+                # Pick the two most distant among the border vertices
+                max_dist = 0
+                start, end = mwall_border_endpoints[0], mwall_border_endpoints[1]
+                for idx1, v1 in enumerate(mwall_border_endpoints):
+                    pos1 = pts_inflated[v1]
+                    for v2 in mwall_border_endpoints[idx1 + 1 :]:
+                        dist = np.linalg.norm(pos1 - pts_inflated[v2])
+                        if dist > max_dist:
+                            max_dist = dist
+                            start, end = v1, v2
+            print(f"  Found endpoints at medial wall border: {start}, {end}")
+        elif len(mwall_border_endpoints) == 1:
+            # One endpoint at medial wall, find farthest cut vertex as other endpoint
+            start = mwall_border_endpoints[0]
+            pos_start = pts_inflated[start]
             max_dist = 0
-            start, end = cut_vertices[0], cut_vertices[0]
-
-            for idx1, v1 in enumerate(cut_vertices):
-                pos1 = pts_inflated[v1]
-                for v2 in cut_vertices[idx1 + 1 :]:
-                    dist = np.linalg.norm(pos1 - pts_inflated[v2])
+            end = cut_vertices[0]
+            for v in cut_vertices:
+                if v != start:
+                    dist = np.linalg.norm(pts_inflated[v] - pos_start)
                     if dist > max_dist:
                         max_dist = dist
-                        start, end = v1, v2
-
+                        end = v
             print(
-                f"  Using geometric endpoints: {start}, {end} (distance: {max_dist:.2f})"
+                f"  Found 1 medial wall border vertex: {start}, "
+                f"using farthest cut vertex as other endpoint: {end} (distance: {max_dist:.2f})"
             )
+        else:
+            # No medial wall border vertices - need to EXTEND cut to connect to medial wall
+            # Find the medial wall border (vertices adjacent to mwall but not in mwall)
+            # and pick the one nearest to any cut vertex
+            print(f"  Found 0 medial wall border vertices, extending cut to connect...")
+
+            # Build set of medial wall border vertices (adjacent to mwall but not in mwall)
+            mwall_border_set = set()
+            for mw_v in mwall_set:
+                for neighbor in G.neighbors(mw_v):
+                    if neighbor not in mwall_set:
+                        mwall_border_set.add(neighbor)
+
+            # Find nearest medial wall border vertex to any cut vertex
+            min_dist = float("inf")
+            nearest_mwall_border = None
+            nearest_cut_vertex = None
+            for cut_v in cut_vertices:
+                pos_cut = pts_inflated[cut_v]
+                for border_v in mwall_border_set:
+                    dist = np.linalg.norm(pts_inflated[border_v] - pos_cut)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_mwall_border = border_v
+                        nearest_cut_vertex = cut_v
+
+            if nearest_mwall_border is not None:
+                # Use medial wall border as one endpoint
+                start = nearest_mwall_border
+                # Find the cut vertex farthest from this border vertex
+                pos_start = pts_inflated[start]
+                max_dist = 0
+                end = cut_vertices[0]
+                for v in cut_vertices:
+                    dist = np.linalg.norm(pts_inflated[v] - pos_start)
+                    if dist > max_dist:
+                        max_dist = dist
+                        end = v
+                print(
+                    f"  Extended to medial wall border vertex: {start} "
+                    f"(distance to cut: {min_dist:.2f})"
+                )
+                print(f"  Using farthest cut vertex as other endpoint: {end}")
+            else:
+                # Fallback: use geometric endpoints (most distant vertices in cut)
+                # This shouldn't happen if medial wall is properly defined
+                print(
+                    f"  WARNING: Could not find medial wall border, using geometric endpoints"
+                )
+                max_dist = 0
+                start, end = cut_vertices[0], cut_vertices[0]
+                for idx1, v1 in enumerate(cut_vertices):
+                    pos1 = pts_inflated[v1]
+                    for v2 in cut_vertices[idx1 + 1 :]:
+                        dist = np.linalg.norm(pos1 - pts_inflated[v2])
+                        if dist > max_dist:
+                            max_dist = dist
+                            start, end = v1, v2
+                print(
+                    f"  Using geometric endpoints: {start}, {end} (distance: {max_dist:.2f})"
+                )
 
         # Step 2: Compute geodesic shortest path between endpoints
         try:

@@ -283,14 +283,10 @@ def run_projection(
         # Log patch statistics
         total_excluded = sum(len(v) for v in vertex_dict_fixed.values())
         n_patch_vertices = len(patch_vertices)
-        n_border = sum(1 for v in patch_vertices.values() if v >= 0)
-        n_interior = n_patch_vertices - n_border
         logger.log(f"Patch creation completed in {step_elapsed:.2f}s")
         logger.log(f"  Total surface vertices: {len(pts)}")
         logger.log(f"  Excluded vertices (cuts + medial wall): {total_excluded}")
         logger.log(f"  Patch vertices: {n_patch_vertices}")
-        logger.log(f"    - Border vertices: {n_border}")
-        logger.log(f"    - Interior vertices: {n_interior}")
         logger.log(f"  Output file: {patch_file}")
 
         logger.log_section("RESULT")
