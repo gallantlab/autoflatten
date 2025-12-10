@@ -369,7 +369,10 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
             mwall_coords = pts_inflated[mwall_list]
             cut_coords = pts_inflated[cut_vertices]
 
-            # For each cut vertex, find minimum distance to any medial wall vertex
+            # For each cut vertex, find minimum Euclidean distance to any medial wall
+            # vertex. We use Euclidean rather than geodesic distance here for
+            # efficiency, since we only need a rough proximity measure to identify
+            # which cut vertices are "near" the medial wall.
             dist_to_mwall = cdist(cut_coords, mwall_coords).min(axis=1)
 
             # Start point: cut vertex FARTHEST from medial wall
@@ -390,9 +393,11 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                     if neighbor not in mwall_set:
                         mwall_border_set.add(neighbor)
 
-            # Find cut vertices that are near the medial wall (potential anchor region)
-            # These define the region where we should look for anchor points
-            cut_near_mwall_mask = dist_to_mwall < 10.0  # within 10mm of mwall
+            # Find cut vertices that are near the medial wall (potential anchor region).
+            # These define the region where we should look for anchor points.
+            # 10mm threshold: chosen to capture the "end" portion of the cut near
+            # the medial wall while excluding the main body of the cut.
+            cut_near_mwall_mask = dist_to_mwall < 10.0
             if not cut_near_mwall_mask.any():
                 # If no cut vertices are near mwall, use the closest one
                 cut_near_mwall_mask = np.zeros(len(cut_vertices), dtype=bool)
@@ -402,12 +407,12 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
             cut_near_mwall_coords = pts_inflated[cut_near_mwall]
 
             # Find candidate anchor points: mwall border vertices near the cut's
-            # mwall-adjacent region
+            # mwall-adjacent region. 15mm threshold: chosen to be larger than the
+            # 10mm "near mwall" threshold to ensure we find candidate anchors even
+            # when the cut doesn't perfectly touch the medial wall border.
             candidate_anchors = []
             for border_v in mwall_border_set:
                 border_coord = pts_inflated[border_v]
-                # Check if this border vertex is within 15mm of any cut vertex
-                # near the mwall
                 dist_to_cut = np.linalg.norm(
                     cut_near_mwall_coords - border_coord, axis=1
                 ).min()
@@ -426,36 +431,73 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                         min_dist = dist
                         candidate_anchors = [border_v]
 
-            print(f"  Found {len(candidate_anchors)} candidate anchor points on mwall")
+            # Check if we have any candidate anchors (mwall_border_set might be empty)
+            if not candidate_anchors:
+                print(
+                    "  WARNING: No candidate anchors found on medial wall border. "
+                    "Using geometric endpoints."
+                )
+                # Fall through to the else branch logic
+                max_cut_dist = 0
+                start, end = cut_vertices[0], cut_vertices[0]
+                for idx1, v1 in enumerate(cut_vertices):
+                    pos1 = pts_inflated[v1]
+                    for v2 in cut_vertices[idx1 + 1 :]:
+                        dist = np.linalg.norm(pos1 - pts_inflated[v2])
+                        if dist > max_cut_dist:
+                            max_cut_dist = dist
+                            start, end = v1, v2
+            else:
+                print(
+                    f"  Found {len(candidate_anchors)} candidate anchor points on mwall"
+                )
 
-            # Evaluate each candidate anchor: find the one whose geodesic path
-            # to start has the maximum minimum distance from the medial wall
-            best_anchor = candidate_anchors[0]
-            best_min_clearance = -1
-            best_path = None
+                # Evaluate each candidate anchor: find the one whose geodesic path
+                # to start has the maximum minimum distance from the medial wall
+                best_anchor = candidate_anchors[0]
+                best_min_clearance = -1
+                found_valid_path = False
 
-            for anchor in candidate_anchors:
-                try:
-                    path = nx.shortest_path(G, start, anchor, weight="weight")
+                for anchor in candidate_anchors:
+                    try:
+                        path = nx.shortest_path(G, start, anchor, weight="weight")
 
-                    # Compute minimum distance to mwall along this path
-                    path_coords = pts_inflated[path]
-                    path_to_mwall_dists = cdist(path_coords, mwall_coords).min(axis=1)
-                    min_clearance = path_to_mwall_dists.min()
+                        # Compute minimum distance to mwall along this path
+                        path_coords = pts_inflated[path]
+                        path_to_mwall_dists = cdist(path_coords, mwall_coords).min(
+                            axis=1
+                        )
+                        min_clearance = path_to_mwall_dists.min()
 
-                    if min_clearance > best_min_clearance:
-                        best_min_clearance = min_clearance
-                        best_anchor = anchor
-                        best_path = path
+                        if min_clearance > best_min_clearance:
+                            best_min_clearance = min_clearance
+                            best_anchor = anchor
+                            found_valid_path = True
 
-                except nx.NetworkXNoPath:
-                    continue
+                    except nx.NetworkXNoPath:
+                        continue
 
-            end = best_anchor
-            print(
-                f"  Best anchor: vertex {end} "
-                f"(path min clearance: {best_min_clearance:.2f}mm)"
-            )
+                if found_valid_path:
+                    end = best_anchor
+                    print(
+                        f"  Best anchor: vertex {end} "
+                        f"(path min clearance: {best_min_clearance:.2f}mm)"
+                    )
+                else:
+                    # No valid geodesic path to any anchor - use geometric fallback
+                    print(
+                        "  WARNING: No valid geodesic path to any anchor. "
+                        "Using geometric endpoints."
+                    )
+                    max_cut_dist = 0
+                    start, end = cut_vertices[0], cut_vertices[0]
+                    for idx1, v1 in enumerate(cut_vertices):
+                        pos1 = pts_inflated[v1]
+                        for v2 in cut_vertices[idx1 + 1 :]:
+                            dist = np.linalg.norm(pos1 - pts_inflated[v2])
+                            if dist > max_cut_dist:
+                                max_cut_dist = dist
+                                start, end = v1, v2
 
         else:
             # No medial wall provided - use geometric endpoints

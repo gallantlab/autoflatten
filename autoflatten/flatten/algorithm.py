@@ -88,21 +88,33 @@ def remove_small_components(
     (default <= 20 vertices) to avoid masking more serious topology issues.
     If medium-sized disconnected components are found, a warning is raised.
 
-    Args:
-        vertices: (V, 3) vertex coordinates
-        faces: (F, 3) face indices
-        max_small_component_size: Maximum size of components to automatically
-            remove. Components larger than this will not be removed. Default 20.
-        warn_medium_threshold: If a secondary component is larger than
-            max_small_component_size but smaller than this threshold,
-            a warning is logged. Default 100.
+    Parameters
+    ----------
+    vertices : ndarray of shape (V, 3)
+        Vertex coordinates.
+    faces : ndarray of shape (F, 3)
+        Face indices.
+    max_small_component_size : int, default=20
+        Maximum size of components to automatically remove. Components larger
+        than this will not be removed.
+    warn_medium_threshold : int, default=100
+        If a secondary component is larger than max_small_component_size but
+        smaller than this threshold, a warning is logged.
 
-    Returns:
-        Tuple of (new_vertices, new_faces, used_vertex_indices)
+    Returns
+    -------
+    new_vertices : ndarray of shape (V', 3)
+        Vertices after removing small components.
+    new_faces : ndarray of shape (F', 3)
+        Faces after removing small components.
+    used_vertex_indices : ndarray of shape (V',)
+        Original indices of the kept vertices.
 
-    Raises:
-        TopologyError: If a secondary component is found that is larger than
-            warn_medium_threshold, indicating a potentially serious issue.
+    Raises
+    ------
+    TopologyError
+        If a secondary component is found that is larger than
+        warn_medium_threshold, indicating a potentially serious issue.
     """
     import logging
     from scipy.sparse import csr_matrix
@@ -158,8 +170,10 @@ def remove_small_components(
             f"Secondary component is larger than {max_small_component_size} vertices."
         )
 
-    # Remove only small components (<= max_small_component_size)
+    # Remove only small components (<= max_small_component_size), but always
+    # keep the largest component regardless of its size
     small_component_mask = component_sizes <= max_small_component_size
+    small_component_mask[largest_idx] = False  # Never remove the largest component
     small_component_labels = np.where(small_component_mask)[0]
 
     # Build mask of vertices to remove
@@ -174,21 +188,13 @@ def remove_small_components(
     n_removed_verts = remove_mask.sum()
     logger.info(
         f"Removing {len(small_component_labels)} small disconnected component(s) "
-        f"with sizes {sorted(removed_sizes)} ({n_removed_verts} total vertices)"
+        f"with sizes {np.sort(removed_sizes).tolist()} ({n_removed_verts} total vertices)"
     )
 
-    # Get faces that are entirely within kept vertices
+    # Get faces that are entirely within kept vertices (vectorized)
     keep_mask = ~remove_mask
     kept_indices = np.where(keep_mask)[0]
-    kept_set = set(kept_indices)
-    face_mask = np.array(
-        [
-            faces[i, 0] in kept_set
-            and faces[i, 1] in kept_set
-            and faces[i, 2] in kept_set
-            for i in range(len(faces))
-        ]
-    )
+    face_mask = np.all(np.isin(faces, kept_indices), axis=1)
     new_faces = faces[face_mask]
 
     # Reindex to remove gaps
