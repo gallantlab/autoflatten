@@ -33,6 +33,7 @@ from autoflatten.core import (
     refine_cuts_with_geodesic,
 )
 from autoflatten.freesurfer import create_patch_file, load_surface
+from autoflatten.logging import restore_logging, setup_logging
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
 from autoflatten.viz import plot_patch
@@ -110,45 +111,6 @@ def check_freesurfer_environment():
     return True, env_vars
 
 
-class ProjectionLogger:
-    """Context manager for logging projection phase output."""
-
-    def __init__(self, log_path, verbose=True):
-        self.log_path = log_path
-        self.verbose = verbose
-        self.log_file = None
-        self.original_stdout = None
-        self.start_time = None
-
-    def __enter__(self):
-        self.start_time = time.time()
-        self.log_file = open(self.log_path, "w")
-        self.log_file.write(f"Autoflatten Projection Log\n")
-        self.log_file.write(f"{'=' * 60}\n")
-        self.log_file.write(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        elapsed = time.time() - self.start_time
-        self.log_file.write(f"\n{'=' * 60}\n")
-        self.log_file.write(f"Total time: {elapsed:.2f} seconds\n")
-        self.log_file.write(f"Finished: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        self.log_file.close()
-        return False
-
-    def log(self, message):
-        """Log a message to both file and stdout (if verbose)."""
-        self.log_file.write(message + "\n")
-        self.log_file.flush()
-        if self.verbose:
-            print(message)
-
-    def log_section(self, title):
-        """Log a section header."""
-        self.log(f"\n{title}")
-        self.log("-" * len(title))
-
-
 def run_projection(
     subject_dir,
     hemi,
@@ -185,7 +147,7 @@ def run_projection(
     """
     subject = Path(subject_dir).name
     patch_file = os.path.join(output_dir, f"{hemi}.autoflatten.patch.3d")
-    log_file = os.path.join(output_dir, f"{hemi}.autoflatten.projection.log")
+    log_base = os.path.join(output_dir, f"{hemi}.autoflatten.projection")
 
     if os.path.exists(patch_file) and not overwrite:
         if verbose:
@@ -194,17 +156,28 @@ def run_projection(
             )
         return patch_file
 
-    with ProjectionLogger(log_file, verbose=verbose) as logger:
-        logger.log(f"Subject: {subject}")
-        logger.log(f"Hemisphere: {hemi}")
-        logger.log(f"Subject directory: {subject_dir}")
-        logger.log(f"Output directory: {output_dir}")
+    # Setup logging - all print() output goes to both console and log file
+    # Log file will be created at log_base + ".log"
+    original_stdout, log_file = setup_logging(log_base, verbose=verbose)
+    start_time = time.time()
+
+    try:
+        # Header
+        print("Autoflatten Projection Log")
+        print("=" * 60)
+        print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print()
+        print(f"Subject: {subject}")
+        print(f"Hemisphere: {hemi}")
+        print(f"Subject directory: {subject_dir}")
+        print(f"Output directory: {output_dir}")
 
         # Get cuts template
-        logger.log_section("Template Loading")
+        print("\nTemplate Loading")
+        print("-" * 16)
         if template_file is None:
             template_file = fsaverage_cut_template
-        logger.log(f"Template file: {template_file}")
+        print(f"Template file: {template_file}")
         template_data = load_json(template_file)
 
         vertex_dict = {}
@@ -213,40 +186,44 @@ def run_projection(
             if key.startswith(prefix):
                 new_key = key[len(prefix) :]
                 vertex_dict[new_key] = np.array(value)
-                logger.log(f"  {new_key}: {len(value)} vertices")
+                print(f"  {new_key}: {len(value)} vertices")
 
         # Map cuts to target subject
-        logger.log_section("Cut Mapping (mri_label2label)")
+        print("\nCut Mapping (mri_label2label)")
+        print("-" * 29)
         step_start = time.time()
         vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
         step_elapsed = time.time() - step_start
-        logger.log(f"Mapping completed in {step_elapsed:.2f}s")
+        print(f"Mapping completed in {step_elapsed:.2f}s")
         for key, vertices in vertex_dict_mapped.items():
             orig_count = len(vertex_dict.get(key, []))
             mapped_count = len(vertices)
-            logger.log(f"  {key}: {orig_count} -> {mapped_count} vertices")
+            print(f"  {key}: {orig_count} -> {mapped_count} vertices")
 
         # Ensure cuts are continuous
-        logger.log_section("Continuity Fixing")
+        print("\nContinuity Fixing")
+        print("-" * 17)
         step_start = time.time()
         vertex_dict_fixed = ensure_continuous_cuts(
             vertex_dict_mapped.copy(), subject, hemi
         )
         step_elapsed = time.time() - step_start
-        logger.log(f"Continuity fixing completed in {step_elapsed:.2f}s")
+        print(f"Continuity fixing completed in {step_elapsed:.2f}s")
         for key, vertices in vertex_dict_fixed.items():
             pre_count = len(vertex_dict_mapped.get(key, []))
             post_count = len(vertices)
             if post_count != pre_count:
-                logger.log(
-                    f"  {key}: {pre_count} -> {post_count} vertices (added {post_count - pre_count})"
+                print(
+                    f"  {key}: {pre_count} -> {post_count} vertices "
+                    f"(added {post_count - pre_count})"
                 )
             else:
-                logger.log(f"  {key}: {post_count} vertices (no changes)")
+                print(f"  {key}: {post_count} vertices (no changes)")
 
         # Optionally refine with geodesic paths
         if refine_geodesic:
-            logger.log_section("Geodesic Refinement")
+            print("\nGeodesic Refinement")
+            print("-" * 19)
             step_start = time.time()
             vertex_dict_refined = refine_cuts_with_geodesic(
                 vertex_dict_fixed,
@@ -255,23 +232,25 @@ def run_projection(
                 medial_wall_vertices=vertex_dict_fixed.get("mwall"),
             )
             step_elapsed = time.time() - step_start
-            logger.log(f"Geodesic refinement completed in {step_elapsed:.2f}s")
+            print(f"Geodesic refinement completed in {step_elapsed:.2f}s")
             for key, vertices in vertex_dict_refined.items():
                 pre_count = len(vertex_dict_fixed.get(key, []))
                 post_count = len(vertices)
                 if post_count != pre_count:
-                    logger.log(f"  {key}: {pre_count} -> {post_count} vertices")
+                    print(f"  {key}: {pre_count} -> {post_count} vertices")
                 else:
-                    logger.log(f"  {key}: {post_count} vertices (unchanged)")
+                    print(f"  {key}: {post_count} vertices (unchanged)")
             vertex_dict_fixed = vertex_dict_refined
         else:
-            logger.log_section("Geodesic Refinement")
-            logger.log("Skipped (--no-refine-geodesic)")
+            print("\nGeodesic Refinement")
+            print("-" * 19)
+            print("Skipped (--no-refine-geodesic)")
 
         # Get subject surface data
-        logger.log_section("Patch Creation")
+        print("\nPatch Creation")
+        print("-" * 14)
         pts, polys = load_surface(subject, "inflated", hemi)
-        logger.log(f"Surface loaded: {len(pts)} vertices, {len(polys)} faces")
+        print(f"Surface loaded: {len(pts)} vertices, {len(polys)} faces")
 
         # Create patch file
         step_start = time.time()
@@ -283,15 +262,26 @@ def run_projection(
         # Log patch statistics
         total_excluded = sum(len(v) for v in vertex_dict_fixed.values())
         n_patch_vertices = len(patch_vertices)
-        logger.log(f"Patch creation completed in {step_elapsed:.2f}s")
-        logger.log(f"  Total surface vertices: {len(pts)}")
-        logger.log(f"  Excluded vertices (cuts + medial wall): {total_excluded}")
-        logger.log(f"  Patch vertices: {n_patch_vertices}")
-        logger.log(f"  Output file: {patch_file}")
+        print(f"Patch creation completed in {step_elapsed:.2f}s")
+        print(f"  Total surface vertices: {len(pts)}")
+        print(f"  Excluded vertices (cuts + medial wall): {total_excluded}")
+        print(f"  Patch vertices: {n_patch_vertices}")
+        print(f"  Output file: {patch_file}")
 
-        logger.log_section("RESULT")
-        logger.log(f"Patch file created: {patch_file}")
-        logger.log(f"Log file: {log_file}")
+        print("\nRESULT")
+        print("-" * 6)
+        print(f"Patch file created: {patch_file}")
+        print(f"Log file: {log_base}.log")
+
+        # Footer
+        elapsed = time.time() - start_time
+        print()
+        print("=" * 60)
+        print(f"Total time: {elapsed:.2f} seconds")
+        print(f"Finished: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    finally:
+        restore_logging(original_stdout, log_file)
 
     return patch_file
 
