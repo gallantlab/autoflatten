@@ -88,12 +88,16 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
         os.environ["NUMEXPR_NUM_THREADS"] = n_str
 
     # Numba - can be set at runtime (unlike env vars which need early setting)
+    # Note: numba.set_num_threads raises ValueError if n > available cores
     try:
         import numba
 
-        numba.set_num_threads(n_threads)
+        max_threads = numba.get_num_threads()
+        numba.set_num_threads(min(n_threads, max_threads))
     except ImportError:
         pass  # Numba not installed
+    except ValueError:
+        pass  # Requested threads exceed available cores
 
     _THREADING_CONFIGURED = True
 

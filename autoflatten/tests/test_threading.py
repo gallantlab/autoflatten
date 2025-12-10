@@ -1,7 +1,16 @@
 """Tests for threading configuration module."""
 
 import os
-import pytest
+
+
+def get_max_threads():
+    """Get maximum available threads for testing."""
+    try:
+        import numba
+
+        return numba.get_num_threads()
+    except ImportError:
+        return os.cpu_count() or 1
 
 
 class TestConfigureThreading:
@@ -14,6 +23,7 @@ class TestConfigureThreading:
 
         from autoflatten.flatten.threading import configure_threading
 
+        # Use a value that's always valid (env vars don't check core count)
         configure_threading(4)
 
         assert "XLA_FLAGS" in os.environ
@@ -25,6 +35,7 @@ class TestConfigureThreading:
 
         from autoflatten.flatten.threading import configure_threading
 
+        # Env vars accept any value - they don't validate against core count
         configure_threading(8)
 
         assert os.environ.get("OMP_NUM_THREADS") == "8"
@@ -69,15 +80,34 @@ class TestConfigureThreading:
 
         assert os.environ.get("NUMEXPR_NUM_THREADS") == "4"
 
-    def test_sets_numba_threads(self, monkeypatch):
-        """Test that numba threads are configured."""
+    def test_sets_numba_threads(self):
+        """Test that numba threads are configured (capped at available cores)."""
         from autoflatten.flatten.threading import configure_threading
-
-        configure_threading(4)
 
         import numba
 
-        assert numba.get_num_threads() == 4
+        max_threads = numba.get_num_threads()
+        requested = 4
+
+        configure_threading(requested)
+
+        # Should be min(requested, available)
+        expected = min(requested, max_threads)
+        assert numba.get_num_threads() == expected
+
+    def test_numba_threads_capped_at_available(self):
+        """Test that numba threads are capped at available cores."""
+        from autoflatten.flatten.threading import configure_threading
+
+        import numba
+
+        max_threads = numba.get_num_threads()
+
+        # Request more than available
+        configure_threading(1000)
+
+        # Should not exceed available
+        assert numba.get_num_threads() <= max_threads
 
     def test_none_does_not_set_limits(self, monkeypatch):
         """Test that None means no limit (don't set env vars)."""
@@ -158,7 +188,7 @@ class TestIsConfigured:
         """Test that is_configured returns True after calling configure_threading."""
         from autoflatten.flatten.threading import configure_threading, is_configured
 
-        configure_threading(4)
+        configure_threading(1)
 
         assert is_configured() is True
 
@@ -202,9 +232,14 @@ class TestGetEffectiveThreads:
             get_effective_threads,
         )
 
+        import numba
+
+        max_threads = numba.get_num_threads()
+
         configure_threading(4)
         result = get_effective_threads()
 
         assert result["OMP_NUM_THREADS"] == "4"
         assert result["MKL_NUM_THREADS"] == "4"
-        assert result["numba_threads"] == 4
+        # Numba threads capped at available
+        assert result["numba_threads"] == min(4, max_threads)

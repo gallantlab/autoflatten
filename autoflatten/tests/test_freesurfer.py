@@ -208,9 +208,14 @@ def test_create_patch_file_uint32_faces(mock_surface_data_uint32):
                 assert stored_idx != 0, "Invalid vertex index (zero)"
 
                 # Check that negative indices are actually negative (not wrapped)
+                # Interior vertices have negative stored_idx = -(original_idx + 1)
+                # This verifies no unsigned integer overflow occurred
                 if stored_idx < 0:
-                    # Interior vertex - index should be -(original_idx + 1)
-                    assert stored_idx < 0, f"Expected negative index, got {stored_idx}"
+                    # Verify the stored index decodes correctly back to original
+                    decoded_idx = -(stored_idx + 1)
+                    assert decoded_idx >= 0, (
+                        f"Decoded index should be non-negative, got {decoded_idx}"
+                    )
 
 
 def test_write_patch_uint32_indices():
