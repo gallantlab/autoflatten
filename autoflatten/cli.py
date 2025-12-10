@@ -346,6 +346,7 @@ def process_hemisphere(
     refine_geodesic=True,
     backend=None,
     verbose=True,
+    run_plot=True,
     **backend_kwargs,
 ):
     """
@@ -371,13 +372,15 @@ def process_hemisphere(
         Backend name for flattening
     verbose : bool
         Print progress messages
+    run_plot : bool
+        Whether to generate PNG plot after flattening
     **backend_kwargs
         Additional arguments for the backend
 
     Returns
     -------
     dict
-        Results including patch_file and flat_file paths
+        Results including patch_file, flat_file, and plot_file paths
     """
     subject = Path(subject_dir).name
     if verbose:
@@ -428,6 +431,36 @@ def process_hemisphere(
             )
 
         result["flat_file"] = flat_file
+
+        # Generate PNG plot if requested
+        if run_plot:
+            plot_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.png")
+            if os.path.exists(plot_file) and not overwrite:
+                if verbose:
+                    print(
+                        f"Plot file {plot_file} exists, skipping "
+                        "(use --overwrite to force)"
+                    )
+            else:
+                # Remove existing plot file if overwrite is enabled
+                if os.path.exists(plot_file) and overwrite:
+                    os.remove(plot_file)
+                surf_dir = os.path.join(subject_dir, "surf")
+                try:
+                    plot_file = plot_patch(
+                        flat_file,
+                        subject,
+                        surf_dir,
+                        output_dir=output_dir,
+                        surface=f"{hemi}.inflated",
+                    )
+                    if verbose:
+                        print(f"Generated plot: {plot_file}")
+                except Exception as e:
+                    if verbose:
+                        print(f"Warning: Failed to generate plot: {e}")
+                    plot_file = None
+            result["plot_file"] = plot_file
 
     elapsed_time = time.time() - start_time
     if verbose:
@@ -516,6 +549,7 @@ def cmd_run_full_pipeline(args):
 
     results = {}
     run_flatten = not args.no_flatten
+    run_plot = not args.no_plot
 
     # Process hemispheres
     if args.parallel and len(hemispheres) > 1:
@@ -533,6 +567,7 @@ def cmd_run_full_pipeline(args):
                     not args.no_refine_geodesic,
                     args.backend,
                     True,  # verbose
+                    run_plot,
                     **backend_kwargs,
                 ): hemi
                 for hemi in hemispheres
@@ -557,6 +592,7 @@ def cmd_run_full_pipeline(args):
                     not args.no_refine_geodesic,
                     args.backend,
                     True,
+                    run_plot,
                     **backend_kwargs,
                 )
             except Exception:
@@ -572,6 +608,8 @@ def cmd_run_full_pipeline(args):
             print(f"  Patch file: {results[hemi].get('patch_file', 'Not created')}")
             if run_flatten:
                 print(f"  Flat file: {results[hemi].get('flat_file', 'Not created')}")
+            if run_plot and run_flatten:
+                print(f"  Plot file: {results[hemi].get('plot_file', 'Not created')}")
 
     return 0
 
@@ -1075,6 +1113,11 @@ Examples:
         "--no-flatten",
         action="store_true",
         help="Skip flattening",
+    )
+    parser_run.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Skip PNG plot generation",
     )
     parser_run.set_defaults(func=cmd_run_full_pipeline)
 
