@@ -4,11 +4,9 @@ This module provides the pyflatten backend for cortical surface flattening,
 using JAX-accelerated gradient descent optimization.
 """
 
-import os
-from pathlib import Path
 from typing import Optional
 
-from .base import FlattenBackend, find_base_surface
+from .base import FlattenBackend
 
 
 def _check_pyflatten_available() -> bool:

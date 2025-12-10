@@ -6,7 +6,6 @@ import os
 import tempfile
 
 import numpy as np
-import pytest
 
 from autoflatten.viz import compute_triangle_areas, parse_log_file
 
