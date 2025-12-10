@@ -23,13 +23,14 @@ Example:
 from .algorithm import (
     SurfaceFlattener,
     TopologyError,
-    setup_logging,
-    restore_logging,
     count_flipped_triangles,
     freesurfer_projection,
     remove_isolated_vertices,
     validate_topology,
 )
+
+# Import logging utilities from the shared module
+from ..logging import restore_logging, setup_logging
 
 from .config import (
     FlattenConfig,
