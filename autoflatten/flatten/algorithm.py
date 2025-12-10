@@ -47,7 +47,6 @@ from .energy import (
 from ..freesurfer import extract_patch_faces, read_patch, read_surface, write_patch
 
 # Import shared logging utilities
-from ..logging import restore_logging, setup_logging
 
 
 # =============================================================================
