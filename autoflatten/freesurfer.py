@@ -277,12 +277,15 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
         fp.write(struct.pack(">2i", -1, len(patch_vertices)))
 
         for idx, coord in patch_vertices:
+            # Convert to Python int to avoid unsigned integer overflow
+            # (numpy uint32 indices would wrap around when negated)
+            idx_int = int(idx)
             if idx in border_vertices:
                 # Border vertices get positive indices
-                fp.write(struct.pack(">i3f", idx + 1, *coord))
+                fp.write(struct.pack(">i3f", idx_int + 1, *coord))
             else:
                 # Interior vertices get negative indices
-                fp.write(struct.pack(">i3f", -(idx + 1), *coord))
+                fp.write(struct.pack(">i3f", -(idx_int + 1), *coord))
 
     print(f"Created patch file {filename} with {len(patch_vertices)} vertices")
     print(f"Excluded {len(excluded_vertices)} vertices (medial wall and cuts)")
@@ -910,7 +913,9 @@ def write_patch(filepath, vertices, original_indices, is_border=None):
 
         # Write vertex data
         for i in range(n_vertices):
-            idx = original_indices[i]
+            # Convert to Python int to avoid unsigned integer overflow
+            # (numpy uint32 indices would wrap around when negated)
+            idx = int(original_indices[i])
             if is_border[i]:
                 raw_idx = idx + 1  # Positive for border
             else:
