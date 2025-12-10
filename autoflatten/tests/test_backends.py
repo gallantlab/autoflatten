@@ -5,7 +5,6 @@ Tests for the backends module.
 import os
 import tempfile
 
-import numpy as np
 import pytest
 
 from autoflatten.backends import (

@@ -2,12 +2,10 @@
 Tests for the flatten module (pyflatten algorithm).
 """
 
-import json
 import os
 import tempfile
 
 import numpy as np
-import pytest
 
 from autoflatten.flatten.config import (
     FlattenConfig,
