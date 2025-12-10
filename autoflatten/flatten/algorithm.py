@@ -1,0 +1,1726 @@
+"""Surface flattening optimization.
+
+This module provides the SurfaceFlattener class for cortical surface flattening
+using FreeSurfer-style gradient descent with vectorized line search.
+"""
+
+import os
+import sys
+import time
+from typing import Optional, TextIO
+
+import igl
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+
+# =============================================================================
+# Exceptions
+# =============================================================================
+
+
+class TopologyError(Exception):
+    """Raised when surface topology is incompatible with flattening."""
+
+    pass
+
+
+from .config import (
+    FlattenConfig,
+    NegativeAreaRemovalConfig,
+    SpringSmoothingConfig,
+)
+from .distance import (
+    compute_kring_geodesic_distances,
+    compute_kring_geodesic_distances_angular,
+)
+from .energy import (
+    compute_area_energy_fs_v6,
+    compute_metric_energy,
+    compute_spring_displacement,
+    get_vertices_with_negative_area,
+    prepare_metric_data,
+    prepare_smoothing_data,
+    smooth_gradient,
+)
+
+# Import I/O functions from autoflatten.freesurfer
+from ..freesurfer import extract_patch_faces, read_patch, read_surface, write_patch
+
+
+# =============================================================================
+# Logging utilities
+# =============================================================================
+
+
+class TeeStream:
+    """Write to multiple streams simultaneously."""
+
+    def __init__(self, *streams: TextIO):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
+def setup_logging(
+    output_path: str, verbose: bool = True
+) -> tuple[TextIO, Optional[TextIO]]:
+    """Setup dual logging to stdout and file.
+
+    Args:
+        output_path: Path to output file (log will be output_path + ".log")
+        verbose: If True, output to both console and file; if False, only file
+
+    Returns:
+        Tuple of (original_stdout, log_file_handle)
+        The log_file_handle must be closed by the caller.
+    """
+    log_path = f"{output_path}.log"
+
+    # Create directory if needed
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    log_file = open(log_path, "w")
+    original_stdout = sys.stdout
+
+    if verbose:
+        sys.stdout = TeeStream(sys.__stdout__, log_file)
+    else:
+        sys.stdout = TeeStream(log_file)
+
+    return original_stdout, log_file
+
+
+def restore_logging(original_stdout: TextIO, log_file: Optional[TextIO]) -> None:
+    """Restore original stdout and close log file."""
+    sys.stdout = original_stdout
+    if log_file:
+        log_file.close()
+
+
+# =============================================================================
+# Mesh utilities
+# =============================================================================
+
+
+def remove_isolated_vertices(
+    vertices: np.ndarray, faces: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Remove vertices not referenced by any face, return reindexed mesh.
+
+    Args:
+        vertices: (V, 3) vertex coordinates
+        faces: (F, 3) face indices
+
+    Returns:
+        Tuple of (new_vertices, new_faces, used_vertex_indices)
+    """
+    used = np.unique(faces)
+    old_to_new = np.full(len(vertices), -1)
+    old_to_new[used] = np.arange(len(used))
+    return vertices[used], old_to_new[faces], used
+
+
+def validate_topology(
+    vertices: np.ndarray, faces: np.ndarray, strict: bool = True
+) -> int:
+    """Validate that surface has disk topology suitable for flattening.
+
+    A surface patch must have Euler characteristic χ = 1 to be homeomorphic
+    to a disk and thus flattenable to a plane without cuts or self-intersections.
+
+    χ = V - E + F where V=vertices, E=edges, F=faces
+
+    Args:
+        vertices: (V, 3) vertex coordinates
+        faces: (F, 3) face indices
+        strict: If True, raise TopologyError for χ ≠ 1. If False, just warn.
+
+    Returns:
+        Euler characteristic
+
+    Raises:
+        TopologyError: If strict=True and χ ≠ 1
+    """
+    n_vertices = len(vertices)
+    n_edges = len(igl.edges(faces))
+    n_faces = len(faces)
+    euler = n_vertices - n_edges + n_faces
+
+    if euler != 1:
+        msg = (
+            f"Surface has Euler characteristic χ = {euler} (expected 1 for disk topology).\n"
+            f"  Vertices: {n_vertices:,}, Edges: {n_edges:,}, Faces: {n_faces:,}\n"
+            f"  This indicates the surface has topological defects "
+            f"(holes, handles, or disconnected components).\n"
+            f"  A surface with χ ≠ 1 cannot be flattened to a plane without "
+            f"self-intersections.\n"
+            f"  Consider using mris_cut to create a disk-like patch, or check "
+            f"the surface for defects."
+        )
+        if strict:
+            raise TopologyError(msg)
+        else:
+            print(f"WARNING: {msg}")
+
+    return euler
+
+
+def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Project onto plane perpendicular to average surface normal.
+
+    This implements FreeSurfer's initial projection strategy for surface
+    flattening. The projection finds the average normal and rotates the
+    mesh so this normal points in the +Z direction, then takes XY coordinates.
+
+    Args:
+        vertices: (V, 3) vertex coordinates
+        faces: (F, 3) face indices
+
+    Returns:
+        (V, 2) UV coordinates
+    """
+    face_normals = igl.per_face_normals(vertices, faces, np.array([0.0, 0.0, 0.0]))
+    face_areas = igl.doublearea(vertices, faces) / 2
+    avg_normal = (face_normals * face_areas[:, np.newaxis]).sum(axis=0)
+    avg_normal = avg_normal / np.linalg.norm(avg_normal)
+
+    target = np.array([0.0, 0.0, 1.0])
+    v = np.cross(avg_normal, target)
+    c = np.dot(avg_normal, target)
+
+    if np.linalg.norm(v) < 1e-10:
+        R = np.eye(3) if c > 0 else np.diag([1, 1, -1])
+    else:
+        s = np.linalg.norm(v)
+        vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R = np.eye(3) + vx + vx @ vx * (1 - c) / (s * s)
+
+    rotated = vertices @ R.T
+    uv = rotated[:, :2]
+
+    # Fix orientation if most triangles are flipped
+    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
+    areas = 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+    if np.sum(areas < 0) > len(faces) / 2:
+        uv[:, 0] = -uv[:, 0]
+
+    return uv
+
+
+@jax.jit
+def count_flipped_triangles(uv: jnp.ndarray, faces: jnp.ndarray) -> jnp.ndarray:
+    """Count triangles with negative (flipped) area.
+
+    Args:
+        uv: (V, 2) UV coordinates
+        faces: (F, 3) face indices
+
+    Returns:
+        Number of flipped triangles (scalar)
+    """
+    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
+    areas = 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+    return jnp.sum(areas <= 0)
+
+
+@jax.jit
+def _compute_distance_error_jit(
+    uv: jnp.ndarray,
+    neighbors: jnp.ndarray,
+    targets: jnp.ndarray,
+    mask: jnp.ndarray,
+) -> jnp.ndarray:
+    """JIT-compiled core of distance error computation.
+
+    Uses FreeSurfer's formula:
+        pct = 100 * mean(|dist - odist|) / mean(odist)
+
+    Args:
+        uv: (V, 2) UV coordinates
+        neighbors: (V, max_neighbors) neighbor indices
+        targets: (V, max_neighbors) target distances
+        mask: (V, max_neighbors) validity mask
+
+    Returns:
+        Percentage distance error (scalar)
+    """
+    uv_neighbors = uv[neighbors]
+    uv_diffs = uv_neighbors - uv[:, None, :]
+    uv_distances = jnp.sqrt(jnp.sum(uv_diffs**2, axis=-1))
+
+    valid = mask & (targets > 0)
+
+    abs_errors = jnp.where(valid, jnp.abs(uv_distances - targets), 0.0)
+    targets_valid = jnp.where(valid, targets, 0.0)
+    n_valid = jnp.sum(valid)
+
+    mean_error = jnp.sum(abs_errors) / n_valid
+    mean_odist = jnp.sum(targets_valid) / n_valid
+
+    return 100.0 * mean_error / mean_odist
+
+
+# =============================================================================
+# Energy and gradient functions
+# =============================================================================
+
+
+def make_energy_functions(
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    faces_jax: jnp.ndarray,
+):
+    """Create JIT-compiled energy and gradient functions.
+
+    Args:
+        neighbors_jax: (V, max_neighbors) neighbor indices
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        faces_jax: (F, 3) face indices
+
+    Returns:
+        Tuple of (compute_energies, grad_J_d, grad_J_a)
+    """
+
+    @jax.jit
+    def compute_energies(uv):
+        """Compute both energy components."""
+        J_d = compute_metric_energy(uv, neighbors_jax, targets_jax, mask_jax)
+        J_a = compute_area_energy_fs_v6(uv, faces_jax)
+        return J_d, J_a
+
+    @jax.jit
+    def grad_J_d(uv):
+        return jax.grad(
+            lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
+        )(uv)
+
+    @jax.jit
+    def grad_J_a(uv):
+        return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
+
+    return compute_energies, grad_J_d, grad_J_a
+
+
+def compute_normalized_lambdas(
+    J_d: float, J_a: float, ratio: float
+) -> tuple[float, float]:
+    """Compute lambda weights so effective contributions have desired ratio.
+
+    Args:
+        J_d: Current distance energy
+        J_a: Current area energy
+        ratio: Desired area/distance energy ratio
+
+    Returns:
+        Tuple of (lambda_d, lambda_a)
+    """
+    lambda_d = 1.0
+    lambda_a = ratio * J_d / J_a
+    return lambda_d, lambda_a
+
+
+def make_energy_fn(
+    lambda_d: float,
+    lambda_a: float,
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    faces_jax: jnp.ndarray,
+):
+    """Create energy function with given lambda weights.
+
+    Args:
+        lambda_d: Weight for distance energy
+        lambda_a: Weight for area energy
+        neighbors_jax: (V, max_neighbors) neighbor indices
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        faces_jax: (F, 3) face indices
+
+    Returns:
+        JIT-compiled energy function: uv -> (total_energy, (J_d, J_a))
+    """
+
+    @jax.jit
+    def energy_fn(uv):
+        J_d = compute_metric_energy(uv, neighbors_jax, targets_jax, mask_jax)
+        J_a = compute_area_energy_fs_v6(uv, faces_jax)
+        return lambda_d * J_d + lambda_a * J_a, (J_d, J_a)
+
+    return energy_fn
+
+
+def make_weighted_gradient_fn(
+    grad_J_d_fn,
+    grad_J_a_fn,
+):
+    """Create function to compute weighted gradient with normalized components.
+
+    Args:
+        grad_J_d_fn: JIT-compiled distance energy gradient function
+        grad_J_a_fn: JIT-compiled area energy gradient function
+
+    Returns:
+        Function: (uv, area_weight) -> gradient
+    """
+
+    def compute_weighted_gradient(uv, area_weight):
+        g_d = grad_J_d_fn(uv)
+        g_a = grad_J_a_fn(uv)
+
+        norm_d = jnp.linalg.norm(g_d) + 1e-12
+        norm_a = jnp.linalg.norm(g_a) + 1e-12
+
+        g_d_normalized = g_d / norm_d
+        g_a_normalized = g_a / norm_a
+
+        return g_d_normalized + area_weight * g_a_normalized
+
+    return compute_weighted_gradient
+
+
+# =============================================================================
+# Vectorized line search
+# =============================================================================
+
+
+def make_vectorized_line_search(energy_fn, n_coarse_steps: int = 15):
+    """Create a vectorized line search function with quadratic refinement.
+
+    This implements FreeSurfer's mrisLineMinimize approach:
+    1. Evaluate energy at log-spaced step sizes (vectorized)
+    2. Find the best coarse step
+    3. Fit a quadratic through 3 points around the best step
+    4. Return the minimum of the quadratic (if valid) or the best evaluated point
+
+    Args:
+        energy_fn: function(uv) -> (energy, aux)
+        n_coarse_steps: number of coarse step sizes to try
+
+    Returns:
+        JIT-compiled line search function
+    """
+
+    @jax.jit
+    def _eval_energy_at_alpha(uv, grad_normalized, alpha):
+        """Evaluate energy at uv - alpha * grad_normalized."""
+        uv_new = uv - alpha * grad_normalized
+        energy, aux = energy_fn(uv_new)
+        return energy, uv_new, aux
+
+    # Vectorize over alpha
+    _eval_energies_batch = jax.vmap(
+        lambda uv, grad_normalized, alpha: _eval_energy_at_alpha(
+            uv, grad_normalized, alpha
+        ),
+        in_axes=(None, None, 0),
+    )
+
+    @jax.jit
+    def _fit_quadratic_minimum(x0, x1, x2, y0, y1, y2):
+        """Fit a quadratic through 3 points and find its minimum."""
+        denom0 = (x0 - x1) * (x0 - x2)
+        denom1 = (x1 - x0) * (x1 - x2)
+        denom2 = (x2 - x0) * (x2 - x1)
+
+        a = y0 / denom0 + y1 / denom1 + y2 / denom2
+        b = -y0 * (x1 + x2) / denom0 - y1 * (x0 + x2) / denom1 - y2 * (x0 + x1) / denom2
+
+        x_min = -b / (2 * a + 1e-20)
+        valid = (a > 1e-12) & (x_min > x0) & (x_min < x2)
+
+        return jnp.where(valid, x_min, x1)
+
+    @jax.jit
+    def vectorized_line_search(uv, grad, max_mm=1000.0, min_mm=0.001):
+        """Vectorized line search with quadratic refinement.
+
+        Args:
+            uv: current UV coordinates
+            grad: gradient direction
+            max_mm: maximum displacement in coordinate units
+            min_mm: minimum displacement in coordinate units
+
+        Returns:
+            (new_uv, new_energy, best_alpha, aux)
+        """
+        grad_normalized = grad / (jnp.linalg.norm(grad) + 1e-20)
+
+        max_grad = jnp.max(jnp.abs(grad_normalized))
+        mean_grad = jnp.mean(jnp.abs(grad_normalized))
+
+        max_dt = max_mm / (max_grad + 1e-20)
+        min_dt = min_mm / (mean_grad + 1e-20)
+        min_dt = jnp.minimum(min_dt, max_dt / 1000)
+
+        log_min = jnp.log10(min_dt)
+        log_max = jnp.log10(max_dt)
+        alphas = jnp.logspace(log_min, log_max, n_coarse_steps)
+
+        energies, uvs, auxs = _eval_energies_batch(uv, grad_normalized, alphas)
+
+        energy_0, aux_0 = energy_fn(uv)
+
+        best_coarse_idx = jnp.argmin(energies)
+        best_coarse_energy = energies[best_coarse_idx]
+        best_coarse_alpha = alphas[best_coarse_idx]
+
+        idx_left = jnp.maximum(best_coarse_idx - 1, 0)
+        idx_right = jnp.minimum(best_coarse_idx + 1, n_coarse_steps - 1)
+
+        x0, x1, x2 = alphas[idx_left], alphas[best_coarse_idx], alphas[idx_right]
+        y0, y1, y2 = energies[idx_left], energies[best_coarse_idx], energies[idx_right]
+
+        alpha_quad = _fit_quadratic_minimum(x0, x1, x2, y0, y1, y2)
+
+        energy_quad, uv_quad, aux_quad = _eval_energy_at_alpha(
+            uv, grad_normalized, alpha_quad
+        )
+
+        use_quad = energy_quad < best_coarse_energy
+        best_from_search_energy = jnp.where(use_quad, energy_quad, best_coarse_energy)
+        best_from_search_alpha = jnp.where(use_quad, alpha_quad, best_coarse_alpha)
+        best_from_search_uv = jax.lax.cond(
+            use_quad, lambda: uv_quad, lambda: uvs[best_coarse_idx]
+        )
+        best_from_search_aux = jax.lax.cond(
+            use_quad,
+            lambda: aux_quad,
+            lambda: (auxs[0][best_coarse_idx], auxs[1][best_coarse_idx]),
+        )
+
+        use_start = energy_0 <= best_from_search_energy
+        final_energy = jnp.where(use_start, energy_0, best_from_search_energy)
+        final_alpha = jnp.where(use_start, 0.0, best_from_search_alpha)
+        final_uv = jax.lax.cond(use_start, lambda: uv, lambda: best_from_search_uv)
+        final_aux = jax.lax.cond(use_start, lambda: aux_0, lambda: best_from_search_aux)
+
+        return final_uv, final_energy, final_alpha, final_aux
+
+    return vectorized_line_search
+
+
+# =============================================================================
+# Optimization functions
+# =============================================================================
+
+
+def run_smoothed_optimization(
+    uv_init: np.ndarray,
+    lambda_d: float,
+    lambda_a: float,
+    smoothing_schedule: list[int],
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    faces_jax: jnp.ndarray,
+    smooth_neighbors_jax: jnp.ndarray,
+    smooth_mask_jax: jnp.ndarray,
+    smooth_counts_jax: jnp.ndarray,
+    iters_per_level: int = 50,
+    print_every: int = 10,
+    verbose: bool = True,
+    base_tol: float = 0.2,
+    max_small: int = 50000,
+    total_small_limit: int = 15000,
+    n_coarse_steps: int = 15,
+) -> np.ndarray:
+    """Run gradient descent with FreeSurfer-style gradient smoothing.
+
+    Uses vectorized line search with quadratic refinement.
+    Convergence is based on relative SSE change (FreeSurfer v6.0.0 style).
+
+    Args:
+        uv_init: Initial UV coordinates
+        lambda_d: Weight for distance energy
+        lambda_a: Weight for area energy
+        smoothing_schedule: List of gradient averaging counts
+        neighbors_jax: (V, max_neighbors) neighbor indices
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        faces_jax: (F, 3) face indices
+        smooth_neighbors_jax: Smoothing adjacency
+        smooth_mask_jax: Smoothing validity mask
+        smooth_counts_jax: Smoothing neighbor counts
+        iters_per_level: Max iterations per smoothing level
+        print_every: Print progress every N iterations
+        verbose: Print progress messages
+        base_tol: Base convergence tolerance
+        max_small: Max consecutive small steps
+        total_small_limit: Max total small steps
+        n_coarse_steps: Number of line search steps
+
+    Returns:
+        Optimized UV coordinates
+    """
+    energy_fn = make_energy_fn(
+        lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
+    )
+    grad_fn = jax.jit(jax.grad(lambda uv: energy_fn(uv)[0]))
+
+    line_search_fn = make_vectorized_line_search(
+        energy_fn, n_coarse_steps=n_coarse_steps
+    )
+
+    uv = jnp.asarray(uv_init)
+
+    iteration = 0
+    total_small = 0.0
+    start_time = time.time()
+
+    if verbose:
+        print(
+            f"\n{'Iter':>5} {'n_avg':>6} {'Energy':>12} {'J_d':>10} {'J_a':>10} "
+            f"{'relΔSSE':>10} {'alpha':>10} {'Flipped':>8} {'%err':>7}"
+        )
+        print("-" * 100)
+
+    for n_avg in smoothing_schedule:
+        scaled_tol = base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
+
+        nsmall = 0
+        old_sse = None
+
+        for i in range(iters_per_level):
+            grad = grad_fn(uv)
+
+            if n_avg > 0:
+                grad_smooth = smooth_gradient(
+                    grad,
+                    smooth_neighbors_jax,
+                    smooth_mask_jax,
+                    smooth_counts_jax,
+                    n_avg,
+                )
+            else:
+                grad_smooth = grad
+
+            uv, energy, alpha, (J_d, J_a) = line_search_fn(uv, grad_smooth)
+
+            iteration += 1
+            current_sse = float(energy)
+            alpha_val = float(alpha)
+
+            rel_change = 0.0
+            if old_sse is not None and old_sse > 0:
+                rel_change = (old_sse - current_sse) / old_sse
+
+                if rel_change < scaled_tol:
+                    nsmall += 1
+                    total_small += 1
+                else:
+                    total_small = max(0, total_small - 0.25)
+                    nsmall = 0
+
+            should_print = verbose and (iteration % print_every == 0 or i == 0)
+            if should_print:
+                n_flipped = int(count_flipped_triangles(uv, faces_jax))
+                pct_err = float(
+                    _compute_distance_error_jit(
+                        uv, neighbors_jax, targets_jax, mask_jax
+                    )
+                )
+                print(
+                    f"{iteration:5d} {n_avg:6d} {current_sse:12.4f} {float(J_d):10.4f} "
+                    f"{float(J_a):10.4f} {rel_change:10.2e} {alpha_val:10.2e} "
+                    f"{n_flipped:8d} {pct_err:6.1f}%"
+                )
+
+            if nsmall > max_small:
+                if verbose:
+                    print(
+                        f"  -> Converged at n_avg={n_avg}: {nsmall} consecutive "
+                        f"small steps (>{max_small})"
+                    )
+                break
+
+            if total_small > total_small_limit:
+                if verbose:
+                    print(
+                        f"  -> Converged: total_small={total_small:.0f} > "
+                        f"{total_small_limit}"
+                    )
+                break
+
+            if old_sse is not None and current_sse > 0:
+                if 100 * (old_sse - current_sse) / current_sse < scaled_tol:
+                    if verbose:
+                        print(
+                            f"  -> Converged at n_avg={n_avg}: relative change < "
+                            f"{scaled_tol:.2e}"
+                        )
+                    break
+
+            if alpha_val == 0:
+                if verbose:
+                    print(f"  -> At minimum (alpha=0) at n_avg={n_avg}")
+                break
+
+            old_sse = current_sse
+
+        if verbose:
+            n_flipped = int(count_flipped_triangles(uv, faces_jax))
+            pct_err = float(
+                _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+            )
+            print(
+                f"  -> Level n_avg={n_avg} done: {n_flipped} flipped, {pct_err:.1f}% err, "
+                f"nsmall={nsmall}, total_small={total_small:.0f}"
+            )
+
+    elapsed = time.time() - start_time
+    if verbose:
+        print(f"\nTotal: {iteration} iterations in {elapsed:.1f}s")
+
+    return np.array(uv)
+
+
+def run_adaptive_optimization(
+    uv_init: np.ndarray,
+    lambda_d: float,
+    lambda_a: float,
+    smoothing_schedule: list[int],
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    faces_jax: jnp.ndarray,
+    smooth_neighbors_jax: jnp.ndarray,
+    smooth_mask_jax: jnp.ndarray,
+    smooth_counts_jax: jnp.ndarray,
+    compute_energies_fn,
+    iters_per_level: int = 50,
+    print_every: int = 10,
+    verbose: bool = True,
+    base_tol: float = 0.2,
+    max_small: int = 50000,
+    total_small_limit: int = 15000,
+    n_coarse_steps: int = 15,
+    flipped_threshold_factor: float = 20.0,
+    recovery_area_ratio: float = 0.5,
+    recovery_iterations: int = 50,
+) -> np.ndarray:
+    """Run adaptive gradient descent with flipped-triangle recovery.
+
+    This is similar to run_smoothed_optimization but monitors for flipped
+    triangle explosions and triggers recovery when needed. When the flipped
+    count exceeds a threshold, the optimizer temporarily increases the area
+    weight to fix the flipped triangles before resuming normal optimization.
+
+    Args:
+        uv_init: Initial UV coordinates
+        lambda_d: Weight for distance energy
+        lambda_a: Weight for area energy
+        smoothing_schedule: List of gradient averaging counts
+        neighbors_jax: (V, max_neighbors) neighbor indices
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        faces_jax: (F, 3) face indices
+        smooth_neighbors_jax: Smoothing adjacency
+        smooth_mask_jax: Smoothing validity mask
+        smooth_counts_jax: Smoothing neighbor counts
+        compute_energies_fn: Function to compute (J_d, J_a) for energy tracking
+        iters_per_level: Max iterations per smoothing level
+        print_every: Print progress every N iterations
+        verbose: Print progress messages
+        base_tol: Base convergence tolerance
+        max_small: Max consecutive small steps
+        total_small_limit: Max total small steps
+        n_coarse_steps: Number of line search steps
+        flipped_threshold_factor: Trigger recovery when flipped > initial * factor
+        recovery_area_ratio: Area/distance ratio during recovery (higher = more area weight)
+        recovery_iterations: Number of recovery iterations
+
+    Returns:
+        Optimized UV coordinates
+    """
+    energy_fn = make_energy_fn(
+        lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
+    )
+    grad_fn = jax.jit(jax.grad(lambda uv: energy_fn(uv)[0]))
+
+    line_search_fn = make_vectorized_line_search(
+        energy_fn, n_coarse_steps=n_coarse_steps
+    )
+
+    uv = jnp.asarray(uv_init)
+
+    # Track initial flipped count for adaptive recovery threshold
+    initial_flipped = int(count_flipped_triangles(uv, faces_jax))
+    flipped_threshold = max(initial_flipped * flipped_threshold_factor, 500)
+    best_uv = uv
+    best_flipped = initial_flipped
+    recovery_count = 0
+    max_recoveries = 3  # Limit recovery attempts
+
+    iteration = 0
+    total_small = 0.0
+    start_time = time.time()
+
+    if verbose:
+        print(
+            f"\n{'Iter':>5} {'n_avg':>6} {'Energy':>12} {'J_d':>10} {'J_a':>10} "
+            f"{'relΔSSE':>10} {'alpha':>10} {'Flipped':>8} {'%err':>7}"
+        )
+        print("-" * 100)
+
+    for n_avg in smoothing_schedule:
+        scaled_tol = base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
+
+        nsmall = 0
+        old_sse = None
+
+        for i in range(iters_per_level):
+            grad = grad_fn(uv)
+
+            if n_avg > 0:
+                grad_smooth = smooth_gradient(
+                    grad,
+                    smooth_neighbors_jax,
+                    smooth_mask_jax,
+                    smooth_counts_jax,
+                    n_avg,
+                )
+            else:
+                grad_smooth = grad
+
+            uv, energy, alpha, (J_d, J_a) = line_search_fn(uv, grad_smooth)
+
+            iteration += 1
+            current_sse = float(energy)
+            alpha_val = float(alpha)
+
+            # Check flipped count and trigger recovery if needed
+            n_flipped = int(count_flipped_triangles(uv, faces_jax))
+
+            # Track best state
+            if n_flipped < best_flipped:
+                best_flipped = n_flipped
+                best_uv = uv
+
+            # Adaptive recovery: if flipped explodes, run recovery phase
+            if n_flipped > flipped_threshold and recovery_count < max_recoveries:
+                if verbose:
+                    print(
+                        f"  -> RECOVERY TRIGGERED: {n_flipped} flipped > "
+                        f"threshold {flipped_threshold:.0f}"
+                    )
+
+                # Run recovery with higher area weight
+                J_d_curr, J_a_curr = compute_energies_fn(uv)
+                recovery_lambda_d, recovery_lambda_a = compute_normalized_lambdas(
+                    float(J_d_curr), float(J_a_curr), ratio=recovery_area_ratio
+                )
+
+                recovery_energy_fn = make_energy_fn(
+                    recovery_lambda_d,
+                    recovery_lambda_a,
+                    neighbors_jax,
+                    targets_jax,
+                    mask_jax,
+                    faces_jax,
+                )
+                recovery_grad_fn = jax.jit(jax.grad(lambda u: recovery_energy_fn(u)[0]))
+                recovery_line_search = make_vectorized_line_search(
+                    recovery_energy_fn, n_coarse_steps=n_coarse_steps
+                )
+
+                for r_iter in range(recovery_iterations):
+                    r_grad = recovery_grad_fn(uv)
+                    if n_avg > 0:
+                        r_grad = smooth_gradient(
+                            r_grad,
+                            smooth_neighbors_jax,
+                            smooth_mask_jax,
+                            smooth_counts_jax,
+                            min(n_avg, 64),
+                        )
+                    uv, _, _, _ = recovery_line_search(uv, r_grad)
+
+                n_flipped_after = int(count_flipped_triangles(uv, faces_jax))
+                recovery_count += 1
+
+                if verbose:
+                    print(
+                        f"  -> RECOVERY COMPLETE: {n_flipped} -> {n_flipped_after} flipped "
+                        f"(attempt {recovery_count}/{max_recoveries})"
+                    )
+
+                # Update threshold to prevent repeated triggers
+                flipped_threshold = max(n_flipped_after * 5, flipped_threshold)
+
+            rel_change = 0.0
+            if old_sse is not None and old_sse > 0:
+                rel_change = (old_sse - current_sse) / old_sse
+
+                if rel_change < scaled_tol:
+                    nsmall += 1
+                    total_small += 1
+                else:
+                    total_small = max(0, total_small - 0.25)
+                    nsmall = 0
+
+            should_print = verbose and (iteration % print_every == 0 or i == 0)
+            if should_print:
+                pct_err = float(
+                    _compute_distance_error_jit(
+                        uv, neighbors_jax, targets_jax, mask_jax
+                    )
+                )
+                print(
+                    f"{iteration:5d} {n_avg:6d} {current_sse:12.4f} {float(J_d):10.4f} "
+                    f"{float(J_a):10.4f} {rel_change:10.2e} {alpha_val:10.2e} "
+                    f"{n_flipped:8d} {pct_err:6.1f}%"
+                )
+
+            if nsmall > max_small:
+                if verbose:
+                    print(
+                        f"  -> Converged at n_avg={n_avg}: {nsmall} consecutive "
+                        f"small steps (>{max_small})"
+                    )
+                break
+
+            if total_small > total_small_limit:
+                if verbose:
+                    print(
+                        f"  -> Converged: total_small={total_small:.0f} > "
+                        f"{total_small_limit}"
+                    )
+                break
+
+            if old_sse is not None and current_sse > 0:
+                if 100 * (old_sse - current_sse) / current_sse < scaled_tol:
+                    if verbose:
+                        print(
+                            f"  -> Converged at n_avg={n_avg}: relative change < "
+                            f"{scaled_tol:.2e}"
+                        )
+                    break
+
+            if alpha_val == 0:
+                if verbose:
+                    print(f"  -> At minimum (alpha=0) at n_avg={n_avg}")
+                break
+
+            old_sse = current_sse
+
+        if verbose:
+            n_flipped = int(count_flipped_triangles(uv, faces_jax))
+            pct_err = float(
+                _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+            )
+            print(
+                f"  -> Level n_avg={n_avg} done: {n_flipped} flipped, {pct_err:.1f}% err, "
+                f"nsmall={nsmall}, total_small={total_small:.0f}"
+            )
+
+    elapsed = time.time() - start_time
+
+    # Use best state if final state has significantly more flipped triangles
+    final_flipped = int(count_flipped_triangles(uv, faces_jax))
+    if best_flipped < final_flipped * 0.5:
+        if verbose:
+            print(
+                f"  -> Using best state: {best_flipped} flipped "
+                f"(vs final {final_flipped})"
+            )
+        uv = best_uv
+
+    if verbose:
+        print(f"\nTotal: {iteration} iterations in {elapsed:.1f}s")
+
+    return np.array(uv)
+
+
+def remove_negative_area(
+    uv_init: np.ndarray,
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    faces_jax: jnp.ndarray,
+    smooth_neighbors_jax: jnp.ndarray,
+    smooth_mask_jax: jnp.ndarray,
+    smooth_counts_jax: jnp.ndarray,
+    compute_energies_fn,
+    grad_J_d_fn,
+    grad_J_a_fn,
+    config: NegativeAreaRemovalConfig,
+    convergence_max_small: int = 50000,
+    convergence_total_small: int = 15000,
+    n_coarse_steps: int = 15,
+    print_every: int = 20,
+    verbose: bool = True,
+) -> np.ndarray:
+    """FreeSurfer-style negative area removal with vectorized line search.
+
+    Args:
+        uv_init: Initial UV coordinates
+        neighbors_jax: (V, max_neighbors) neighbor indices
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        faces_jax: (F, 3) face indices
+        smooth_neighbors_jax: Smoothing adjacency
+        smooth_mask_jax: Smoothing validity mask
+        smooth_counts_jax: Smoothing neighbor counts
+        compute_energies_fn: Function to compute (J_d, J_a)
+        grad_J_d_fn: JIT-compiled distance energy gradient
+        grad_J_a_fn: JIT-compiled area energy gradient
+        config: Negative area removal configuration
+        convergence_max_small: Max consecutive small steps
+        convergence_total_small: Max total small steps
+        n_coarse_steps: Number of line search steps
+        print_every: Print progress every N iterations
+        verbose: Print progress messages
+
+    Returns:
+        UV coordinates with reduced negative area
+    """
+    compute_weighted_gradient = make_weighted_gradient_fn(grad_J_d_fn, grad_J_a_fn)
+
+    def make_schedule(base):
+        schedule = []
+        n = base
+        while n >= 1:
+            schedule.append(n)
+            n //= 4
+        schedule.append(0)
+        return schedule
+
+    uv = jnp.asarray(uv_init)
+    total_iterations = 0
+    total_small = 0.0
+    start_time = time.time()
+
+    if verbose:
+        print(f"\n{'=' * 85}")
+        print(
+            "NEGATIVE AREA REMOVAL (Vectorized Quadratic Line Search, "
+            "FreeSurfer v6.0.0 convergence)"
+        )
+        print(f"{'=' * 85}")
+
+    for pass_idx in range(min(config.max_passes, len(config.area_weights))):
+        area_weight = config.area_weights[pass_idx]
+
+        n_flipped = int(count_flipped_triangles(uv, faces_jax))
+        total_faces = len(faces_jax)
+        pct_neg = 100.0 * n_flipped / total_faces
+
+        if verbose:
+            print(
+                f"\n--- Pass {pass_idx + 1}/{config.max_passes}: "
+                f"area_weight = {area_weight:.0e}, flipped = {n_flipped} "
+                f"({pct_neg:.2f}%) ---"
+            )
+
+        if pct_neg <= config.min_area_pct:
+            if verbose:
+                print(f"  Early stop: {pct_neg:.2f}% <= {config.min_area_pct}% target")
+            break
+
+        J_d_curr, J_a_curr = compute_energies_fn(uv)
+        J_d_curr, J_a_curr = float(J_d_curr), float(J_a_curr)
+
+        smoothing_schedule = make_schedule(config.base_averages)
+
+        lambda_d, lambda_a = compute_normalized_lambdas(
+            J_d_curr, J_a_curr, ratio=area_weight
+        )
+        combined_energy_fn = make_energy_fn(
+            lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
+        )
+
+        line_search_fn = make_vectorized_line_search(
+            combined_energy_fn, n_coarse_steps=n_coarse_steps
+        )
+
+        if verbose:
+            print(
+                f"  J_d={J_d_curr:.4f}, J_a={J_a_curr:.6f}, schedule={smoothing_schedule}"
+            )
+            print(
+                f"  {'Iter':>5} {'n_avg':>6} {'J_d':>10} {'J_a':>10} {'relΔSSE':>10} "
+                f"{'alpha':>10} {'Flipped':>8} {'%err':>7}"
+            )
+            print("  " + "-" * 88)
+
+        iteration = 0
+
+        for n_avg in smoothing_schedule:
+            scaled_tol = config.base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
+            nsmall = 0
+            old_sse = None
+
+            for i in range(config.iters_per_level):
+                grad = compute_weighted_gradient(uv, area_weight)
+
+                if n_avg > 0:
+                    grad_smooth = smooth_gradient(
+                        grad,
+                        smooth_neighbors_jax,
+                        smooth_mask_jax,
+                        smooth_counts_jax,
+                        n_avg,
+                    )
+                else:
+                    grad_smooth = grad
+
+                uv, energy, alpha, (J_d, J_a) = line_search_fn(uv, grad_smooth)
+
+                iteration += 1
+                total_iterations += 1
+                current_sse = float(energy)
+                alpha_val = float(alpha)
+
+                rel_change = 0.0
+                if old_sse is not None and old_sse > 0:
+                    rel_change = (old_sse - current_sse) / old_sse
+
+                    if rel_change < scaled_tol:
+                        nsmall += 1
+                        total_small += 1
+                    else:
+                        total_small = max(0, total_small - 0.25)
+                        nsmall = 0
+
+                if verbose and iteration % print_every == 0:
+                    n_flipped = int(count_flipped_triangles(uv, faces_jax))
+                    pct_err = float(
+                        _compute_distance_error_jit(
+                            uv, neighbors_jax, targets_jax, mask_jax
+                        )
+                    )
+                    print(
+                        f"  {iteration:5d} {n_avg:6d} {float(J_d):10.4f} "
+                        f"{float(J_a):10.4f} {rel_change:10.2e} {alpha_val:10.2e} "
+                        f"{n_flipped:8d} {pct_err:6.1f}%"
+                    )
+
+                if (
+                    nsmall > convergence_max_small
+                    or total_small > convergence_total_small
+                ):
+                    break
+
+                if old_sse is not None and current_sse > 0:
+                    if 100 * (old_sse - current_sse) / current_sse < scaled_tol:
+                        break
+
+                if alpha_val == 0:
+                    break
+
+                old_sse = current_sse
+
+        if verbose:
+            n_flipped = int(count_flipped_triangles(uv, faces_jax))
+            pct_err = float(
+                _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+            )
+            print(
+                f"  Pass {pass_idx + 1} done: {n_flipped} flipped, {pct_err:.1f}% err, "
+                f"total_small={total_small:.0f}"
+            )
+
+    elapsed = time.time() - start_time
+    if verbose:
+        n_flipped_final = int(count_flipped_triangles(uv, faces_jax))
+        pct_err_final = float(
+            _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+        )
+        print(
+            f"\nNegative area removal complete: {total_iterations} iterations "
+            f"in {elapsed:.1f}s"
+        )
+        print(f"Final: {n_flipped_final} flipped, {pct_err_final:.1f}% err")
+
+    return np.array(uv)
+
+
+# =============================================================================
+# Final Spring Smoothing
+# =============================================================================
+
+
+def final_spring_smoothing(
+    uv_init: np.ndarray,
+    faces_jax: jnp.ndarray,
+    smooth_neighbors_jax: jnp.ndarray,
+    smooth_mask_jax: jnp.ndarray,
+    smooth_counts_jax: jnp.ndarray,
+    is_boundary_jax: jnp.ndarray,
+    neighbors_jax: jnp.ndarray,
+    targets_jax: jnp.ndarray,
+    mask_jax: jnp.ndarray,
+    config: SpringSmoothingConfig,
+    verbose: bool = True,
+) -> np.ndarray:
+    """FreeSurfer-style final spring smoothing.
+
+    Uses direct displacement toward neighbor centroids (NOT energy gradient).
+    This creates a Laplacian smoothing effect that regularizes triangle shapes,
+    producing visually smoother flatmaps at the cost of slightly higher distance
+    error (similar to FreeSurfer's ~13% -> ~15% after smoothing).
+
+    FreeSurfer boundary handling (mrisurf.c:22094):
+        if (v->border && !v->neg) continue;
+    Only skip boundary vertices that are NOT involved in flipped triangles.
+    This allows fixing flipped triangles at the boundary.
+
+    Reference: FreeSurfer mrisurf.c:7904-7928, mrisurf.c:22059
+
+    Args:
+        uv_init: Initial UV coordinates
+        faces_jax: (F, 3) face indices
+        smooth_neighbors_jax: Smoothing adjacency
+        smooth_mask_jax: Smoothing validity mask
+        smooth_counts_jax: Smoothing neighbor counts
+        is_boundary_jax: (V,) boolean mask of boundary vertices
+        neighbors_jax: (V, max_neighbors) neighbor indices for distance error
+        targets_jax: (V, max_neighbors) target distances
+        mask_jax: (V, max_neighbors) validity mask
+        config: Spring smoothing configuration
+        verbose: Print progress messages
+
+    Returns:
+        Smoothed UV coordinates
+    """
+    uv = jnp.asarray(uv_init)
+
+    if verbose:
+        print(f"\n{'=' * 85}")
+        print("FINAL SPRING SMOOTHING (FreeSurfer-style)")
+        print(f"{'=' * 85}")
+        print(
+            f"  n_iterations={config.n_iterations}, dt={config.dt}, "
+            f"max_step={config.max_step_mm}"
+        )
+
+    pct_err_before = float(
+        _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+    )
+    n_flipped_before = int(count_flipped_triangles(uv, faces_jax))
+    if verbose:
+        print(
+            f"  Before: {n_flipped_before} flipped, {pct_err_before:.2f}% distance error"
+        )
+
+    for i in range(config.n_iterations):
+        # FreeSurfer: skip boundary vertices UNLESS they have negative area
+        # Condition: if (v->border && !v->neg) continue;
+        has_neg = get_vertices_with_negative_area(uv, faces_jax)
+        skip_mask = is_boundary_jax & ~has_neg  # Skip only healthy boundary vertices
+
+        # Compute spring displacement (pulls toward neighbor centroids)
+        displacement = compute_spring_displacement(
+            uv,
+            smooth_neighbors_jax,
+            smooth_mask_jax,
+            smooth_counts_jax,
+            skip_mask=skip_mask,
+        )
+
+        # Scale by dt (l_spring = 1.0 is implicit)
+        step = config.dt * displacement
+
+        # Clip step magnitude per vertex (FreeSurfer's MAX_MOMENTUM_MM)
+        step_mag = jnp.linalg.norm(step, axis=1, keepdims=True)
+        step = jnp.where(
+            step_mag > config.max_step_mm,
+            step * config.max_step_mm / (step_mag + 1e-12),
+            step,
+        )
+
+        # Apply step (displacement points toward centroid, so we add)
+        uv = uv + step
+
+        if verbose:
+            n_flipped = int(count_flipped_triangles(uv, faces_jax))
+            pct_err = float(
+                _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+            )
+            print(f"  Iter {i + 1}: {n_flipped} flipped, {pct_err:.2f}% err")
+
+    pct_err_after = float(
+        _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
+    )
+    n_flipped_after = int(count_flipped_triangles(uv, faces_jax))
+    if verbose:
+        print(
+            f"  After: {n_flipped_after} flipped, {pct_err_after:.2f}% distance error"
+        )
+
+    return np.array(uv)
+
+
+# =============================================================================
+# SurfaceFlattener class
+# =============================================================================
+
+
+class SurfaceFlattener:
+    """Orchestrates cortical surface flattening optimization.
+
+    This class manages the state and orchestrates the multi-phase optimization
+    for flattening cortical surface patches. It follows the FreeSurfer approach
+    with JAX-accelerated energy computation and gradient descent.
+
+    Example:
+        >>> config = FlattenConfig()
+        >>> flattener = SurfaceFlattener(config)
+        >>> flattener.load_data("lh.cortex.patch.3d", "lh.fiducial")
+        >>> flattener.compute_kring_distances()
+        >>> flattener.prepare_optimization()
+        >>> uv = flattener.run()
+        >>> flattener.save_result(uv, "lh.flat.patch.3d")
+    """
+
+    def __init__(self, config: FlattenConfig):
+        """Initialize flattener with configuration.
+
+        Args:
+            config: Flattening configuration
+        """
+        self.config = config
+
+        # Mesh data (set by load_data)
+        self.vertices: Optional[np.ndarray] = None
+        self.faces: Optional[np.ndarray] = None
+        self.fiducial_vertices: Optional[np.ndarray] = None
+        self.orig_indices: Optional[np.ndarray] = None
+
+        # K-ring data (set by compute_kring_distances)
+        self.k_rings: Optional[list] = None
+        self.target_distances: Optional[list] = None
+
+        # JAX arrays (set by prepare_optimization)
+        self.neighbors_jax: Optional[jnp.ndarray] = None
+        self.targets_jax: Optional[jnp.ndarray] = None
+        self.mask_jax: Optional[jnp.ndarray] = None
+        self.faces_jax: Optional[jnp.ndarray] = None
+        self.smooth_neighbors_jax: Optional[jnp.ndarray] = None
+        self.smooth_mask_jax: Optional[jnp.ndarray] = None
+        self.smooth_counts_jax: Optional[jnp.ndarray] = None
+        self.is_boundary_jax: Optional[jnp.ndarray] = None
+
+        # JIT-compiled functions (set by prepare_optimization)
+        self._compute_energies = None
+        self._grad_J_d = None
+        self._grad_J_a = None
+
+    def load_data(self, patch_path: str, surface_path: str) -> None:
+        """Load patch and surface data.
+
+        Args:
+            patch_path: Path to FreeSurfer patch file
+            surface_path: Path to FreeSurfer surface file (fiducial)
+        """
+        if self.config.verbose:
+            print("Loading cortical surface patch...")
+
+        orig_vertices, orig_faces = read_surface(surface_path)
+        patch_vertices, orig_idx, _ = read_patch(patch_path)
+        patch_faces = extract_patch_faces(orig_faces, orig_idx)
+
+        # Use patch vertices for mesh, fiducial for distances
+        self.vertices, self.faces, used = remove_isolated_vertices(
+            patch_vertices.astype(np.float64), patch_faces
+        )
+
+        fiducial_patch_vertices = orig_vertices[orig_idx].astype(np.float64)
+        self.fiducial_vertices, _, _ = remove_isolated_vertices(
+            fiducial_patch_vertices, patch_faces
+        )
+
+        self.orig_indices = orig_idx[used]
+
+        if self.config.verbose:
+            print(f"Mesh: {len(self.vertices):,} vertices, {len(self.faces):,} faces")
+
+        # Validate topology before proceeding
+        euler = validate_topology(
+            self.vertices, self.faces, strict=self.config.strict_topology
+        )
+        boundary = igl.boundary_loop(self.faces)
+
+        if self.config.verbose:
+            print(f"Euler characteristic: {euler}, Boundary vertices: {len(boundary)}")
+
+    def compute_kring_distances(self, cache_path: Optional[str] = None) -> None:
+        """Compute or load cached k-ring geodesic distances.
+
+        Args:
+            cache_path: Path to cache file. If None, no caching is performed.
+        """
+        if self.fiducial_vertices is None:
+            raise RuntimeError("Must call load_data before compute_kring_distances")
+
+        kring_config = self.config.kring
+
+        if kring_config.n_neighbors_per_ring is None:
+            # Use all neighbors
+            if cache_path and os.path.exists(cache_path):
+                if self.config.verbose:
+                    print(f"Loading cached k-ring distances from {cache_path}...")
+                cached = np.load(cache_path, allow_pickle=True)
+                self.k_rings = list(cached["k_rings"])
+                self.target_distances = list(cached["target_distances"])
+            else:
+                if self.config.verbose:
+                    print(
+                        f"Computing {kring_config.k_ring}-ring geodesic distances "
+                        f"(all neighbors)..."
+                    )
+                self.k_rings, self.target_distances = compute_kring_geodesic_distances(
+                    self.fiducial_vertices, self.faces, kring_config.k_ring
+                )
+                if cache_path:
+                    if self.config.verbose:
+                        print(f"Caching to {cache_path}...")
+                    cache_dir = os.path.dirname(cache_path)
+                    if cache_dir:
+                        os.makedirs(cache_dir, exist_ok=True)
+                    np.savez(
+                        cache_path,
+                        k_rings=np.array(self.k_rings, dtype=object),
+                        target_distances=np.array(self.target_distances, dtype=object),
+                    )
+        else:
+            # Angular sampling
+            if cache_path and os.path.exists(cache_path):
+                if self.config.verbose:
+                    print(f"Loading cached k-ring distances from {cache_path}...")
+                cached = np.load(cache_path, allow_pickle=True)
+                self.k_rings = list(cached["k_rings"])
+                self.target_distances = list(cached["target_distances"])
+            else:
+                if self.config.verbose:
+                    print(
+                        f"Computing {kring_config.k_ring}-ring geodesic distances "
+                        f"with angular sampling ({kring_config.n_neighbors_per_ring}/ring)..."
+                    )
+                self.k_rings, self.target_distances = (
+                    compute_kring_geodesic_distances_angular(
+                        self.fiducial_vertices,
+                        self.faces,
+                        kring_config.k_ring,
+                        n_samples_per_ring=kring_config.n_neighbors_per_ring,
+                    )
+                )
+                if cache_path:
+                    if self.config.verbose:
+                        print(f"Caching to {cache_path}...")
+                    cache_dir = os.path.dirname(cache_path)
+                    if cache_dir:
+                        os.makedirs(cache_dir, exist_ok=True)
+                    np.savez(
+                        cache_path,
+                        k_rings=np.array(self.k_rings, dtype=object),
+                        target_distances=np.array(self.target_distances, dtype=object),
+                    )
+
+        if self.config.verbose:
+            total_neighbors = sum(len(n) for n in self.k_rings)
+            avg_neighbors = total_neighbors / len(self.k_rings)
+            print(
+                f"Distance constraints: {total_neighbors:,} edges, "
+                f"avg {avg_neighbors:.1f} neighbors/vertex"
+            )
+
+    def prepare_optimization(self) -> None:
+        """Prepare JAX arrays and JIT-compiled functions.
+
+        Must be called after load_data and compute_kring_distances.
+        """
+        if self.k_rings is None:
+            raise RuntimeError(
+                "Must call compute_kring_distances before prepare_optimization"
+            )
+
+        # Prepare metric data
+        neighbors, targets, mask = prepare_metric_data(
+            self.k_rings, self.target_distances
+        )
+        self.neighbors_jax = jnp.asarray(neighbors)
+        self.targets_jax = jnp.asarray(targets)
+        self.mask_jax = jnp.asarray(mask)
+
+        # Prepare smoothing data
+        if self.config.verbose:
+            print("Preparing smoothing data...")
+        smooth_neighbors, smooth_mask, smooth_counts = prepare_smoothing_data(
+            self.faces, len(self.vertices)
+        )
+        self.smooth_neighbors_jax = jnp.asarray(smooth_neighbors)
+        self.smooth_mask_jax = jnp.asarray(smooth_mask)
+        self.smooth_counts_jax = jnp.asarray(smooth_counts.astype(np.float32))
+
+        if self.config.verbose:
+            print(f"Max vertex degree: {smooth_mask.shape[1]}")
+
+        # Faces
+        self.faces_jax = jnp.asarray(self.faces)
+
+        # Boundary mask for spring smoothing
+        boundary = igl.boundary_loop(self.faces)
+        is_boundary = np.zeros(len(self.vertices), dtype=bool)
+        is_boundary[boundary] = True
+        self.is_boundary_jax = jnp.asarray(is_boundary)
+
+        if self.config.verbose:
+            print(f"Boundary vertices: {len(boundary)}")
+
+        # Initialize energy functions
+        if self.config.verbose:
+            print("Initializing gradient functions...")
+        self._compute_energies, self._grad_J_d, self._grad_J_a = make_energy_functions(
+            self.neighbors_jax,
+            self.targets_jax,
+            self.mask_jax,
+            self.faces_jax,
+        )
+
+    def initial_projection(self) -> np.ndarray:
+        """Compute initial 2D projection (FreeSurfer-style).
+
+        Returns:
+            (V, 2) initial UV coordinates
+        """
+        return freesurfer_projection(self.vertices, self.faces)
+
+    def run(self) -> np.ndarray:
+        """Run complete optimization pipeline.
+
+        Returns:
+            Optimized (V, 2) UV coordinates
+        """
+        if self._compute_energies is None:
+            raise RuntimeError("Must call prepare_optimization before run")
+
+        config = self.config
+        verbose = config.verbose
+
+        if verbose:
+            print("\n" + "=" * 85)
+            print("FREESURFER-STYLE OPTIMIZATION (Vectorized Quadratic Line Search)")
+            print("=" * 85)
+
+        # Initial projection
+        uv = self.initial_projection()
+        uv_jax = jnp.asarray(uv)
+
+        n_flipped_init = int(count_flipped_triangles(uv_jax, self.faces_jax))
+        if verbose:
+            print(f"Initial projection: {n_flipped_init} flipped triangles")
+
+        J_d_init, J_a_init = self._compute_energies(uv_jax)
+        if verbose:
+            print(
+                f"Initial energies: J_d={float(J_d_init):.4f}, "
+                f"J_a={float(J_a_init):.4f}"
+            )
+            print(f"Raw ratio J_d/J_a = {float(J_d_init) / float(J_a_init):.2e}")
+
+        # Phase 0: Negative area removal
+        if config.negative_area_removal.enabled:
+            uv = remove_negative_area(
+                uv,
+                self.neighbors_jax,
+                self.targets_jax,
+                self.mask_jax,
+                self.faces_jax,
+                self.smooth_neighbors_jax,
+                self.smooth_mask_jax,
+                self.smooth_counts_jax,
+                self._compute_energies,
+                self._grad_J_d,
+                self._grad_J_a,
+                config.negative_area_removal,
+                convergence_max_small=config.convergence.max_small,
+                convergence_total_small=config.convergence.total_small,
+                n_coarse_steps=config.line_search.n_coarse_steps,
+                print_every=config.print_every,
+                verbose=verbose,
+            )
+
+        # Main optimization phases
+        for phase_idx, phase in enumerate(config.phases):
+            if not phase.enabled:
+                continue
+
+            if verbose:
+                print("\n" + "=" * 85)
+                print(
+                    f"MAIN OPTIMIZATION: Phase {phase_idx + 1} - {phase.name} "
+                    f"(area/dist ratio = {phase.area_ratio})"
+                )
+                print("=" * 85)
+
+            J_d_curr, J_a_curr = self._compute_energies(jnp.asarray(uv))
+            lambda_d, lambda_a = compute_normalized_lambdas(
+                float(J_d_curr), float(J_a_curr), ratio=phase.area_ratio
+            )
+
+            if verbose:
+                print(f"  J_d={float(J_d_curr):.4f}, J_a={float(J_a_curr):.6f}")
+                print(f"  lambda_d={lambda_d:.2e}, lambda_a={lambda_a:.2e}")
+
+            base_tol = (
+                phase.base_tol
+                if phase.base_tol is not None
+                else config.convergence.base_tol
+            )
+
+            # Use adaptive optimization for distance_refinement phase if enabled
+            use_adaptive = (
+                config.adaptive_recovery and phase.name == "distance_refinement"
+            )
+
+            if use_adaptive:
+                uv = run_adaptive_optimization(
+                    uv,
+                    lambda_d=lambda_d,
+                    lambda_a=lambda_a,
+                    smoothing_schedule=phase.smoothing_schedule,
+                    neighbors_jax=self.neighbors_jax,
+                    targets_jax=self.targets_jax,
+                    mask_jax=self.mask_jax,
+                    faces_jax=self.faces_jax,
+                    smooth_neighbors_jax=self.smooth_neighbors_jax,
+                    smooth_mask_jax=self.smooth_mask_jax,
+                    smooth_counts_jax=self.smooth_counts_jax,
+                    compute_energies_fn=self._compute_energies,
+                    iters_per_level=phase.iters_per_level,
+                    print_every=config.print_every,
+                    verbose=verbose,
+                    base_tol=base_tol,
+                    max_small=config.convergence.max_small,
+                    total_small_limit=config.convergence.total_small,
+                    n_coarse_steps=config.line_search.n_coarse_steps,
+                )
+            else:
+                uv = run_smoothed_optimization(
+                    uv,
+                    lambda_d=lambda_d,
+                    lambda_a=lambda_a,
+                    smoothing_schedule=phase.smoothing_schedule,
+                    neighbors_jax=self.neighbors_jax,
+                    targets_jax=self.targets_jax,
+                    mask_jax=self.mask_jax,
+                    faces_jax=self.faces_jax,
+                    smooth_neighbors_jax=self.smooth_neighbors_jax,
+                    smooth_mask_jax=self.smooth_mask_jax,
+                    smooth_counts_jax=self.smooth_counts_jax,
+                    iters_per_level=phase.iters_per_level,
+                    print_every=config.print_every,
+                    verbose=verbose,
+                    base_tol=base_tol,
+                    max_small=config.convergence.max_small,
+                    total_small_limit=config.convergence.total_small,
+                    n_coarse_steps=config.line_search.n_coarse_steps,
+                )
+
+        # Final spring smoothing
+        if config.spring_smoothing.enabled:
+            uv = final_spring_smoothing(
+                uv,
+                faces_jax=self.faces_jax,
+                smooth_neighbors_jax=self.smooth_neighbors_jax,
+                smooth_mask_jax=self.smooth_mask_jax,
+                smooth_counts_jax=self.smooth_counts_jax,
+                is_boundary_jax=self.is_boundary_jax,
+                neighbors_jax=self.neighbors_jax,
+                targets_jax=self.targets_jax,
+                mask_jax=self.mask_jax,
+                config=config.spring_smoothing,
+                verbose=verbose,
+            )
+
+        # Final stats
+        uv_jax = jnp.asarray(uv)
+        n_flipped_final = int(count_flipped_triangles(uv_jax, self.faces_jax))
+        mean_pct_error = float(
+            _compute_distance_error_jit(
+                uv_jax, self.neighbors_jax, self.targets_jax, self.mask_jax
+            )
+        )
+
+        if verbose:
+            print(f"\n{'=' * 85}")
+            print("FINAL RESULT")
+            print(f"{'=' * 85}")
+            print(f"Flipped triangles: {n_flipped_init} -> {n_flipped_final}")
+            print(f"Mean % distance error: {mean_pct_error:.2f}%")
+
+        return uv
+
+    def save_result(self, uv: np.ndarray, output_path: str) -> None:
+        """Save flattened patch to FreeSurfer format.
+
+        Args:
+            uv: (V, 2) UV coordinates
+            output_path: Path to output patch file
+        """
+        if self.orig_indices is None:
+            raise RuntimeError("Must call load_data before save_result")
+
+        # Create output directory if needed
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Create 3D vertices with UV as XY and Z=0
+        flat_vertices = np.column_stack([uv, np.zeros(len(uv))])
+
+        # Write patch
+        write_patch(output_path, flat_vertices, self.orig_indices)
+
+        if self.config.verbose:
+            print(f"Saved flattened patch to {output_path}")
+
+    def compute_distance_error(self, uv: np.ndarray) -> float:
+        """Compute average % distance error for UV coordinates.
+
+        Args:
+            uv: (V, 2) UV coordinates
+
+        Returns:
+            Percentage distance error
+        """
+        uv_jax = jnp.asarray(uv)
+        return float(
+            _compute_distance_error_jit(
+                uv_jax, self.neighbors_jax, self.targets_jax, self.mask_jax
+            )
+        )
+
+    def count_flipped(self, uv: np.ndarray) -> int:
+        """Count flipped triangles.
+
+        Args:
+            uv: (V, 2) UV coordinates
+
+        Returns:
+            Number of flipped triangles
+        """
+        uv_jax = jnp.asarray(uv)
+        return int(count_flipped_triangles(uv_jax, self.faces_jax))
