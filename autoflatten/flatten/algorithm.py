@@ -255,12 +255,17 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
     Uses edge-face counting to find boundary edges (edges appearing in
     exactly one face), then traces connected loops.
 
-    Args:
-        faces: (F, 3) face indices
+    Parameters
+    ----------
+    faces : ndarray of shape (F, 3)
+        Triangle face indices.
 
-    Returns:
-        n_loops: Number of boundary loops
-        loops: List of arrays, each containing vertex indices for one loop
+    Returns
+    -------
+    n_loops : int
+        Number of boundary loops.
+    loops : list of ndarray
+        List of arrays, each containing vertex indices for one loop.
     """
     from collections import defaultdict
 
