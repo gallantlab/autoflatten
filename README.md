@@ -250,7 +250,7 @@ ruff format .
 
 ## License
 
-BSD-3-Clause. See LICENSE file for details.
+BSD 2-Clause License. See LICENSE file for details.
 
 ## Acknowledgments
 
