@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 from autoflatten.core import (
+    _find_trapped_vertices,
     ensure_continuous_cuts,
+    fill_holes_in_patch,
     map_cuts_to_subject,
     refine_cuts_with_geodesic,
 )
@@ -506,3 +508,138 @@ def test_refine_cuts_does_not_modify_input(mock_grid_surface, monkeypatch):
 
     # Result should be a different object
     assert result is not vertex_dict
+
+
+# Tests for fill_holes_in_patch
+
+
+def test_fill_holes_in_patch_no_holes():
+    """Test fill_holes_in_patch returns empty set when no holes exist."""
+    # Create a simple triangular mesh (disk topology, one boundary loop)
+    # Vertices: 0-4 form outer boundary, 5 is interior
+    #     0---1
+    #    /|\ /|\
+    #   4-+-5-+-2
+    #    \|/ \|/
+    #     3---
+    faces = np.array(
+        [
+            [0, 1, 5],
+            [1, 2, 5],
+            [2, 3, 5],
+            [3, 4, 5],
+            [4, 0, 5],
+        ]
+    )
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    assert result == set(), "Expected empty set when no holes exist"
+
+
+def test_fill_holes_in_patch_with_hole():
+    """Test fill_holes_in_patch detects and fills a hole."""
+    # Create a mesh with a hole (annulus topology, two boundary loops)
+    # Outer vertices: 0-5, Inner vertices: 6-8 (the hole)
+    faces = np.array(
+        [
+            # Outer ring connected to inner ring
+            [0, 1, 6],
+            [1, 7, 6],
+            [1, 2, 7],
+            [2, 8, 7],
+            [2, 3, 8],
+            [3, 6, 8],
+            [3, 4, 6],
+            [4, 0, 6],
+        ]
+    )
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # The inner loop (vertices 6, 7, 8) should be detected as a hole
+    # and its boundary vertices should be returned
+    assert len(result) > 0, "Expected hole vertices to be filled"
+
+
+def test_fill_holes_in_patch_empty_excluded():
+    """Test fill_holes_in_patch handles case where excluded is larger than faces."""
+    # Create simple faces
+    faces = np.array([[0, 1, 2], [1, 2, 3]])
+    # Exclude all vertices - no patch faces remain
+    excluded_vertices = {0, 1, 2, 3}
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # Should return empty set when no patch faces exist
+    assert result == set()
+
+
+# Tests for _find_trapped_vertices
+
+
+def test_find_trapped_vertices_no_trapped():
+    """Test _find_trapped_vertices returns empty when neighbors are well-connected."""
+    # Create a large graph where anchor's neighbors connect to >100 vertices
+    G = nx.Graph()
+    # Create a 20x20 grid graph (400 vertices)
+    for i in range(400):
+        row, col = i // 20, i % 20
+        if col < 19:
+            G.add_edge(i, i + 1)
+        if row < 19:
+            G.add_edge(i, i + 20)
+
+    # Exclude bottom row (0-19) and anchor at vertex 20
+    excluded = set(range(21))  # 0-20 excluded
+    mwall_set = set(range(20))  # Bottom row is mwall
+    anchor = 20  # First vertex of row 2
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # Vertex 21 (neighbor of anchor) can reach >100 vertices, so not trapped
+    assert result == [], f"Expected no trapped vertices, got {result}"
+
+
+def test_find_trapped_vertices_with_trapped():
+    """Test _find_trapped_vertices identifies trapped vertices correctly."""
+    # Create a graph where vertex 10 is nearly isolated
+    # (only connected to the mesh through the excluded set)
+    G = nx.Graph()
+    # Create a small connected region
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(2, 3)
+    G.add_edge(3, 0)  # Square of vertices 0-3
+    # Add anchor vertex 4 connected to vertex 1
+    G.add_edge(1, 4)
+    # Add isolated vertex 10 only connected to anchor
+    G.add_edge(4, 10)
+
+    excluded = {0, 1, 2, 3, 4}
+    mwall_set = {0, 1, 2, 3}
+    anchor = 4
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # Vertex 10 should be identified as trapped since it's only
+    # connected through excluded vertices
+    assert 10 in result, f"Expected vertex 10 to be trapped, got {result}"
+
+
+def test_find_trapped_vertices_no_neighbors():
+    """Test _find_trapped_vertices handles anchor with no non-excluded neighbors."""
+    G = nx.Graph()
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+
+    excluded = {0, 1, 2}
+    mwall_set = {0, 2}
+    anchor = 1
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # No neighbors outside excluded set, should return empty
+    assert result == []

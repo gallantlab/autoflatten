@@ -261,7 +261,7 @@ def run_projection(
         hole_vertices = fill_holes_in_patch(polys, excluded_vertices)
         if hole_vertices:
             print(f"Filled {len(hole_vertices)} hole boundary vertices")
-            vertex_dict_fixed["holes"] = np.array(list(hole_vertices))
+            vertex_dict_fixed["_hole_fill"] = np.array(list(hole_vertices))
 
         # Create patch file
         step_start = time.time()
