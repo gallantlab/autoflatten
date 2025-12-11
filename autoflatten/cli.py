@@ -29,6 +29,7 @@ import numpy as np
 from autoflatten.config import fsaverage_cut_template
 from autoflatten.core import (
     ensure_continuous_cuts,
+    fill_holes_in_patch,
     map_cuts_to_subject,
     refine_cuts_with_geodesic,
 )
@@ -251,6 +252,16 @@ def run_projection(
         print("-" * 14)
         pts, polys = load_surface(subject, "inflated", hemi)
         print(f"Surface loaded: {len(pts)} vertices, {len(polys)} faces")
+
+        # Fill holes in patch (detect and exclude hole boundary vertices)
+        excluded_vertices = set()
+        for vertices in vertex_dict_fixed.values():
+            excluded_vertices.update(int(v) for v in vertices)
+
+        hole_vertices = fill_holes_in_patch(polys, excluded_vertices)
+        if hole_vertices:
+            print(f"Filled {len(hole_vertices)} hole boundary vertices")
+            vertex_dict_fixed["holes"] = np.array(list(hole_vertices))
 
         # Create patch file
         step_start = time.time()
