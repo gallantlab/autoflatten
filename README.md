@@ -1,197 +1,258 @@
-# AutoFlatten: Automatic Flattening Pipeline for FreeSurfer Surfaces
+# AutoFlatten: Automatic Cortical Surface Flattening
 
-This repository contains a Python pipeline for automatically creating flattened versions
-of FreeSurfer surfaces. Template cuts on fsaverage are mapped to a new surface and
-automatically fixed to generate a FreeSurfer patch file. Then, `mris_flatten` is called
-to run the flattening process.
+AutoFlatten is a Python pipeline for automatically creating flattened 2D representations of FreeSurfer cortical surfaces. It maps anatomical cut templates from fsaverage to individual subjects using surface-based registration, then generates FreeSurfer-compatible patch files and runs optimized flattening.
+
+## Features
+
+- **Two flattening backends**:
+  - **pyflatten** (default): JAX-accelerated Python implementation with multi-phase optimization
+  - **freesurfer**: Traditional FreeSurfer `mris_flatten` wrapper
+- **Automatic cut mapping** from fsaverage template to individual subjects
+- **Geodesic refinement** for anatomically accurate cuts
+- **Parallel hemisphere processing**
+- **Visualization** with area distortion metrics
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph CLI["autoflatten CLI"]
+        A["autoflatten /path/to/subject"]
+    end
+
+    subgraph PROJ["PROJECTION PHASE (autoflatten project)"]
+        B["Template Loading<br/>(fsaverage cuts)"]
+        C["Cut Mapping<br/>(mri_label2label)"]
+        D["Continuity Fixing<br/>(NetworkX graphs)"]
+        E["Geodesic Refinement<br/>(shortest paths)"]
+        F[("Patch File<br/>{hemi}.autoflatten.patch.3d")]
+    end
+
+    subgraph FLAT["FLATTENING PHASE (autoflatten flatten)"]
+        G{"Backend<br/>Selection"}
+        subgraph PY["pyflatten (default)"]
+            H1["K-ring distances"]
+            H2["Multi-phase optimization"]
+            H3["Spring smoothing"]
+        end
+        subgraph FS["freesurfer"]
+            I["mris_flatten"]
+        end
+        J[("Flat Patch<br/>{hemi}.autoflatten.flat.patch.3d")]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G -->|"--backend pyflatten"| H1
+    H1 --> H2 --> H3
+    G -->|"--backend freesurfer"| I
+    H3 --> J
+    I --> J
+```
 
 ## Requirements
 
-- Python 3.9+
-- FreeSurfer 6.0 (properly installed with environment variables set)
-- PyCortex
-- NetworkX
-- NumPy
-- Nibabel
+- Python 3.10+
+- FreeSurfer 7.0+ (for projection phase only)
+  - `FREESURFER_HOME` and `SUBJECTS_DIR` environment variables must be set
+  - FreeSurfer binaries must be in PATH
 
 ## Installation
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/gallantlab/autoflatten.git
-   cd autoflatten
-   ```
+### Using uv (recommended)
 
-2. Install the package:
-   ```bash
-   pip install .
-   ```
-   This will install the `autoflatten` command and all required dependencies.
+```bash
+# Clone the repository
+git clone https://github.com/gallantlab/autoflatten.git
+cd autoflatten
 
-3. Ensure FreeSurfer is properly installed and configured:
-   - FREESURFER_HOME environment variable must be set
-   - SUBJECTS_DIR environment variable must be set
-   - FreeSurfer binaries must be in your PATH
+# Install with uv
+uv pip install .
+
+# With test dependencies
+uv pip install ".[test]"
+
+# With CUDA support for GPU acceleration
+uv pip install ".[cuda]"
+```
+
+### Using pip
+
+```bash
+# Clone the repository
+git clone https://github.com/gallantlab/autoflatten.git
+cd autoflatten
+
+# Install in development mode
+pip install -e .
+
+# With test dependencies
+pip install -e ".[test]"
+```
 
 ## Usage
 
-The `autoflatten` command has two subcommands:
-- `run`: Run the flattening pipeline
-- `plot`: Plot existing autoflatten results
+AutoFlatten provides a CLI with four commands:
 
-Basic usage:
+| Command | Description |
+|---------|-------------|
+| `autoflatten /path/to/subject` | Full pipeline: projection + flattening |
+| `autoflatten project /path/to/subject` | Projection only: create patch file |
+| `autoflatten flatten PATCH_FILE` | Flattening only: flatten existing patch |
+| `autoflatten plot FLAT_PATCH` | Plot a flattened surface |
+
+### Full Pipeline
+
+Process a subject through the complete pipeline (projection + flattening):
 
 ```bash
-autoflatten run SUBJECT_ID [options]
-autoflatten plot SUBJECT_ID [options]
+# Using the default pyflatten backend
+autoflatten /path/to/subjects/sub-01 --output-dir /path/to/output
+
+# Use FreeSurfer backend instead
+autoflatten /path/to/subjects/sub-01 --backend freesurfer
+
+# Process both hemispheres in parallel
+autoflatten /path/to/subjects/sub-01 --parallel
+
+# Process only left hemisphere
+autoflatten /path/to/subjects/sub-01 --hemispheres lh
 ```
 
-### Arguments
+### Projection Only
 
-- `SUBJECT_ID`: FreeSurfer subject identifier (required)
+Create patch files without running flattening:
 
-### Options for 'run' subcommand
-
-- `--output-dir PATH`: Directory to save output files (default: subject's FreeSurfer surf directory)
-- `--no-flatten`: Skip running mris_flatten after creating patch files (flattening is enabled by default)
-- `--template-file PATH`: Path to a custom JSON template file defining cuts (default: uses built-in fsaverage template)
-- `--parallel`: Process hemispheres in parallel (when processing both hemispheres)
-- `--hemispheres {lh,rh,both}`: Hemispheres to process (default: both)
-- `--overwrite`: Overwrite existing files
-- `--seed INT`: Random seed for mris_flatten (if not provided, a random seed will be generated)
-- `--nthreads INT`: Number of threads to use for mris_flatten (default: 1)
-- `--distances DIST1 DIST2`: Distance parameters for mris_flatten as two integers (default: 15 80)
-- `--n-iterations INT`: Maximum number of iterations for mris_flatten (default: 200)
-- `--dilate INT`: Number of dilations for mris_flatten (default: 1)
-- `--passes INT`: Number of passes for mris_flatten (default: 1)
-- `--tol FLOAT`: Tolerance for mris_flatten flatness (default: 0.005)
-- `--flatten-extra STR`: Additional parameters for mris_flatten in format 'key1=value1,key2=value2'
-
-### Options for 'plot' subcommand
-
-- `--output-dir PATH`: Directory containing the autoflatten output files (default: $SUBJECTS_DIR/subject/surf)
-
-## Examples
-
-Create patch files and flatten both hemispheres of a subject:
 ```bash
-autoflatten run sub-01
+autoflatten project /path/to/subjects/sub-01 --output-dir /path/to/output
+
+# Skip geodesic refinement (faster but less accurate cuts)
+autoflatten project /path/to/subjects/sub-01 --no-refine-geodesic
 ```
 
-Create patch files for the left hemisphere without flattening:
+### Flattening Only
+
+Flatten an existing patch file:
+
 ```bash
-autoflatten run sub-01 --hemispheres lh --no-flatten
+autoflatten flatten lh.autoflatten.patch.3d
+
+# Specify base surface explicitly
+autoflatten flatten lh.autoflatten.patch.3d --base-surface /path/to/lh.fiducial
+
+# Customize pyflatten parameters
+autoflatten flatten lh.autoflatten.patch.3d --k-ring 25 --n-neighbors 40
 ```
 
-Process both hemispheres in parallel using a custom template:
+### Visualization
+
+Plot a flattened surface with quality metrics:
+
 ```bash
-autoflatten run sub-01 --parallel --template-file /path/to/my_template.json
+autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
 ```
-
-Save output to a custom directory:
-```bash
-autoflatten run sub-01 --output-dir /path/to/output
-```
-
-Force regeneration of existing files:
-```bash
-autoflatten run sub-01 --overwrite
-```
-
-Use specific flattening parameters:
-```bash
-autoflatten run sub-01 --seed 42 --nthreads 4 --passes 2 --tol 0.001
-```
-
-Plot existing autoflatten results:
-```bash
-autoflatten plot sub-01
-```
-
-## How It Works
-
-The pipeline follows these steps for each hemisphere:
-
-1. **Load cuts template**:
-   - By default, uses the built-in fsaverage cut template
-   - The template contains vertex indices for the medial wall and five anatomically defined cuts:
-     - Calcarine cut: along the calcarine sulcus
-     - Medial cuts (1-3): cuts along the medial surface
-     - Temporal cut: cut in the temporal lobe
-   - Can use a custom template provided via JSON file
-
-2. **Map cuts to target subject**:
-   - Uses FreeSurfer's `mri_label2label` to map cuts from the template subject (fsaverage) to the individual subject's cortical surface
-   - This mapping uses FreeSurfer's surface-based registration
-
-3. **Ensure cuts are continuous**:
-   - Processes the mapped cuts to ensure they form continuous lines on the surface
-   - Uses graph-based algorithms to find and connect disconnected components
-   - Computes shortest paths between disconnected segments to create continuous cuts
-   - Handles cases where mappings create disconnected components
-
-4. **Create patch file**:
-   - Identifies vertices to exclude (medial wall and cuts)
-   - Marks border vertices (adjacent to cuts) with positive indices
-   - Marks interior vertices with negative indices
-   - Generates a FreeSurfer-compatible patch file with the optimized cut pattern
-
-5. **Surface flattening (default)**:
-   - Runs FreeSurfer's `mris_flatten` on the patch file to create a flat surface
-   - Uses parameters like seed, distances, iterations, dilations, passes, and tolerance to control the flattening process
-   - The flattening process minimizes distortion while creating a 2D representation
-
-## Available Templates
-
-The package includes several built-in templates:
-
-1. **fsaverage_cuts_template.json** (default):
-   - Standard template based on the fsaverage subject
-   - Created by Mark Lescroart and Natalia Bilenko
-   - Provides anatomically consistent cuts across subjects
-
-2. **MLfs_cut_template.json**:
-   - Alternative template with different cut patterns
-   - May be useful for specific visualization needs
-
-3. **TZfs_cut_template.json**:
-   - Another alternative template with different cut patterns
-   - May be useful for specific visualization needs
-
-You can also create custom templates using the scripts provided in the `scripts/` directory:
-- `make_fsaverage_cut_template.py`: Create a template based on fsaverage
-- `make_subject_cut_template.py`: Create a template based on a specific subject
 
 ## Output Files
 
 For each processed hemisphere, the pipeline creates:
 
-1. **Patch Files**:
-   - `{hemi}.autoflatten.patch.3d`: The patch file with cuts
-   - Contains the 3D coordinates of vertices with cuts removed
-   - Used as input to the flattening process
+| File | Description |
+|------|-------------|
+| `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts |
+| `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
+| `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log (pyflatten) |
+| `{hemi}.autoflatten.flat.patch.png` | Visualization plot |
+| `{hemi}.autoflatten.projection.log` | Projection phase log |
 
-2. **Flat Surface Files** (unless `--no-flatten` is used):
-   - `{hemi}.autoflatten_{distances}_n{n}_dilate{dilate}_passes{passes}_seed{seed}.flat.patch.3d`
-   - The naming includes the parameters used for flattening:
-     - `distances`: The distance parameters used (e.g., distances1580 for 15 and 80)
-     - `n`: Maximum number of iterations
-     - `dilate`: Number of dilations
-     - `passes`: Number of passes (if more than 1)
-     - `seed`: Random seed used for flattening
+## How It Works
 
-3. **Log Files**:
-   - `{hemi}.autoflatten_{parameters}.log`: Contains the output from the flattening process
-   - Useful for debugging if flattening fails
+### Projection Phase
 
-4. **Output Files**:
-   - `{hemi}.autoflatten_{parameters}.flat.patch.3d.out`: Additional output from mris_flatten
+1. **Template Loading**: Load cut definitions from fsaverage template (medial wall + 5 anatomical cuts: calcarine, medial1-3, temporal)
+
+2. **Cut Mapping**: Use FreeSurfer's `mri_label2label` to map template cuts to the target subject via surface-based registration
+
+3. **Continuity Fixing**: Ensure mapped cuts form continuous lines using graph-based algorithms (NetworkX)
+
+4. **Geodesic Refinement** (default): Replace mapped cuts with geodesic shortest paths between endpoints for anatomically accurate boundaries
+
+5. **Patch Creation**: Generate FreeSurfer-compatible binary patch file
+
+### Flattening Phase (pyflatten backend)
+
+1. **K-ring Distance Computation**: Compute geodesic distances to k-hop neighbors using Numba-accelerated Dijkstra
+
+2. **Initial Projection**: Project 3D coordinates onto 2D plane via FreeSurfer-style initialization
+
+3. **Multi-phase Optimization**:
+   - Negative area removal (fix flipped triangles)
+   - Area-dominant phase (prevent triangle flipping)
+   - Balanced phase (equal area/distance weights)
+   - Distance-dominant phase (preserve geodesic distances)
+   - Distance refinement (fine-tune metric preservation)
+
+4. **Spring Smoothing**: Final Laplacian smoothing for visual quality
+
+## Configuration
+
+### pyflatten Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--k-ring` | 20 | K-ring neighborhood size |
+| `--n-neighbors` | 30 | Neighbors per ring (angular sampling) |
+| `--n-cores` | -1 | CPU cores (-1 = all) |
+| `--skip-phase` | - | Skip specific optimization phases |
+| `--skip-spring-smoothing` | False | Skip final smoothing |
+
+### FreeSurfer Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--seed` | random | Random seed for mris_flatten |
+| `--nthreads` | 1 | Number of threads |
+| `--distances` | 15 80 | Distance parameters |
+| `--n-iterations` | 200 | Maximum iterations |
+| `--tol` | 0.005 | Flatness tolerance |
+
+## Available Templates
+
+The package includes built-in templates in `autoflatten/default_templates/`:
+
+- **fsaverage_cuts_template.json** (default): Standard template based on fsaverage, created by Mark Lescroart and Natalia Bilenko
+- **MLfs_cut_template.json**: Alternative cut pattern
+- **TZfs_cut_template.json**: Alternative cut pattern
+
+Use a custom template with `--template-file /path/to/template.json`.
+
+## Development
+
+```bash
+# Install with test dependencies
+pip install -e ".[test]"
+
+# Run tests
+pytest
+
+# Run tests with coverage
+pytest --cov=autoflatten
+
+# Install pre-commit hooks
+pre-commit install
+
+# Run code formatting
+ruff format .
+```
 
 ## License
 
-This project is licensed under the BSD 2-Claude License - see the LICENSE file for details.
+BSD-3-Clause. See LICENSE file for details.
 
 ## Acknowledgments
 
-- The default fsaverage template cuts were created by [Mark Lescroart and Natalia Bilenko](https://figshare.com/articles/dataset/fsaverage_subject_for_pycortex/)
-- This pipeline builds on FreeSurfer and PyCortex functionalities
+- Default fsaverage template cuts by [Mark Lescroart and Natalia Bilenko](https://figshare.com/articles/dataset/fsaverage_subject_for_pycortex/)
+- Built on FreeSurfer and PyCortex functionalities
