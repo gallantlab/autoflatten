@@ -246,6 +246,68 @@ def validate_topology(
     return euler
 
 
+def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
+    """Count all boundary loops in a mesh.
+
+    A mesh with disk topology should have exactly one boundary loop.
+    Multiple loops indicate holes or disconnected boundaries.
+
+    Uses edge-face counting to find boundary edges (edges appearing in
+    exactly one face), then traces connected loops.
+
+    Args:
+        faces: (F, 3) face indices
+
+    Returns:
+        n_loops: Number of boundary loops
+        loops: List of arrays, each containing vertex indices for one loop
+    """
+    from collections import defaultdict
+
+    # Count how many faces each edge belongs to
+    edge_face_count = defaultdict(int)
+    for face in faces:
+        for i in range(3):
+            edge = tuple(sorted([int(face[i]), int(face[(i + 1) % 3])]))
+            edge_face_count[edge] += 1
+
+    # Boundary edges appear in exactly 1 face
+    boundary_edges = {e for e, count in edge_face_count.items() if count == 1}
+
+    if not boundary_edges:
+        return 0, []
+
+    # Build adjacency from boundary edges
+    boundary_adj = defaultdict(set)
+    for v1, v2 in boundary_edges:
+        boundary_adj[v1].add(v2)
+        boundary_adj[v2].add(v1)
+
+    # Trace connected loops
+    loops = []
+    visited = set()
+
+    for start in boundary_adj:
+        if start in visited:
+            continue
+
+        loop = [start]
+        visited.add(start)
+        current = start
+
+        while True:
+            neighbors = boundary_adj[current] - visited
+            if not neighbors:
+                break
+            current = next(iter(neighbors))
+            loop.append(current)
+            visited.add(current)
+
+        loops.append(np.array(loop))
+
+    return len(loops), loops
+
+
 def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """Project onto plane perpendicular to average surface normal.
 
@@ -1443,6 +1505,21 @@ class SurfaceFlattener:
             self.vertices, self.faces, strict=self.config.strict_topology
         )
         boundary = igl.boundary_loop(self.faces)
+
+        # Validate single boundary loop (no holes)
+        n_loops, loops = count_boundary_loops(self.faces)
+        if n_loops != 1:
+            loop_sizes = sorted([len(loop) for loop in loops], reverse=True)
+            msg = (
+                f"Patch has {n_loops} boundary loops (expected 1 for disk topology).\n"
+                f"  Loop sizes: {loop_sizes}\n"
+                f"  This indicates the patch has holes or disconnected boundaries.\n"
+                f"  Check the cut projection for gaps between cuts and medial wall."
+            )
+            if self.config.strict_topology:
+                raise TopologyError(msg)
+            else:
+                print(f"WARNING: {msg}")
 
         if self.config.verbose:
             print(f"Euler characteristic: {euler}, Boundary vertices: {len(boundary)}")
