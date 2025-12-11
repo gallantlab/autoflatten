@@ -320,9 +320,7 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
 
 
 def _find_trapped_vertices(G, excluded, mwall_set, anchor):
-    """
-    Find vertices that would become isolated (forming holes) if excluded vertices
-    are removed from the mesh.
+    """Find vertices that would become isolated if excluded vertices are removed.
 
     A vertex is "trapped" if its only connections to the main patch go through
     the excluded set (mwall + cut). These trapped vertices would form holes in
@@ -331,18 +329,18 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
     Parameters
     ----------
     G : networkx.Graph
-        Surface graph
+        Surface graph.
     excluded : set
-        Vertices that are excluded (mwall + geodesic path)
+        Vertices that are excluded (mwall + geodesic path).
     mwall_set : set
-        Medial wall vertices
+        Medial wall vertices.
     anchor : int
-        The anchor vertex (end of geodesic path, adjacent to mwall)
+        The anchor vertex (end of geodesic path, adjacent to mwall).
 
     Returns
     -------
     list
-        Trapped vertices that should be added to the cut
+        Trapped vertices that should be added to the cut.
     """
     # Find all non-mwall, non-cut neighbors of the anchor
     potential_trapped = set()
@@ -383,9 +381,7 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
 
 
 def fill_holes_in_patch(faces, excluded_vertices):
-    """
-    Fill holes in a patch by detecting multiple boundary loops and adding
-    hole boundary vertices to the excluded set.
+    """Fill holes in a patch by excluding hole boundary vertices.
 
     A patch should have exactly one boundary loop (the outer boundary). Multiple
     boundary loops indicate holes in the patch. This function detects holes and
