@@ -71,6 +71,136 @@ def remove_isolated_vertices(
     return vertices[used], old_to_new[faces], used
 
 
+def remove_small_components(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    max_small_component_size: int = 20,
+    warn_medium_threshold: int = 100,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Remove small disconnected components, keeping only the largest.
+
+    This function identifies connected components in the mesh and removes
+    any components with at most max_small_component_size vertices. This is
+    useful for cleaning up small isolated triangles that can cause topology
+    errors (Euler characteristic != 1).
+
+    The function is conservative: it only removes very small components
+    (default <= 20 vertices) to avoid masking more serious topology issues.
+    If medium-sized disconnected components are found, a warning is raised.
+
+    Parameters
+    ----------
+    vertices : ndarray of shape (V, 3)
+        Vertex coordinates.
+    faces : ndarray of shape (F, 3)
+        Face indices.
+    max_small_component_size : int, default=20
+        Maximum size of components to automatically remove. Components larger
+        than this will not be removed.
+    warn_medium_threshold : int, default=100
+        If a secondary component is larger than max_small_component_size but
+        smaller than this threshold, a warning is logged.
+
+    Returns
+    -------
+    new_vertices : ndarray of shape (V', 3)
+        Vertices after removing small components.
+    new_faces : ndarray of shape (F', 3)
+        Faces after removing small components.
+    used_vertex_indices : ndarray of shape (V',)
+        Original indices of the kept vertices.
+
+    Raises
+    ------
+    TopologyError
+        If a secondary component is found that is larger than
+        warn_medium_threshold, indicating a potentially serious issue.
+    """
+    import logging
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    logger = logging.getLogger(__name__)
+    n_verts = len(vertices)
+
+    # Build adjacency matrix
+    row = np.concatenate(
+        [faces[:, 0], faces[:, 1], faces[:, 2], faces[:, 1], faces[:, 2], faces[:, 0]]
+    )
+    col = np.concatenate(
+        [faces[:, 1], faces[:, 2], faces[:, 0], faces[:, 0], faces[:, 1], faces[:, 2]]
+    )
+    data = np.ones(len(row), dtype=np.int8)
+    adj = csr_matrix((data, (row, col)), shape=(n_verts, n_verts))
+
+    # Find connected components
+    n_components, labels = connected_components(adj, directed=False)
+
+    if n_components == 1:
+        # Already single component, nothing to remove
+        return vertices, faces, np.arange(n_verts)
+
+    # Find component sizes
+    component_sizes = np.bincount(labels, minlength=n_components)
+
+    # Find largest component
+    largest_idx = np.argmax(component_sizes)
+    largest_size = component_sizes[largest_idx]
+
+    # Analyze secondary components
+    secondary_sizes = np.delete(component_sizes, largest_idx)
+    max_secondary_size = secondary_sizes.max()
+
+    # Check for problematic medium-sized components
+    if max_secondary_size > warn_medium_threshold:
+        raise TopologyError(
+            f"Mesh has {n_components} disconnected components. "
+            f"Largest: {largest_size:,} vertices, "
+            f"secondary: {max_secondary_size:,} vertices. "
+            f"The secondary component is too large (>{warn_medium_threshold}) "
+            f"to be an isolated triangle artifact. "
+            f"This indicates a fundamental issue with the patch creation."
+        )
+
+    if max_secondary_size > max_small_component_size:
+        logger.warning(
+            f"Mesh has {n_components} disconnected components. "
+            f"Largest: {largest_size:,} vertices, "
+            f"secondary: {max_secondary_size:,} vertices. "
+            f"Secondary component is larger than {max_small_component_size} vertices."
+        )
+
+    # Remove only small components (<= max_small_component_size), but always
+    # keep the largest component regardless of its size
+    small_component_mask = component_sizes <= max_small_component_size
+    small_component_mask[largest_idx] = False  # Never remove the largest component
+    small_component_labels = np.where(small_component_mask)[0]
+
+    # Build mask of vertices to remove
+    remove_mask = np.isin(labels, small_component_labels)
+
+    if not remove_mask.any():
+        # Nothing small enough to remove
+        return vertices, faces, np.arange(n_verts)
+
+    # Log what we're removing
+    removed_sizes = component_sizes[small_component_labels]
+    n_removed_verts = remove_mask.sum()
+    logger.info(
+        f"Removing {len(small_component_labels)} small disconnected component(s) "
+        f"with sizes {np.sort(removed_sizes).tolist()} ({n_removed_verts} total vertices)"
+    )
+
+    # Get faces that are entirely within kept vertices (vectorized)
+    keep_mask = ~remove_mask
+    kept_indices = np.where(keep_mask)[0]
+    face_mask = np.all(np.isin(faces, kept_indices), axis=1)
+    new_faces = faces[face_mask]
+
+    # Reindex to remove gaps
+    return remove_isolated_vertices(vertices, new_faces)
+
+
 def validate_topology(
     vertices: np.ndarray, faces: np.ndarray, strict: bool = True
 ) -> int:
@@ -1280,14 +1410,27 @@ class SurfaceFlattener:
         patch_vertices, orig_idx, _ = read_patch(patch_path)
         patch_faces = extract_patch_faces(orig_faces, orig_idx)
 
+        # Remove small disconnected components (e.g., isolated triangles)
+        # before removing isolated vertices
+        patch_vertices_clean, patch_faces_clean, used_after_clean = (
+            remove_small_components(
+                patch_vertices.astype(np.float64),
+                patch_faces,
+                max_small_component_size=20,
+                warn_medium_threshold=100,
+            )
+        )
+        # Update orig_idx to reflect removed vertices
+        orig_idx = orig_idx[used_after_clean]
+
         # Use patch vertices for mesh, fiducial for distances
         self.vertices, self.faces, used = remove_isolated_vertices(
-            patch_vertices.astype(np.float64), patch_faces
+            patch_vertices_clean, patch_faces_clean
         )
 
         fiducial_patch_vertices = orig_vertices[orig_idx].astype(np.float64)
         self.fiducial_vertices, _, _ = remove_isolated_vertices(
-            fiducial_patch_vertices, patch_faces
+            fiducial_patch_vertices, patch_faces_clean
         )
 
         self.orig_indices = orig_idx[used]
