@@ -505,10 +505,6 @@ class TestCountBoundaryLoops:
         # Create an annulus: outer ring and inner ring
         # Outer vertices: 0, 1, 2, 3 (square)
         # Inner vertices: 4, 5, 6, 7 (smaller square)
-        # Connect with triangles
-        vertices_outer = [0, 1, 2, 3]  # noqa
-        vertices_inner = [4, 5, 6, 7]  # noqa
-
         # Triangulate the ring: connect outer[i] -> outer[i+1] -> inner[i+1]
         # and outer[i] -> inner[i+1] -> inner[i]
         faces = np.array(

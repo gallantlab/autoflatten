@@ -288,6 +288,18 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
         boundary_adj[v1].add(v2)
         boundary_adj[v2].add(v1)
 
+    # Validate boundary structure: each boundary vertex should have exactly 2 neighbors
+    # (one on each side along the boundary). Vertices with != 2 neighbors indicate
+    # T-junctions or endpoints, which shouldn't occur in a valid mesh boundary.
+    for v, neighbors in boundary_adj.items():
+        if len(neighbors) != 2:
+            import warnings
+
+            warnings.warn(
+                f"Boundary vertex {v} has {len(neighbors)} neighbors (expected 2). "
+                "This may indicate mesh topology issues."
+            )
+
     # Trace connected loops
     loops = []
     visited = set()
@@ -307,6 +319,15 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
             current = next(iter(neighbors))
             loop.append(current)
             visited.add(current)
+
+        # Validate loop closure: the start vertex should be a neighbor of the last vertex
+        if len(loop) > 1 and start not in boundary_adj[loop[-1]]:
+            import warnings
+
+            warnings.warn(
+                f"Loop starting at vertex {start} may not be properly closed. "
+                f"Last vertex {loop[-1]} is not connected back to start."
+            )
 
         loops.append(np.array(loop))
 
