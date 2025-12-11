@@ -18,7 +18,11 @@ from autoflatten.flatten.config import (
     get_kring_cache_filename,
 )
 from autoflatten.flatten import count_flipped_triangles
-from autoflatten.flatten.algorithm import remove_small_components, TopologyError
+from autoflatten.flatten.algorithm import (
+    remove_small_components,
+    count_boundary_loops,
+    TopologyError,
+)
 
 import pytest
 
@@ -455,3 +459,83 @@ class TestRemoveSmallComponents:
 
         assert len(new_verts) == 3
         assert len(new_faces) == 1
+
+
+class TestCountBoundaryLoops:
+    """Tests for count_boundary_loops function."""
+
+    def test_single_triangle(self):
+        """A single triangle has 1 boundary loop with 3 vertices."""
+        faces = np.array([[0, 1, 2]])
+        n_loops, loops = count_boundary_loops(faces)
+        assert n_loops == 1
+        assert len(loops[0]) == 3
+
+    def test_two_triangles_sharing_edge(self):
+        """Two triangles sharing an edge have 1 boundary loop with 4 vertices."""
+        faces = np.array([[0, 1, 2], [1, 3, 2]])
+        n_loops, loops = count_boundary_loops(faces)
+        assert n_loops == 1
+        assert len(loops[0]) == 4
+
+    def test_triangle_strip(self):
+        """A strip of triangles has a single boundary loop."""
+        # Create a strip: 3 triangles in a row
+        # 0---1---3---5
+        # |\ | \ | \ |
+        # | \|  \|  \|
+        # 2---4---6---7
+        faces = np.array(
+            [
+                [0, 1, 2],
+                [1, 4, 2],
+                [1, 3, 4],
+                [3, 6, 4],
+                [3, 5, 6],
+                [5, 7, 6],
+            ]
+        )
+        n_loops, loops = count_boundary_loops(faces)
+        assert n_loops == 1
+        # Boundary should contain all outer vertices: 0, 2, 4, 6, 7, 5, 3, 1 (or some order)
+        assert len(loops[0]) == 8
+
+    def test_ring_with_hole(self):
+        """A ring mesh (annulus) has 2 boundary loops."""
+        # Create an annulus: outer ring and inner ring
+        # Outer vertices: 0, 1, 2, 3 (square)
+        # Inner vertices: 4, 5, 6, 7 (smaller square)
+        # Connect with triangles
+        vertices_outer = [0, 1, 2, 3]  # noqa
+        vertices_inner = [4, 5, 6, 7]  # noqa
+
+        # Triangulate the ring: connect outer[i] -> outer[i+1] -> inner[i+1]
+        # and outer[i] -> inner[i+1] -> inner[i]
+        faces = np.array(
+            [
+                # Top edge
+                [0, 1, 5],
+                [0, 5, 4],
+                # Right edge
+                [1, 2, 6],
+                [1, 6, 5],
+                # Bottom edge
+                [2, 3, 7],
+                [2, 7, 6],
+                # Left edge
+                [3, 0, 4],
+                [3, 4, 7],
+            ]
+        )
+        n_loops, loops = count_boundary_loops(faces)
+        assert n_loops == 2
+        # One loop should have 4 vertices (inner), one should have 4 (outer)
+        loop_sizes = sorted([len(loop) for loop in loops])
+        assert loop_sizes == [4, 4]
+
+    def test_empty_faces(self):
+        """Empty faces array returns 0 loops."""
+        faces = np.array([]).reshape(0, 3).astype(int)
+        n_loops, loops = count_boundary_loops(faces)
+        assert n_loops == 0
+        assert loops == []

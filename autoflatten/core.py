@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 
 from .freesurfer import create_label_file, load_surface, read_freesurfer_label
+from .flatten.algorithm import count_boundary_loops
 
 # Distance thresholds for geodesic refinement anchor selection (mm)
 # NEAR_MWALL_THRESHOLD_MM: Cut vertices within this distance are considered "near" medial wall
@@ -94,9 +95,9 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
                 weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
                 G.add_edge(v1, v2, weight=weight)
 
-    # Process each cut
-    for i in range(1, 6):
-        cut_key = f"cut{i}"
+    # Process each cut (using anatomical names from template)
+    cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
+    for cut_key in cut_names:
         if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
             continue
 
@@ -318,6 +319,137 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     return vertex_dict
 
 
+def _find_trapped_vertices(G, excluded, mwall_set, anchor):
+    """
+    Find vertices that would become isolated (forming holes) if excluded vertices
+    are removed from the mesh.
+
+    A vertex is "trapped" if its only connections to the main patch go through
+    the excluded set (mwall + cut). These trapped vertices would form holes in
+    the patch and should be added to the cut.
+
+    Parameters
+    ----------
+    G : networkx.Graph
+        Surface graph
+    excluded : set
+        Vertices that are excluded (mwall + geodesic path)
+    mwall_set : set
+        Medial wall vertices
+    anchor : int
+        The anchor vertex (end of geodesic path, adjacent to mwall)
+
+    Returns
+    -------
+    list
+        Trapped vertices that should be added to the cut
+    """
+    # Find all non-mwall, non-cut neighbors of the anchor
+    potential_trapped = set()
+    for neighbor in G.neighbors(anchor):
+        if neighbor not in excluded:
+            potential_trapped.add(neighbor)
+
+    if not potential_trapped:
+        return []
+
+    # For each potential trapped vertex, check if it can reach a "safe" vertex
+    # (one that's far from the excluded set) without going through excluded
+    trapped = []
+    for v in potential_trapped:
+        # Use BFS to check connectivity to the rest of the mesh
+        # If we can reach many vertices (>100) without going through excluded,
+        # then v is connected to the main patch and not trapped
+        visited = {v}
+        queue = [v]
+        is_trapped = True
+
+        while queue and len(visited) < 200:
+            current = queue.pop(0)
+            for neighbor in G.neighbors(current):
+                if neighbor not in visited and neighbor not in excluded:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+
+        # If we could only reach a small number of vertices, it's trapped
+        if len(visited) < 100:
+            trapped.append(v)
+            # Also add any other vertices in this small isolated region
+            for v2 in visited:
+                if v2 not in trapped:
+                    trapped.append(v2)
+
+    return trapped
+
+
+def fill_holes_in_patch(faces, excluded_vertices):
+    """
+    Fill holes in a patch by detecting multiple boundary loops and adding
+    hole boundary vertices to the excluded set.
+
+    A patch should have exactly one boundary loop (the outer boundary). Multiple
+    boundary loops indicate holes in the patch. This function detects holes and
+    returns the additional vertices that should be excluded to fill them.
+
+    Parameters
+    ----------
+    faces : ndarray of shape (F, 3)
+        Triangle face indices for the full surface.
+    excluded_vertices : set
+        Set of vertex indices to exclude (medial wall + cuts).
+
+    Returns
+    -------
+    hole_vertices : set
+        Additional vertices to exclude to fill holes. Empty set if no holes.
+    """
+    max_iterations = 10  # Prevent infinite loops
+    all_hole_vertices = set()
+
+    for iteration in range(max_iterations):
+        # Build patch faces (faces where all 3 vertices are in patch)
+        patch_vertex_set = (
+            set(range(faces.max() + 1)) - excluded_vertices - all_hole_vertices
+        )
+        patch_faces = []
+        for face in faces:
+            if all(int(v) in patch_vertex_set for v in face):
+                patch_faces.append([int(v) for v in face])
+
+        if len(patch_faces) == 0:
+            break
+
+        patch_faces = np.array(patch_faces)
+
+        # Count boundary loops
+        n_loops, loops = count_boundary_loops(patch_faces)
+
+        if n_loops <= 1:
+            # No holes (or no boundary - shouldn't happen)
+            break
+
+        # Find the largest loop (main boundary) and mark smaller ones as holes
+        loops_sorted = sorted(loops, key=len, reverse=True)
+        main_loop = loops_sorted[0]
+        hole_loops = loops_sorted[1:]
+
+        # Collect all vertices in hole boundary loops
+        new_hole_vertices = set()
+        for loop in hole_loops:
+            new_hole_vertices.update(int(v) for v in loop)
+
+        if not new_hole_vertices:
+            break
+
+        print(
+            f"  Iteration {iteration + 1}: Found {len(hole_loops)} hole(s) with "
+            f"{len(new_hole_vertices)} boundary vertices"
+        )
+        all_hole_vertices.update(new_hole_vertices)
+
+    return all_hole_vertices
+
+
 def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=None):
     """
     Refine cuts by replacing them with geodesic shortest paths between endpoints.
@@ -422,8 +554,8 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                 f"(dist to mwall: {start_dist_to_mwall:.2f}mm)"
             )
 
-            # Build set of medial wall border vertices (adjacent to mwall but not
-            # in mwall)
+            # Build set of medial wall border vertices (non-mwall vertices adjacent
+            # to mwall). These are potential anchor points for cuts.
             mwall_border_set = set()
             for mw_v in mwall_set:
                 for neighbor in G.neighbors(mw_v):
@@ -542,11 +674,33 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
                 f"  Geodesic path: {len(geodesic_path)} vertices, length: {path_length:.2f}"
             )
 
-            # Step 3: Replace cut with geodesic path
+            # Step 3: Find and include any trapped vertices
+            # A vertex is "trapped" if excluding mwall + geodesic_path would
+            # isolate it from the rest of the patch (creating a hole)
+            geodesic_set = set(geodesic_path)
+            excluded = mwall_set | geodesic_set
+
+            # Find vertices that would be trapped by this cut
+            trapped_vertices = _find_trapped_vertices(
+                G,
+                excluded,
+                mwall_set,
+                geodesic_path[-1],  # anchor is last vertex
+            )
+
+            if trapped_vertices:
+                print(
+                    f"  Found {len(trapped_vertices)} trapped vertices, adding to cut"
+                )
+                geodesic_path = list(geodesic_path) + list(trapped_vertices)
+
+            # Step 4: Replace cut with geodesic path + trapped vertices
             vertex_dict[cut_key] = np.array(geodesic_path)
 
             # Calculate reduction
-            reduction_pct = 100 * (1 - len(geodesic_path) / len(cut_vertices))
+            original_len = len(cut_vertices)
+            new_len = len(geodesic_path)
+            reduction_pct = 100 * (1 - new_len / original_len)
             print(f"  Reduced by {reduction_pct:.1f}%")
 
         except nx.NetworkXNoPath:
@@ -556,6 +710,65 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
         except Exception as e:
             print(f"  ERROR: Failed to compute geodesic path: {e}")
             print(f"  Keeping original cut")
+
+    # Post-processing: find and absorb any isolated small regions that would
+    # create holes in the patch
+    all_vertices = set(G.nodes())
+    excluded_final = set()
+
+    # Collect all excluded vertices
+    if mwall_set:
+        excluded_final.update(mwall_set)
+    for key in vertex_dict.keys():
+        if key == "mwall":
+            continue
+        if len(vertex_dict[key]) > 0:
+            excluded_final.update(int(v) for v in vertex_dict[key])
+
+    # Find connected components of patch vertices
+    patch_vertices = all_vertices - excluded_final
+    patch_subgraph = G.subgraph(patch_vertices)
+    components = list(nx.connected_components(patch_subgraph))
+
+    if len(components) > 1:
+        # Find the largest component (main patch)
+        components.sort(key=len, reverse=True)
+        main_component = components[0]
+        isolated_regions = components[1:]
+
+        total_isolated = sum(len(c) for c in isolated_regions)
+        print(
+            f"\nPost-processing: Found {len(isolated_regions)} isolated regions "
+            f"({total_isolated} vertices total)"
+        )
+
+        # Add isolated vertices to the nearest cut
+        from scipy.spatial.distance import cdist
+
+        for region in isolated_regions:
+            region_vertices = list(region)
+            # Find which cut is nearest to this region
+            best_cut = None
+            best_dist = float("inf")
+
+            for key in vertex_dict.keys():
+                if key == "mwall":
+                    continue
+                if len(vertex_dict[key]) > 0:
+                    cut_verts = vertex_dict[key]
+                    cut_coords = pts_fiducial[cut_verts]
+                    region_coords = pts_fiducial[region_vertices]
+                    dists = cdist(region_coords, cut_coords)
+                    min_dist = dists.min()
+                    if min_dist < best_dist:
+                        best_dist = min_dist
+                        best_cut = key
+
+            if best_cut is not None:
+                print(f"  Adding {len(region_vertices)} vertices to {best_cut}")
+                vertex_dict[best_cut] = np.concatenate(
+                    [vertex_dict[best_cut], np.array(region_vertices)]
+                )
 
     return vertex_dict
 

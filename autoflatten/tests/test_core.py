@@ -162,14 +162,14 @@ def mock_surface_data_with_disconnected_cut():
     )
 
     # Create a disconnected cut within the same component
-    # Vertices 0 and 8 are part of cut1 but have no direct connection
+    # Vertices 0 and 8 are part of calcarine but have no direct connection
     vertex_dict = {
         "mwall": np.array([]),
-        "cut1": np.array([0, 8]),  # Disconnected vertices in the same component
-        "cut2": np.array([]),
-        "cut3": np.array([]),
-        "cut4": np.array([]),
-        "cut5": np.array([]),
+        "calcarine": np.array([0, 8]),  # Disconnected vertices in the same component
+        "medial1": np.array([]),
+        "medial2": np.array([]),
+        "medial3": np.array([]),
+        "temporal": np.array([]),
     }
 
     return {
@@ -207,15 +207,15 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
 
     # Run the function with the mock data
     vertex_dict = mock_surface_data_with_disconnected_cut["vertex_dict"].copy()
-    original_vertices = len(vertex_dict["cut1"])
+    original_vertices = len(vertex_dict["calcarine"])
     result = ensure_continuous_cuts(vertex_dict, "test_subject", "lh")
 
     # Verify the result
-    assert "cut1" in result
+    assert "calcarine" in result
 
     # Check that originally disconnected cut is now connected
     # The resulting cut should include the original vertices plus connecting vertices
-    assert len(result["cut1"]) > original_vertices
+    assert len(result["calcarine"]) > original_vertices
 
     # Create a graph from the mock surface to verify connectivity
     G = nx.Graph()
@@ -231,17 +231,17 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
                 weight = np.linalg.norm(vertices_fiducial[v1] - vertices_fiducial[v2])
                 G.add_edge(v1, v2, weight=weight)
 
-    # Extract the subgraph for the resulting cut1
-    subgraph = G.subgraph(result["cut1"])
+    # Extract the subgraph for the resulting calcarine cut
+    subgraph = G.subgraph(result["calcarine"])
 
     # Check that the original disconnected vertices are now connected
-    if len(vertex_dict["cut1"]) >= 2:
-        v1 = vertex_dict["cut1"][0]
-        v2 = vertex_dict["cut1"][1]
+    if len(vertex_dict["calcarine"]) >= 2:
+        v1 = vertex_dict["calcarine"][0]
+        v2 = vertex_dict["calcarine"][1]
 
         # Both vertices should be in the resulting cut
-        assert v1 in result["cut1"]
-        assert v2 in result["cut1"]
+        assert v1 in result["calcarine"]
+        assert v2 in result["calcarine"]
 
         # There should be a path between them in the resulting subgraph
         assert nx.has_path(subgraph, v1, v2)
