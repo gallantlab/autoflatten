@@ -218,6 +218,8 @@ For each processed hemisphere, the pipeline creates:
 | `--distances` | 15 80 | Distance parameters |
 | `--n-iterations` | 200 | Maximum iterations |
 | `--tol` | 0.005 | Flatness tolerance |
+| `--dilate` | 1 | Number of dilations |
+| `--passes` | 1 | Number of passes |
 
 ## Available Templates
 
