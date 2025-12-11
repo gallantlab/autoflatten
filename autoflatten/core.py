@@ -17,6 +17,16 @@ from .flatten.algorithm import count_boundary_loops
 NEAR_MWALL_THRESHOLD_MM = 10.0
 ANCHOR_SEARCH_RADIUS_MM = 15.0
 
+# Thresholds for trapped vertex detection in _find_trapped_vertices
+# A vertex is considered trapped if BFS can only reach fewer than MIN_REACHABLE vertices
+# We limit BFS to MAX_BFS_VERTICES to avoid expensive traversals of well-connected regions
+TRAPPED_VERTEX_MIN_REACHABLE = 100
+TRAPPED_VERTEX_MAX_BFS = 200
+
+# Maximum iterations for hole filling to prevent infinite loops
+# Typically 1-2 iterations suffice; 10 provides ample margin for complex cases
+HOLE_FILL_MAX_ITERATIONS = 10
+
 
 def _find_geometric_endpoints(cut_vertices, pts):
     """Find the two most geometrically distant vertices in a cut.
@@ -356,13 +366,12 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
     trapped = []
     for v in potential_trapped:
         # Use BFS to check connectivity to the rest of the mesh
-        # If we can reach many vertices (>100) without going through excluded,
+        # If we can reach many vertices without going through excluded,
         # then v is connected to the main patch and not trapped
         visited = {v}
         queue = [v]
-        is_trapped = True
 
-        while queue and len(visited) < 200:
+        while queue and len(visited) < TRAPPED_VERTEX_MAX_BFS:
             current = queue.pop(0)
             for neighbor in G.neighbors(current):
                 if neighbor not in visited and neighbor not in excluded:
@@ -370,7 +379,7 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
                     queue.append(neighbor)
 
         # If we could only reach a small number of vertices, it's trapped
-        if len(visited) < 100:
+        if len(visited) < TRAPPED_VERTEX_MIN_REACHABLE:
             trapped.append(v)
             # Also add any other vertices in this small isolated region
             for v2 in visited:
@@ -399,10 +408,9 @@ def fill_holes_in_patch(faces, excluded_vertices):
     hole_vertices : set
         Additional vertices to exclude to fill holes. Empty set if no holes.
     """
-    max_iterations = 10  # Prevent infinite loops
     all_hole_vertices = set()
 
-    for iteration in range(max_iterations):
+    for iteration in range(HOLE_FILL_MAX_ITERATIONS):
         # Build patch faces (faces where all 3 vertices are in patch)
         patch_vertex_set = (
             set(range(faces.max() + 1)) - excluded_vertices - all_hole_vertices
@@ -426,7 +434,6 @@ def fill_holes_in_patch(faces, excluded_vertices):
 
         # Find the largest loop (main boundary) and mark smaller ones as holes
         loops_sorted = sorted(loops, key=len, reverse=True)
-        main_loop = loops_sorted[0]
         hole_loops = loops_sorted[1:]
 
         # Collect all vertices in hole boundary loops
@@ -729,7 +736,6 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
     if len(components) > 1:
         # Find the largest component (main patch)
         components.sort(key=len, reverse=True)
-        main_component = components[0]
         isolated_regions = components[1:]
 
         total_isolated = sum(len(c) for c in isolated_regions)
