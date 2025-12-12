@@ -20,6 +20,7 @@ from autoflatten.core import (
 from autoflatten.utils import load_json
 from autoflatten.config import fsaverage_cut_template
 
+
 # Example 1: Basic usage with default fsaverage template
 def example_basic_refinement():
     """Basic example of geodesic refinement."""
@@ -35,7 +36,7 @@ def example_basic_refinement():
     prefix = f"{hemi}_"
     for key, value in template_data.items():
         if key.startswith(prefix):
-            new_key = key[len(prefix):]
+            new_key = key[len(prefix) :]
             vertex_dict[new_key] = np.array(value)
 
     # Map cuts to target subject
@@ -44,9 +45,7 @@ def example_basic_refinement():
 
     # Ensure continuity
     print("Ensuring continuous cuts...")
-    vertex_dict_fixed = ensure_continuous_cuts(
-        vertex_dict_mapped.copy(), subject, hemi
-    )
+    vertex_dict_fixed = ensure_continuous_cuts(vertex_dict_mapped.copy(), subject, hemi)
 
     # Apply geodesic refinement
     print("Refining cuts with geodesic shortest paths...")
@@ -64,7 +63,9 @@ def example_basic_refinement():
             before = len(vertex_dict_fixed[cut_name])
             after = len(vertex_dict_refined[cut_name])
             reduction = 100 * (1 - after / before)
-            print(f"{cut_name}: {before} → {after} vertices ({reduction:.1f}% reduction)")
+            print(
+                f"{cut_name}: {before} → {after} vertices ({reduction:.1f}% reduction)"
+            )
 
     return vertex_dict_refined
 
@@ -111,13 +112,11 @@ def example_compare_refinement(subject, hemi):
     prefix = f"{hemi}_"
     for key, value in template_data.items():
         if key.startswith(prefix):
-            new_key = key[len(prefix):]
+            new_key = key[len(prefix) :]
             vertex_dict[new_key] = np.array(value)
 
     vertex_dict_mapped = map_cuts_to_subject(vertex_dict, subject, hemi)
-    vertex_dict_fixed = ensure_continuous_cuts(
-        vertex_dict_mapped.copy(), subject, hemi
-    )
+    vertex_dict_fixed = ensure_continuous_cuts(vertex_dict_mapped.copy(), subject, hemi)
 
     # Apply refinement
     vertex_dict_refined = refine_cuts_with_geodesic(
@@ -168,7 +167,7 @@ def calculate_path_length(G, vertices):
     for i in range(len(vertices) - 1):
         v1, v2 = vertices[i], vertices[i + 1]
         if G.has_edge(v1, v2):
-            total_length += G[v1][v2]['weight']
+            total_length += G[v1][v2]["weight"]
     return total_length
 
 
@@ -192,6 +191,7 @@ if __name__ == "__main__":
     print("  python example_geodesic_refinement.py <subject_id> <hemi>")
 
     import sys
+
     if len(sys.argv) == 3:
         subject = sys.argv[1]
         hemi = sys.argv[2]

@@ -1547,11 +1547,14 @@ class SurfaceFlattener:
         if self.config.verbose:
             print(f"Euler characteristic: {euler}, Boundary vertices: {len(boundary)}")
 
-    def compute_kring_distances(self, cache_path: Optional[str] = None) -> None:
+    def compute_kring_distances(
+        self, cache_path: Optional[str] = None, tqdm_position: int = 0
+    ) -> None:
         """Compute or load cached k-ring geodesic distances.
 
         Args:
             cache_path: Path to cache file. If None, no caching is performed.
+            tqdm_position: Position of tqdm progress bar (for stacking bars in parallel execution).
         """
         if self.fiducial_vertices is None:
             raise RuntimeError("Must call load_data before compute_kring_distances")
@@ -1573,7 +1576,10 @@ class SurfaceFlattener:
                         f"(all neighbors)..."
                     )
                 self.k_rings, self.target_distances = compute_kring_geodesic_distances(
-                    self.fiducial_vertices, self.faces, kring_config.k_ring
+                    self.fiducial_vertices,
+                    self.faces,
+                    kring_config.k_ring,
+                    tqdm_position=tqdm_position,
                 )
                 if cache_path:
                     if self.config.verbose:
@@ -1606,6 +1612,7 @@ class SurfaceFlattener:
                         self.faces,
                         kring_config.k_ring,
                         n_samples_per_ring=kring_config.n_neighbors_per_ring,
+                        tqdm_position=tqdm_position,
                     )
                 )
                 if cache_path:
