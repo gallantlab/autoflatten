@@ -63,17 +63,18 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
     # JAX/XLA - controls intra-op parallelism
     # This splits CPU into N "devices" limiting total thread usage
     existing_xla = os.environ.get("XLA_FLAGS", "")
+    updated_xla = existing_xla
     if "--xla_force_host_platform_device_count" not in existing_xla:
         xla_flag = f"--xla_force_host_platform_device_count={n_threads}"
-        existing_xla = _append_xla_flag(existing_xla, xla_flag)
-        os.environ["XLA_FLAGS"] = existing_xla
+        updated_xla = _append_xla_flag(updated_xla, xla_flag)
 
     # Limit Eigen thread pool used by XLA CPU backend
-    current_xla = os.environ.get("XLA_FLAGS", "")
-    if "--xla_cpu_multi_thread_eigen_thread_count" not in current_xla:
+    if "--xla_cpu_multi_thread_eigen_thread_count" not in updated_xla:
         eigen_flag = f"--xla_cpu_multi_thread_eigen_thread_count={n_threads}"
-        current_xla = _append_xla_flag(current_xla, eigen_flag)
-        os.environ["XLA_FLAGS"] = current_xla
+        updated_xla = _append_xla_flag(updated_xla, eigen_flag)
+
+    if updated_xla != existing_xla:
+        os.environ["XLA_FLAGS"] = updated_xla
 
     # OpenMP - used by many numerical libraries
     if "OMP_NUM_THREADS" not in os.environ:
