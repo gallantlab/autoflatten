@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import warnings
 from collections import defaultdict, deque
 
 import networkx as nx
@@ -365,7 +366,7 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
 
     # For each potential trapped vertex, check if it can reach a "safe" vertex
     # (one that's far from the excluded set) without going through excluded
-    trapped = []
+    trapped = set()
     for v in potential_trapped:
         # Use BFS to check connectivity to the rest of the mesh
         # If we can reach many vertices without going through excluded,
@@ -382,13 +383,11 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
 
         # If we could only reach a small number of vertices, it's trapped
         if len(visited) < TRAPPED_VERTEX_MIN_REACHABLE:
-            trapped.append(v)
+            trapped.add(v)
             # Also add any other vertices in this small isolated region
-            for v2 in visited:
-                if v2 not in trapped:
-                    trapped.append(v2)
+            trapped.update(visited)
 
-    return trapped
+    return list(trapped)
 
 
 def fill_holes_in_patch(faces, excluded_vertices):
@@ -495,6 +494,13 @@ def fill_holes_in_patch(faces, excluded_vertices):
             f"{len(new_hole_vertices)} boundary vertices"
         )
         all_hole_vertices.update(new_hole_vertices)
+    else:
+        # Loop completed without break - max iterations reached
+        warnings.warn(
+            f"Hole filling reached maximum iterations ({HOLE_FILL_MAX_ITERATIONS}). "
+            "This may indicate unexpected mesh topology. "
+            f"Total hole vertices found: {len(all_hole_vertices)}"
+        )
 
     return all_hole_vertices
 
