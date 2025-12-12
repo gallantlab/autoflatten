@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections import deque
+from collections import defaultdict, deque
 
 import networkx as nx
 import numpy as np
@@ -414,10 +414,8 @@ def fill_holes_in_patch(faces, excluded_vertices):
     hole_vertices : set
         Additional vertices to exclude to fill holes. Empty set if no holes.
     """
-    from collections import defaultdict
-
     # Handle empty faces array
-    if len(faces) == 0:
+    if faces.size == 0:
         return set()
 
     all_hole_vertices = set()
