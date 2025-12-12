@@ -34,7 +34,10 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
     Notes
     -----
     Environment variables set:
-    - XLA_FLAGS: JAX/XLA CPU thread count
+    - XLA_FLAGS: JAX/XLA CPU thread count and Eigen thread-pool control
+        * --xla_force_host_platform_device_count
+        * --xla_cpu_multi_thread_eigen
+        * --xla_cpu_multi_thread_eigen_thread_count
     - OMP_NUM_THREADS: OpenMP parallelism
     - MKL_NUM_THREADS: Intel MKL
     - OPENBLAS_NUM_THREADS: OpenBLAS
@@ -58,20 +61,23 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
     def _append_xla_flag(current: str, flag: str) -> str:
         return f"{current} {flag}".strip()
 
+    def _has_flag(env: str, prefix: str) -> bool:
+        return any(part.startswith(prefix) for part in env.split())
+
     n_str = str(n_threads)
 
     # JAX/XLA - controls intra-op parallelism
     # This splits CPU into N "devices" limiting total thread usage
     existing_xla = os.environ.get("XLA_FLAGS", "")
     updated_xla = existing_xla
-    if "--xla_force_host_platform_device_count" not in existing_xla:
+    if not _has_flag(existing_xla, "--xla_force_host_platform_device_count"):
         xla_flag = f"--xla_force_host_platform_device_count={n_threads}"
         updated_xla = _append_xla_flag(updated_xla, xla_flag)
-    if "--xla_cpu_multi_thread_eigen" not in existing_xla:
+    if not _has_flag(existing_xla, "--xla_cpu_multi_thread_eigen="):
         updated_xla = _append_xla_flag(updated_xla, "--xla_cpu_multi_thread_eigen=true")
 
     # Limit Eigen thread pool used by XLA CPU backend
-    if "--xla_cpu_multi_thread_eigen_thread_count" not in existing_xla:
+    if not _has_flag(existing_xla, "--xla_cpu_multi_thread_eigen_thread_count"):
         eigen_flag = f"--xla_cpu_multi_thread_eigen_thread_count={n_threads}"
         updated_xla = _append_xla_flag(updated_xla, eigen_flag)
 
