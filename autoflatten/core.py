@@ -396,6 +396,10 @@ def fill_holes_in_patch(faces, excluded_vertices):
     boundary loops indicate holes in the patch. This function detects holes and
     returns the additional vertices that should be excluded to fill them.
 
+    This function also handles T-junctions, where a hole boundary shares a vertex
+    with the main boundary, creating vertices with >2 boundary neighbors. Such
+    vertices are treated as hole vertices and excluded to allow proper loop detection.
+
     Parameters
     ----------
     faces : ndarray of shape (F, 3)
@@ -408,6 +412,8 @@ def fill_holes_in_patch(faces, excluded_vertices):
     hole_vertices : set
         Additional vertices to exclude to fill holes. Empty set if no holes.
     """
+    from collections import defaultdict
+
     all_hole_vertices = set()
 
     for iteration in range(HOLE_FILL_MAX_ITERATIONS):
@@ -425,7 +431,43 @@ def fill_holes_in_patch(faces, excluded_vertices):
 
         patch_faces = np.array(patch_faces)
 
-        # Count boundary loops
+        # Build boundary adjacency to detect T-junctions
+        # Count how many faces each edge belongs to
+        edge_face_count = defaultdict(int)
+        for face in patch_faces:
+            for i in range(3):
+                edge = tuple(sorted([int(face[i]), int(face[(i + 1) % 3])]))
+                edge_face_count[edge] += 1
+
+        # Boundary edges appear in exactly 1 face
+        boundary_edges = {e for e, count in edge_face_count.items() if count == 1}
+
+        if not boundary_edges:
+            break
+
+        # Build adjacency from boundary edges
+        boundary_adj = defaultdict(set)
+        for v1, v2 in boundary_edges:
+            boundary_adj[v1].add(v2)
+            boundary_adj[v2].add(v1)
+
+        # Detect T-junction vertices (boundary vertices with >2 neighbors)
+        # These occur when a hole boundary meets the main boundary at a single vertex
+        tjunction_vertices = {
+            v for v, neighbors in boundary_adj.items() if len(neighbors) > 2
+        }
+
+        if tjunction_vertices:
+            # T-junctions found: mark them as hole vertices and continue
+            # This "breaks" the junction, allowing proper loop detection next iteration
+            print(
+                f"  Iteration {iteration + 1}: Found {len(tjunction_vertices)} "
+                f"T-junction vertices, excluding them"
+            )
+            all_hole_vertices.update(tjunction_vertices)
+            continue
+
+        # No T-junctions: count boundary loops normally
         n_loops, loops = count_boundary_loops(patch_faces)
 
         if n_loops <= 1:

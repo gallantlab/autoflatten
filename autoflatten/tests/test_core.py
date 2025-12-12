@@ -643,3 +643,89 @@ def test_find_trapped_vertices_no_neighbors():
 
     # No neighbors outside excluded set, should return empty
     assert result == []
+
+
+def test_fill_holes_in_patch_with_tjunction():
+    """Test fill_holes_in_patch handles T-junctions (holes touching main boundary).
+
+    A T-junction occurs when a boundary vertex has >2 neighbors, which happens
+    when multiple boundary paths meet at a single vertex. This test creates a mesh
+    where the boundary structure naturally has T-junctions due to how the triangles
+    connect, and verifies that fill_holes_in_patch correctly identifies and excludes
+    these T-junction vertices.
+
+    The H-shaped mesh below creates T-junctions at vertices 4, 5, 6, 8, 9 where
+    the horizontal bar meets the vertical bars.
+    """
+    # Create an H-shaped mesh that naturally has T-junctions in its boundary
+    faces = np.array(
+        [
+            # Left vertical bar
+            [0, 1, 4],
+            [0, 4, 7],
+            [4, 7, 8],
+            [1, 4, 8],
+            # Right vertical bar
+            [2, 3, 6],
+            [2, 6, 9],
+            [6, 9, 10],
+            [3, 6, 10],
+            # Horizontal bar connecting left and right
+            [4, 5, 8],
+            [5, 6, 9],
+            [4, 5, 6],
+            [5, 8, 9],
+        ]
+    )
+
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # This mesh has T-junctions at vertices where the horizontal bar meets
+    # the vertical bars. The T-junction detection should find and exclude them.
+    # Key assertion: T-junction vertices should be detected
+    assert len(result) > 0, (
+        "Expected T-junction vertices to be detected in H-shaped mesh"
+    )
+    # The T-junctions are at the connection points
+    possible_tjunctions = {4, 5, 6, 8, 9}
+    assert result & possible_tjunctions, (
+        f"Expected some T-junction vertices from {possible_tjunctions}, got {result}"
+    )
+
+
+def test_fill_holes_in_patch_simple_hole():
+    """Test that fill_holes_in_patch detects simple holes without T-junctions.
+
+    This creates a mesh with a simple internal hole (annulus topology) and verifies
+    that the hole boundary vertices are correctly identified.
+    """
+    # Create an annulus mesh (ring shape with hole in center)
+    # Outer ring: vertices 0-5
+    # Inner ring (hole): vertices 6-8
+    faces = np.array(
+        [
+            # Connect outer to inner ring
+            [0, 1, 6],
+            [1, 7, 6],
+            [1, 2, 7],
+            [2, 8, 7],
+            [2, 3, 8],
+            [3, 6, 8],
+            [3, 4, 6],
+            [4, 0, 6],
+        ]
+    )
+
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # The inner ring (vertices 6, 7, 8) should be detected as a hole
+    inner_ring = {6, 7, 8}
+    assert len(result) > 0, "Expected hole to be detected in annulus mesh"
+    # The result should include at least some inner ring vertices
+    assert result & inner_ring, (
+        f"Expected inner ring vertices {inner_ring} to be in result, got {result}"
+    )
