@@ -566,8 +566,8 @@ def test_fill_holes_in_patch_with_hole():
     assert len(result) > 0, "Expected hole vertices to be filled"
 
 
-def test_fill_holes_in_patch_empty_excluded():
-    """Test fill_holes_in_patch handles case where excluded is larger than faces."""
+def test_fill_holes_in_patch_all_vertices_excluded():
+    """Test fill_holes_in_patch handles case where all vertices are excluded."""
     # Create simple faces
     faces = np.array([[0, 1, 2], [1, 2, 3]])
     # Exclude all vertices - no patch faces remain
