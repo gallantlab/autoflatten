@@ -71,7 +71,7 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
     # Limit Eigen thread pool used by XLA CPU backend
     if "--xla_cpu_multi_thread_eigen_thread_count" not in existing_xla:
         eigen_flag = f"--xla_cpu_multi_thread_eigen_thread_count={n_threads}"
-        xla_prefix = os.environ.get("XLA_FLAGS", "")
+        xla_prefix = existing_xla
         if xla_prefix:
             os.environ["XLA_FLAGS"] = f"{xla_prefix} {eigen_flag}"
         else:
