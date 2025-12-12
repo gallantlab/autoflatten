@@ -678,31 +678,35 @@ class TestCompute2DAreas:
         # Negative area: |second triangle| = 0.5
         assert np.isclose(float(neg_area), 0.5)
 
-    def test_total_plus_neg_equals_absolute_sum(self):
-        """Test that total_area + neg_area = sum of |areas|."""
+    def test_total_plus_neg_equals_positive_area_sum(self):
+        """Test that total_area + neg_area = sum of positive areas.
+
+        The formula total_area + neg_area gives the sum of positive
+        (non-flipped) triangle areas, which is used in FreeSurfer's
+        area-preserving scaling to normalize by "useful" area.
+        """
         uv = jnp.array([
             [0.0, 0.0],
             [1.0, 0.0],
             [0.5, 1.0],
         ])
-        # One CCW, one CW triangle
+        # Test with CCW (positive) triangle
         faces_ccw = jnp.array([[0, 1, 2]])
-        faces_cw = jnp.array([[0, 2, 1]])
-
         total_ccw, neg_ccw = compute_2d_areas(uv, faces_ccw)
+
+        # CCW: total=0.5, neg=0, total+neg=0.5 (positive area)
+        assert np.isclose(float(total_ccw), 0.5)
+        assert np.isclose(float(neg_ccw), 0.0)
+        assert np.isclose(float(total_ccw + neg_ccw), 0.5)
+
+        # Test with CW (negative/flipped) triangle
+        faces_cw = jnp.array([[0, 2, 1]])
         total_cw, neg_cw = compute_2d_areas(uv, faces_cw)
 
-        # For CCW: total + neg = 0.5 + 0 = 0.5
-        assert np.isclose(float(total_ccw + neg_ccw), 0.5)
-        # For CW: total + neg = -0.5 + 0.5 = 0 (but we want |area|)
-        # Actually, total_area + neg_area should give the sum of |all areas|
-        # Since total_area = sum of signed, and neg_area = |negative ones|
-        # When all negative: total_area + neg_area = -0.5 + 0.5 = 0
-        # This seems inconsistent with FreeSurfer's formula...
-        # Let me check: if total_area = -0.5 and neg_area = 0.5
-        # then total_area + neg_area = 0, but we expect 0.5
-        # Actually, re-reading the code, this formula works when there are
-        # both positive and negative triangles
+        # CW: total=-0.5, neg=0.5, total+neg=0 (no positive area)
+        assert np.isclose(float(total_cw), -0.5)
+        assert np.isclose(float(neg_cw), 0.5)
+        assert np.isclose(float(total_cw + neg_cw), 0.0)
 
     def test_unit_square(self):
         """Test unit square (two triangles, both positive)."""
