@@ -69,9 +69,10 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
         os.environ["XLA_FLAGS"] = existing_xla
 
     # Limit Eigen thread pool used by XLA CPU backend
-    if "--xla_cpu_multi_thread_eigen_thread_count" not in existing_xla:
+    current_xla = os.environ.get("XLA_FLAGS", existing_xla)
+    if "--xla_cpu_multi_thread_eigen_thread_count" not in current_xla:
         eigen_flag = f"--xla_cpu_multi_thread_eigen_thread_count={n_threads}"
-        existing_xla = _append_xla_flag(existing_xla, eigen_flag)
+        existing_xla = _append_xla_flag(current_xla, eigen_flag)
         os.environ["XLA_FLAGS"] = existing_xla
 
     # OpenMP - used by many numerical libraries
