@@ -28,6 +28,9 @@ class TestConfigureThreading:
 
         assert "XLA_FLAGS" in os.environ
         assert "--xla_force_host_platform_device_count=4" in os.environ["XLA_FLAGS"]
+        assert (
+            "--xla_cpu_multi_thread_eigen_thread_count=4" in os.environ["XLA_FLAGS"]
+        )
 
     def test_sets_omp_num_threads(self, monkeypatch):
         """Test that OMP_NUM_THREADS is set correctly."""
