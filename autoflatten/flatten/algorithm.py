@@ -4,14 +4,15 @@ This module provides the SurfaceFlattener class for cortical surface flattening
 using FreeSurfer-style gradient descent with vectorized line search.
 """
 
+import os
 import time
+import warnings
 from typing import Optional
 
 import igl
 import jax
 import jax.numpy as jnp
 import numpy as np
-import os
 
 
 # =============================================================================
@@ -293,8 +294,6 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
     # T-junctions or endpoints, which shouldn't occur in a valid mesh boundary.
     for v, neighbors in boundary_adj.items():
         if len(neighbors) != 2:
-            import warnings
-
             warnings.warn(
                 f"Boundary vertex {v} has {len(neighbors)} neighbors (expected 2). "
                 "This may indicate mesh topology issues."
@@ -322,8 +321,6 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
 
         # Validate loop closure: the start vertex should be a neighbor of the last vertex
         if len(loop) > 1 and start not in boundary_adj[loop[-1]]:
-            import warnings
-
             warnings.warn(
                 f"Loop starting at vertex {start} may not be properly closed. "
                 f"Last vertex {loop[-1]} is not connected back to start."

@@ -516,12 +516,14 @@ def test_refine_cuts_does_not_modify_input(mock_grid_surface, monkeypatch):
 def test_fill_holes_in_patch_no_holes():
     """Test fill_holes_in_patch returns empty set when no holes exist."""
     # Create a simple triangular mesh (disk topology, one boundary loop)
-    # Vertices: 0-4 form outer boundary, 5 is interior
-    #     0---1
-    #    /|\ /|\
-    #   4-+-5-+-2
-    #    \|/ \|/
-    #     3---
+    # Vertices: 0-4 form outer boundary in a pentagon, 5 is center
+    #       0
+    #      /|\
+    #     / 5 \
+    #    4     1
+    #     \   /
+    #      3-2
+    # Fan triangulation: [0,1,5], [1,2,5], [2,3,5], [3,4,5], [4,0,5]
     faces = np.array(
         [
             [0, 1, 5],
