@@ -69,7 +69,7 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
         updated_xla = _append_xla_flag(updated_xla, xla_flag)
 
     # Limit Eigen thread pool used by XLA CPU backend
-    if "--xla_cpu_multi_thread_eigen_thread_count" not in updated_xla:
+    if "--xla_cpu_multi_thread_eigen_thread_count" not in existing_xla:
         eigen_flag = f"--xla_cpu_multi_thread_eigen_thread_count={n_threads}"
         updated_xla = _append_xla_flag(updated_xla, eigen_flag)
 
