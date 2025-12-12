@@ -60,6 +60,7 @@ class PyflattenBackend(FlattenBackend):
         config_path: Optional[str] = None,
         n_jobs: int = -1,
         cache_distances: bool = False,
+        tqdm_position: int = 0,
         **kwargs,
     ) -> str:
         """Flatten a cortical surface patch using pyflatten.
@@ -90,6 +91,8 @@ class PyflattenBackend(FlattenBackend):
             Number of parallel jobs (-1 = use all CPUs)
         cache_distances : bool
             Whether to cache computed k-ring distances
+        tqdm_position : int
+            Position of tqdm progress bar (for stacking bars in parallel execution)
         **kwargs
             Additional arguments (ignored)
 
@@ -156,7 +159,9 @@ class PyflattenBackend(FlattenBackend):
             if cache_distances:
                 cache_path = get_kring_cache_filename(output_path, config.kring)
 
-            flattener.compute_kring_distances(cache_path=cache_path)
+            flattener.compute_kring_distances(
+                cache_path=cache_path, tqdm_position=tqdm_position
+            )
 
             # Prepare optimization
             flattener.prepare_optimization()
