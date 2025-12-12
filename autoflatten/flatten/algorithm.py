@@ -36,6 +36,8 @@ from .distance import (
     compute_kring_geodesic_distances_angular,
 )
 from .energy import (
+    compute_2d_areas,
+    compute_3d_surface_area,
     compute_area_energy_fs_v6,
     compute_metric_energy,
     compute_spring_displacement,
@@ -1106,6 +1108,38 @@ def run_adaptive_optimization(
     return np.array(uv)
 
 
+@jax.jit
+def _apply_area_preserving_scale(
+    uv: jnp.ndarray, faces: jnp.ndarray, orig_area: float
+) -> jnp.ndarray:
+    """Apply area-preserving scaling to UV coordinates (JIT-compiled).
+
+    Implements FreeSurfer's area-preserving scaling formula from mrisurf.c:6260-6264:
+        scale = sqrt(orig_area / (total_area + neg_area))
+
+    This scaling maintains the original surface area during optimization,
+    preventing progressive shrinkage that would destabilize the optimization.
+
+    Parameters
+    ----------
+    uv : ndarray of shape (V, 2)
+        Current 2D vertex positions
+    faces : ndarray of shape (F, 3)
+        Triangle face indices
+    orig_area : float
+        Original 3D surface area to maintain
+
+    Returns
+    -------
+    ndarray of shape (V, 2)
+        Scaled UV coordinates
+    """
+    total_area, neg_area = compute_2d_areas(uv, faces)
+    scale = jnp.sqrt(orig_area / (total_area + neg_area))
+    centroid = jnp.mean(uv, axis=0)
+    return (uv - centroid) * scale + centroid
+
+
 def remove_negative_area(
     uv_init: np.ndarray,
     neighbors_jax: jnp.ndarray,
@@ -1124,6 +1158,7 @@ def remove_negative_area(
     n_coarse_steps: int = 15,
     print_every: int = 20,
     verbose: bool = True,
+    orig_area: Optional[float] = None,
 ) -> np.ndarray:
     """FreeSurfer-style negative area removal with vectorized line search.
 
@@ -1145,6 +1180,9 @@ def remove_negative_area(
         n_coarse_steps: Number of line search steps
         print_every: Print progress every N iterations
         verbose: Print progress messages
+        orig_area: Original 3D surface area for area-preserving scaling.
+            If provided, rescales UV coordinates at each iteration to maintain
+            this area (FreeSurfer mrisurf.c:6260-6264).
 
     Returns:
         UV coordinates with reduced negative area
@@ -1226,6 +1264,12 @@ def remove_negative_area(
             old_sse = None
 
             for i in range(config.iters_per_level):
+                # Area-preserving scaling (FreeSurfer mrisurf.c:6260-6264)
+                # Maintains original patch area to prevent shrinkage and keep
+                # spring forces balanced
+                if orig_area is not None:
+                    uv = _apply_area_preserving_scale(uv, faces_jax, orig_area)
+
                 grad = compute_weighted_gradient(uv, area_weight)
 
                 if n_avg > 0:
@@ -1461,6 +1505,7 @@ class SurfaceFlattener:
         self.faces: Optional[np.ndarray] = None
         self.fiducial_vertices: Optional[np.ndarray] = None
         self.orig_indices: Optional[np.ndarray] = None
+        self.orig_area: Optional[float] = None  # Original 3D patch surface area
 
         # K-ring data (set by compute_kring_distances)
         self.k_rings: Optional[list] = None
@@ -1546,6 +1591,13 @@ class SurfaceFlattener:
 
         if self.config.verbose:
             print(f"Euler characteristic: {euler}, Boundary vertices: {len(boundary)}")
+
+        # Compute original 3D surface area for area-preserving scaling
+        # IMPORTANT: Use reduced surface (self.vertices, self.faces) which has
+        # cuts and medial wall already removed - this is the actual patch area
+        self.orig_area = compute_3d_surface_area(self.vertices, self.faces)
+        if self.config.verbose:
+            print(f"Original 3D patch surface area: {self.orig_area:.2f}")
 
     def compute_kring_distances(
         self, cache_path: Optional[str] = None, tqdm_position: int = 0
@@ -1689,12 +1741,24 @@ class SurfaceFlattener:
         )
 
     def initial_projection(self) -> np.ndarray:
-        """Compute initial 2D projection (FreeSurfer-style).
+        """Compute initial 2D projection with FreeSurfer-style scaling.
+
+        Applies a global scale factor after projection to compensate for
+        projection-induced shrinkage. FreeSurfer default is 3.0.
 
         Returns:
             (V, 2) initial UV coordinates
         """
-        return freesurfer_projection(self.vertices, self.faces)
+        uv = freesurfer_projection(self.vertices, self.faces)
+
+        # Apply initial global scale to compensate for projection shrinkage
+        # (FreeSurfer default: 3.0, see mris_flatten.c:509)
+        scale = self.config.initial_scale
+        if scale != 1.0:
+            centroid = np.mean(uv, axis=0)
+            uv = (uv - centroid) * scale + centroid
+
+        return uv
 
     def run(self) -> np.ndarray:
         """Run complete optimization pipeline.
@@ -1749,6 +1813,7 @@ class SurfaceFlattener:
                 n_coarse_steps=config.line_search.n_coarse_steps,
                 print_every=config.print_every,
                 verbose=verbose,
+                orig_area=self.orig_area,
             )
 
         # Main optimization phases
