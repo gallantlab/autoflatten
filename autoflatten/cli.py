@@ -254,16 +254,25 @@ def run_projection(
         print(f"Surface loaded: {len(pts)} vertices, {len(polys)} faces")
 
         # Fill holes in patch (detect and exclude hole boundary vertices)
+        print("\nHole Filling")
+        print("-" * 12)
+        step_start = time.time()
         excluded_vertices = set()
         for vertices in vertex_dict_fixed.values():
             excluded_vertices.update(int(v) for v in vertices)
 
         hole_vertices = fill_holes_in_patch(polys, excluded_vertices)
+        step_elapsed = time.time() - step_start
         if hole_vertices:
             print(f"Filled {len(hole_vertices)} hole boundary vertices")
             vertex_dict_fixed["_hole_fill"] = np.array(list(hole_vertices))
+        else:
+            print("No holes detected")
+        print(f"Hole filling completed in {step_elapsed:.2f}s")
 
         # Create patch file
+        print("\nPatch File Creation")
+        print("-" * 19)
         step_start = time.time()
         patch_file, patch_vertices = create_patch_file(
             patch_file, pts, polys, vertex_dict_fixed

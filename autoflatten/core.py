@@ -4,9 +4,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections import deque
 
 import networkx as nx
 import numpy as np
+from scipy.spatial.distance import cdist
 
 from .freesurfer import create_label_file, load_surface, read_freesurfer_label
 from .flatten.algorithm import count_boundary_loops
@@ -369,10 +371,10 @@ def _find_trapped_vertices(G, excluded, mwall_set, anchor):
         # If we can reach many vertices without going through excluded,
         # then v is connected to the main patch and not trapped
         visited = {v}
-        queue = [v]
+        queue = deque([v])
 
         while queue and len(visited) < TRAPPED_VERTEX_MAX_BFS:
-            current = queue.pop(0)
+            current = queue.popleft()
             for neighbor in G.neighbors(current):
                 if neighbor not in visited and neighbor not in excluded:
                     visited.add(neighbor)
@@ -413,6 +415,10 @@ def fill_holes_in_patch(faces, excluded_vertices):
         Additional vertices to exclude to fill holes. Empty set if no holes.
     """
     from collections import defaultdict
+
+    # Handle empty faces array
+    if len(faces) == 0:
+        return set()
 
     all_hole_vertices = set()
 
@@ -577,8 +583,6 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
         # - End point: optimal anchor on medial wall border that creates a path
         #   with maximum clearance from the medial wall
         if mwall_set:
-            from scipy.spatial.distance import cdist
-
             mwall_list = list(mwall_set)
             mwall_coords = pts_inflated[mwall_list]
             cut_coords = pts_inflated[cut_vertices]
@@ -787,8 +791,6 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
         )
 
         # Add isolated vertices to the nearest cut
-        from scipy.spatial.distance import cdist
-
         for region in isolated_regions:
             region_vertices = list(region)
             # Find which cut is nearest to this region
