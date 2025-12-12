@@ -4,14 +4,15 @@ This module provides the SurfaceFlattener class for cortical surface flattening
 using FreeSurfer-style gradient descent with vectorized line search.
 """
 
+import os
 import time
+import warnings
 from typing import Optional
 
 import igl
 import jax
 import jax.numpy as jnp
 import numpy as np
-import os
 
 
 # =============================================================================
@@ -244,6 +245,90 @@ def validate_topology(
             print(f"WARNING: {msg}")
 
     return euler
+
+
+def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
+    """Count all boundary loops in a mesh.
+
+    A mesh with disk topology should have exactly one boundary loop.
+    Multiple loops indicate holes or disconnected boundaries.
+
+    Uses edge-face counting to find boundary edges (edges appearing in
+    exactly one face), then traces connected loops.
+
+    Parameters
+    ----------
+    faces : ndarray of shape (F, 3)
+        Triangle face indices.
+
+    Returns
+    -------
+    n_loops : int
+        Number of boundary loops.
+    loops : list of ndarray
+        List of arrays, each containing vertex indices for one loop.
+    """
+    from collections import defaultdict
+
+    # Count how many faces each edge belongs to
+    edge_face_count = defaultdict(int)
+    for face in faces:
+        for i in range(3):
+            edge = tuple(sorted([int(face[i]), int(face[(i + 1) % 3])]))
+            edge_face_count[edge] += 1
+
+    # Boundary edges appear in exactly 1 face
+    boundary_edges = {e for e, count in edge_face_count.items() if count == 1}
+
+    if not boundary_edges:
+        return 0, []
+
+    # Build adjacency from boundary edges
+    boundary_adj = defaultdict(set)
+    for v1, v2 in boundary_edges:
+        boundary_adj[v1].add(v2)
+        boundary_adj[v2].add(v1)
+
+    # Validate boundary structure: each boundary vertex should have exactly 2 neighbors
+    # (one on each side along the boundary). Vertices with != 2 neighbors indicate
+    # T-junctions or endpoints, which shouldn't occur in a valid mesh boundary.
+    for v, neighbors in boundary_adj.items():
+        if len(neighbors) != 2:
+            warnings.warn(
+                f"Boundary vertex {v} has {len(neighbors)} neighbors (expected 2). "
+                "This may indicate mesh topology issues."
+            )
+
+    # Trace connected loops
+    loops = []
+    visited = set()
+
+    for start in boundary_adj:
+        if start in visited:
+            continue
+
+        loop = [start]
+        visited.add(start)
+        current = start
+
+        while True:
+            neighbors = boundary_adj[current] - visited
+            if not neighbors:
+                break
+            current = next(iter(neighbors))
+            loop.append(current)
+            visited.add(current)
+
+        # Validate loop closure: the start vertex should be a neighbor of the last vertex
+        if len(loop) > 1 and start not in boundary_adj[loop[-1]]:
+            warnings.warn(
+                f"Loop starting at vertex {start} may not be properly closed. "
+                f"Last vertex {loop[-1]} is not connected back to start."
+            )
+
+        loops.append(np.array(loop))
+
+    return len(loops), loops
 
 
 def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -1443,6 +1528,21 @@ class SurfaceFlattener:
             self.vertices, self.faces, strict=self.config.strict_topology
         )
         boundary = igl.boundary_loop(self.faces)
+
+        # Validate single boundary loop (no holes)
+        n_loops, loops = count_boundary_loops(self.faces)
+        if n_loops != 1:
+            loop_sizes = sorted([len(loop) for loop in loops], reverse=True)
+            msg = (
+                f"Patch has {n_loops} boundary loops (expected 1 for disk topology).\n"
+                f"  Loop sizes: {loop_sizes}\n"
+                f"  This indicates the patch has holes or disconnected boundaries.\n"
+                f"  Check the cut projection for gaps between cuts and medial wall."
+            )
+            if self.config.strict_topology:
+                raise TopologyError(msg)
+            else:
+                print(f"WARNING: {msg}")
 
         if self.config.verbose:
             print(f"Euler characteristic: {euler}, Boundary vertices: {len(boundary)}")

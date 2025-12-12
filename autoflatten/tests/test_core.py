@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 from autoflatten.core import (
+    _find_trapped_vertices,
     ensure_continuous_cuts,
+    fill_holes_in_patch,
     map_cuts_to_subject,
     refine_cuts_with_geodesic,
 )
@@ -162,14 +164,14 @@ def mock_surface_data_with_disconnected_cut():
     )
 
     # Create a disconnected cut within the same component
-    # Vertices 0 and 8 are part of cut1 but have no direct connection
+    # Vertices 0 and 8 are part of calcarine but have no direct connection
     vertex_dict = {
         "mwall": np.array([]),
-        "cut1": np.array([0, 8]),  # Disconnected vertices in the same component
-        "cut2": np.array([]),
-        "cut3": np.array([]),
-        "cut4": np.array([]),
-        "cut5": np.array([]),
+        "calcarine": np.array([0, 8]),  # Disconnected vertices in the same component
+        "medial1": np.array([]),
+        "medial2": np.array([]),
+        "medial3": np.array([]),
+        "temporal": np.array([]),
     }
 
     return {
@@ -207,15 +209,15 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
 
     # Run the function with the mock data
     vertex_dict = mock_surface_data_with_disconnected_cut["vertex_dict"].copy()
-    original_vertices = len(vertex_dict["cut1"])
+    original_vertices = len(vertex_dict["calcarine"])
     result = ensure_continuous_cuts(vertex_dict, "test_subject", "lh")
 
     # Verify the result
-    assert "cut1" in result
+    assert "calcarine" in result
 
     # Check that originally disconnected cut is now connected
     # The resulting cut should include the original vertices plus connecting vertices
-    assert len(result["cut1"]) > original_vertices
+    assert len(result["calcarine"]) > original_vertices
 
     # Create a graph from the mock surface to verify connectivity
     G = nx.Graph()
@@ -231,17 +233,17 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
                 weight = np.linalg.norm(vertices_fiducial[v1] - vertices_fiducial[v2])
                 G.add_edge(v1, v2, weight=weight)
 
-    # Extract the subgraph for the resulting cut1
-    subgraph = G.subgraph(result["cut1"])
+    # Extract the subgraph for the resulting calcarine cut
+    subgraph = G.subgraph(result["calcarine"])
 
     # Check that the original disconnected vertices are now connected
-    if len(vertex_dict["cut1"]) >= 2:
-        v1 = vertex_dict["cut1"][0]
-        v2 = vertex_dict["cut1"][1]
+    if len(vertex_dict["calcarine"]) >= 2:
+        v1 = vertex_dict["calcarine"][0]
+        v2 = vertex_dict["calcarine"][1]
 
         # Both vertices should be in the resulting cut
-        assert v1 in result["cut1"]
-        assert v2 in result["cut1"]
+        assert v1 in result["calcarine"]
+        assert v2 in result["calcarine"]
 
         # There should be a path between them in the resulting subgraph
         assert nx.has_path(subgraph, v1, v2)
@@ -506,3 +508,226 @@ def test_refine_cuts_does_not_modify_input(mock_grid_surface, monkeypatch):
 
     # Result should be a different object
     assert result is not vertex_dict
+
+
+# Tests for fill_holes_in_patch
+
+
+def test_fill_holes_in_patch_no_holes():
+    """Test fill_holes_in_patch returns empty set when no holes exist."""
+    # Create a simple triangular mesh (disk topology, one boundary loop)
+    # Vertices: 0-4 form outer boundary in a pentagon, 5 is center
+    #       0
+    #      /|\
+    #     / 5 \
+    #    4     1
+    #     \   /
+    #      3-2
+    # Fan triangulation: [0,1,5], [1,2,5], [2,3,5], [3,4,5], [4,0,5]
+    faces = np.array(
+        [
+            [0, 1, 5],
+            [1, 2, 5],
+            [2, 3, 5],
+            [3, 4, 5],
+            [4, 0, 5],
+        ]
+    )
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    assert result == set(), "Expected empty set when no holes exist"
+
+
+def test_fill_holes_in_patch_with_hole():
+    """Test fill_holes_in_patch detects and fills a hole."""
+    # Create a mesh with a hole (annulus topology, two boundary loops)
+    # Outer vertices: 0-5, Inner vertices: 6-8 (the hole)
+    faces = np.array(
+        [
+            # Outer ring connected to inner ring
+            [0, 1, 6],
+            [1, 7, 6],
+            [1, 2, 7],
+            [2, 8, 7],
+            [2, 3, 8],
+            [3, 6, 8],
+            [3, 4, 6],
+            [4, 0, 6],
+        ]
+    )
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # The inner loop (vertices 6, 7, 8) should be detected as a hole
+    # and its boundary vertices should be returned
+    assert len(result) > 0, "Expected hole vertices to be filled"
+
+
+def test_fill_holes_in_patch_all_vertices_excluded():
+    """Test fill_holes_in_patch handles case where all vertices are excluded."""
+    # Create simple faces
+    faces = np.array([[0, 1, 2], [1, 2, 3]])
+    # Exclude all vertices - no patch faces remain
+    excluded_vertices = {0, 1, 2, 3}
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # Should return empty set when no patch faces exist
+    assert result == set()
+
+
+# Tests for _find_trapped_vertices
+
+
+def test_find_trapped_vertices_no_trapped():
+    """Test _find_trapped_vertices returns empty when neighbors are well-connected."""
+    # Create a large graph where anchor's neighbors connect to >100 vertices
+    G = nx.Graph()
+    # Create a 20x20 grid graph (400 vertices)
+    for i in range(400):
+        row, col = i // 20, i % 20
+        if col < 19:
+            G.add_edge(i, i + 1)
+        if row < 19:
+            G.add_edge(i, i + 20)
+
+    # Exclude bottom row (0-19) and anchor at vertex 20
+    excluded = set(range(21))  # 0-20 excluded
+    mwall_set = set(range(20))  # Bottom row is mwall
+    anchor = 20  # First vertex of row 2
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # Vertex 21 (neighbor of anchor) can reach >100 vertices, so not trapped
+    assert result == [], f"Expected no trapped vertices, got {result}"
+
+
+def test_find_trapped_vertices_with_trapped():
+    """Test _find_trapped_vertices identifies trapped vertices correctly."""
+    # Create a graph where vertex 10 is nearly isolated
+    # (only connected to the mesh through the excluded set)
+    G = nx.Graph()
+    # Create a small connected region
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(2, 3)
+    G.add_edge(3, 0)  # Square of vertices 0-3
+    # Add anchor vertex 4 connected to vertex 1
+    G.add_edge(1, 4)
+    # Add isolated vertex 10 only connected to anchor
+    G.add_edge(4, 10)
+
+    excluded = {0, 1, 2, 3, 4}
+    mwall_set = {0, 1, 2, 3}
+    anchor = 4
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # Vertex 10 should be identified as trapped since it's only
+    # connected through excluded vertices
+    assert 10 in result, f"Expected vertex 10 to be trapped, got {result}"
+
+
+def test_find_trapped_vertices_no_neighbors():
+    """Test _find_trapped_vertices handles anchor with no non-excluded neighbors."""
+    G = nx.Graph()
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+
+    excluded = {0, 1, 2}
+    mwall_set = {0, 2}
+    anchor = 1
+
+    result = _find_trapped_vertices(G, excluded, mwall_set, anchor)
+
+    # No neighbors outside excluded set, should return empty
+    assert result == []
+
+
+def test_fill_holes_in_patch_with_tjunction():
+    """Test fill_holes_in_patch handles T-junctions (holes touching main boundary).
+
+    A T-junction occurs when a boundary vertex has >2 neighbors, which happens
+    when multiple boundary paths meet at a single vertex. This test creates a mesh
+    where the boundary structure naturally has T-junctions due to how the triangles
+    connect, and verifies that fill_holes_in_patch correctly identifies and excludes
+    these T-junction vertices.
+
+    The H-shaped mesh below creates T-junctions at vertices 4, 5, 6, 8, 9 where
+    the horizontal bar meets the vertical bars.
+    """
+    # Create an H-shaped mesh that naturally has T-junctions in its boundary
+    faces = np.array(
+        [
+            # Left vertical bar
+            [0, 1, 4],
+            [0, 4, 7],
+            [4, 7, 8],
+            [1, 4, 8],
+            # Right vertical bar
+            [2, 3, 6],
+            [2, 6, 9],
+            [6, 9, 10],
+            [3, 6, 10],
+            # Horizontal bar connecting left and right
+            [4, 5, 8],
+            [5, 6, 9],
+            [4, 5, 6],
+            [5, 8, 9],
+        ]
+    )
+
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # This mesh has T-junctions at vertices where the horizontal bar meets
+    # the vertical bars. The T-junction detection should find and exclude them.
+    # Key assertion: T-junction vertices should be detected
+    assert len(result) > 0, (
+        "Expected T-junction vertices to be detected in H-shaped mesh"
+    )
+    # The T-junctions are at the connection points
+    possible_tjunctions = {4, 5, 6, 8, 9}
+    assert result & possible_tjunctions, (
+        f"Expected some T-junction vertices from {possible_tjunctions}, got {result}"
+    )
+
+
+def test_fill_holes_in_patch_simple_hole():
+    """Test that fill_holes_in_patch detects simple holes without T-junctions.
+
+    This creates a mesh with a simple internal hole (annulus topology) and verifies
+    that the hole boundary vertices are correctly identified.
+    """
+    # Create an annulus mesh (ring shape with hole in center)
+    # Outer ring: vertices 0-5
+    # Inner ring (hole): vertices 6-8
+    faces = np.array(
+        [
+            # Connect outer to inner ring
+            [0, 1, 6],
+            [1, 7, 6],
+            [1, 2, 7],
+            [2, 8, 7],
+            [2, 3, 8],
+            [3, 6, 8],
+            [3, 4, 6],
+            [4, 0, 6],
+        ]
+    )
+
+    excluded_vertices = set()
+
+    result = fill_holes_in_patch(faces, excluded_vertices)
+
+    # The inner ring (vertices 6, 7, 8) should be detected as a hole
+    inner_ring = {6, 7, 8}
+    assert len(result) > 0, "Expected hole to be detected in annulus mesh"
+    # The result should include at least some inner ring vertices
+    assert result & inner_ring, (
+        f"Expected inner ring vertices {inner_ring} to be in result, got {result}"
+    )
