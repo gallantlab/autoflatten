@@ -234,14 +234,10 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     if coords is None:
         coords = vertices
 
-    # Collect all vertices to exclude (medial wall and all cuts)
-    excluded_vertices = set(vertex_dict["mwall"])
-
-    # Add vertices from each cut type
-    cut_keys = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
-    for cut_key in cut_keys:
-        if cut_key in vertex_dict:
-            excluded_vertices.update(vertex_dict[cut_key])
+    # Collect all vertices to exclude (all keys in vertex_dict: medial wall, cuts, holes, etc.)
+    excluded_vertices = set()
+    for key, verts in vertex_dict.items():
+        excluded_vertices.update(int(v) for v in verts)
 
     # Find vertices that are adjacent to cuts (border vertices)
     border_vertices = set()
@@ -252,11 +248,15 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
         for i in range(3):
             adjacency[face[i]].update([face[j] for j in range(3) if j != i])
 
-    # Find vertices adjacent to cuts but not in cuts themselves
-    for cut_key in cut_keys:
-        if cut_key in vertex_dict:
-            for v in vertex_dict[cut_key]:
-                for neighbor in adjacency[v]:
+    # Find vertices adjacent to excluded vertices (cuts + holes) but not excluded themselves
+    # Skip mwall as it doesn't define border vertices (it's interior boundary)
+    for key, verts in vertex_dict.items():
+        if key == "mwall":
+            continue
+        for v in verts:
+            v_int = int(v)
+            if v_int < len(adjacency):
+                for neighbor in adjacency[v_int]:
                     if neighbor not in excluded_vertices:
                         border_vertices.add(neighbor)
 
