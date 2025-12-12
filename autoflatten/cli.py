@@ -600,9 +600,9 @@ def cmd_run_full_pipeline(args):
                     args.backend,
                     True,  # verbose
                     run_plot,
-                    **backend_kwargs,
+                    **{**backend_kwargs, "tqdm_position": idx},
                 ): hemi
-                for hemi in hemispheres
+                for idx, hemi in enumerate(hemispheres)
             }
             for future in future_to_hemi:
                 hemi = future_to_hemi[future]

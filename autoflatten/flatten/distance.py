@@ -507,7 +507,7 @@ def compute_graph_distance(graph, source_idx, k_ring, correction=None):
 
 
 def compute_kring_geodesic_distances(
-    vertices, faces, k, correction=None, use_numba=True, n_threads=None
+    vertices, faces, k, correction=None, use_numba=True, n_threads=None, tqdm_position=0
 ):
     """Compute geodesic distances from each vertex to its k-ring neighbors.
 
@@ -530,6 +530,8 @@ def compute_kring_geodesic_distances(
         If True (default), use Numba-accelerated implementations
     n_threads : int, optional
         Number of threads for parallel k-ring computation
+    tqdm_position : int, optional
+        Position of tqdm progress bar (for stacking bars in parallel execution)
 
     Returns
     -------
@@ -563,12 +565,22 @@ def compute_kring_geodesic_distances(
             _limited_dijkstra_numba(
                 graph.indptr, graph.indices, graph.data, v, k_rings[v], correction
             )
-            for v in tqdm(range(n_vertices), desc="Computing k-ring distances")
+            for v in tqdm(
+                range(n_vertices),
+                desc="Computing k-ring distances",
+                position=tqdm_position,
+                leave=True,
+            )
         ]
     else:
         distances = [
             _limited_dijkstra(v, k_rings[v], graph, correction)
-            for v in tqdm(range(n_vertices), desc="Computing k-ring distances")
+            for v in tqdm(
+                range(n_vertices),
+                desc="Computing k-ring distances",
+                position=tqdm_position,
+                leave=True,
+            )
         ]
 
     return k_rings, distances
@@ -901,6 +913,7 @@ def compute_kring_geodesic_distances_angular(
     correction=None,
     use_numba=True,
     n_threads=None,
+    tqdm_position=0,
 ):
     """Compute geodesic distances with angular sampling at each ring.
 
@@ -924,6 +937,8 @@ def compute_kring_geodesic_distances_angular(
         If True (default), use Numba-accelerated Dijkstra
     n_threads : int, optional
         Number of threads for Numba
+    tqdm_position : int, optional
+        Position of tqdm progress bar (for stacking bars in parallel execution)
 
     Returns
     -------
@@ -960,7 +975,9 @@ def compute_kring_geodesic_distances_angular(
     sampled_neighbors = []
     sampled_distances = []
 
-    for v in tqdm(range(n_vertices), desc="Sampling neighbors"):
+    for v in tqdm(
+        range(n_vertices), desc="Sampling neighbors", position=tqdm_position, leave=True
+    ):
         v_neighbors = []
 
         center = vertices[v]
