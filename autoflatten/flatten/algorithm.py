@@ -1135,7 +1135,9 @@ def _apply_area_preserving_scale(
         Scaled UV coordinates
     """
     total_area, neg_area = compute_2d_areas(uv, faces)
-    scale = jnp.sqrt(orig_area / (total_area + neg_area))
+    # Protect against division by zero in degenerate cases
+    epsilon = 1e-8
+    scale = jnp.sqrt(orig_area / jnp.maximum(total_area + neg_area, epsilon))
     centroid = jnp.mean(uv, axis=0)
     return (uv - centroid) * scale + centroid
 
