@@ -31,6 +31,20 @@ class TestConfigureThreading:
         assert (
             "--xla_cpu_multi_thread_eigen_thread_count=4" in os.environ["XLA_FLAGS"]
         )
+        assert "--xla_cpu_multi_thread_eigen=true" in os.environ["XLA_FLAGS"]
+
+    def test_xla_flags_are_not_duplicated(self, monkeypatch):
+        """Ensure repeated calls do not duplicate XLA flags."""
+        monkeypatch.setenv("XLA_FLAGS", "--xla_some_other_flag=true")
+
+        from autoflatten.flatten.threading import configure_threading
+
+        configure_threading(2)
+        first = os.environ["XLA_FLAGS"]
+        configure_threading(2)
+        second = os.environ["XLA_FLAGS"]
+
+        assert first == second
 
     def test_sets_omp_num_threads(self, monkeypatch):
         """Test that OMP_NUM_THREADS is set correctly."""
