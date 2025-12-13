@@ -396,6 +396,101 @@ def compute_log_barrier_area_energy(
     return jnp.sum(total_error) / n_triangles
 
 
+# =============================================================================
+# Surface Area Computation Functions
+# =============================================================================
+
+
+@jax.jit
+def compute_3d_surface_area_jax(
+    vertices: jnp.ndarray, faces: jnp.ndarray
+) -> jnp.ndarray:
+    """Compute total surface area of 3D mesh (JIT-compiled).
+
+    Parameters
+    ----------
+    vertices : ndarray of shape (V, 3)
+        3D vertex coordinates
+    faces : ndarray of shape (F, 3)
+        Triangle face indices
+
+    Returns
+    -------
+    float
+        Total surface area
+    """
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+    cross = jnp.cross(v1 - v0, v2 - v0)
+    areas = 0.5 * jnp.linalg.norm(cross, axis=1)
+    return jnp.sum(areas)
+
+
+def compute_3d_surface_area(vertices: np.ndarray, faces: np.ndarray) -> float:
+    """Compute total surface area of 3D mesh.
+
+    Wrapper that calls JIT-compiled version and returns Python float.
+
+    Parameters
+    ----------
+    vertices : ndarray of shape (V, 3)
+        3D vertex coordinates
+    faces : ndarray of shape (F, 3)
+        Triangle face indices
+
+    Returns
+    -------
+    float
+        Total surface area
+    """
+    return float(
+        compute_3d_surface_area_jax(jnp.asarray(vertices), jnp.asarray(faces))
+    )
+
+
+@jax.jit
+def compute_2d_areas(uv: jnp.ndarray, faces: jnp.ndarray) -> tuple:
+    """Compute 2D triangle areas for area-preserving scaling (JIT-compiled).
+
+    This computes the values needed for FreeSurfer's area-preserving scaling
+    formula: scale = sqrt(orig_area / (total_area + neg_area))
+
+    Parameters
+    ----------
+    uv : ndarray of shape (V, 2)
+        2D vertex positions
+    faces : ndarray of shape (F, 3)
+        Triangle face indices
+
+    Returns
+    -------
+    total_area : float
+        Sum of signed areas (can be < sum of |areas| if triangles are flipped)
+    neg_area : float
+        Sum of |signed_area| for flipped triangles only
+
+    Note
+    ----
+    FreeSurfer uses total_area + neg_area = sum of |all areas|, which equals
+    the sum of positive areas plus the absolute value of negative areas.
+    """
+    v0 = uv[faces[:, 0]]
+    v1 = uv[faces[:, 1]]
+    v2 = uv[faces[:, 2]]
+
+    # Signed area: positive = CCW (correct), negative = CW (flipped)
+    signed_areas = 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+
+    total_area = jnp.sum(signed_areas)  # sum of signed areas
+    neg_area = jnp.sum(jnp.abs(jnp.minimum(signed_areas, 0.0)))  # |negative areas|
+
+    return total_area, neg_area
+
+
 @jax.jit
 def compute_spring_energy(uv, neighbors, mask, counts):
     """Spring energy: pull vertices toward 1-ring centroid.

@@ -53,6 +53,8 @@ from .distance import (
 )
 
 from .energy import (
+    compute_2d_areas,
+    compute_3d_surface_area,
     compute_metric_energy,
     compute_area_energy,
     compute_area_energy_fs_v6,
@@ -93,6 +95,8 @@ __all__ = [
     "get_k_ring_fast",
     "GRAPH_DISTANCE_CORRECTION",
     # Energy functions
+    "compute_2d_areas",
+    "compute_3d_surface_area",
     "compute_metric_energy",
     "compute_area_energy",
     "compute_area_energy_fs_v6",

@@ -116,6 +116,10 @@ class NegativeAreaRemovalConfig:
         Convergence tolerance for this phase.
     enabled : bool
         Whether to run negative area removal.
+    scale_area : bool
+        Whether to apply area-preserving scaling at each iteration.
+        This maintains the original 3D surface area during optimization.
+        FreeSurfer has this step commented out, so it's disabled by default.
     """
 
     base_averages: int = 256
@@ -125,6 +129,7 @@ class NegativeAreaRemovalConfig:
     iters_per_level: int = 200
     base_tol: float = 0.5
     enabled: bool = True
+    scale_area: bool = False
 
 
 @dataclass
@@ -235,6 +240,7 @@ class FlattenConfig:
     n_jobs: int = -1
     strict_topology: bool = True
     adaptive_recovery: bool = True
+    initial_scale: float = 3.0  # Scale factor after initial 2D projection
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for serialization."""
@@ -261,6 +267,7 @@ class FlattenConfig:
                 "iters_per_level": self.negative_area_removal.iters_per_level,
                 "base_tol": self.negative_area_removal.base_tol,
                 "enabled": self.negative_area_removal.enabled,
+                "scale_area": self.negative_area_removal.scale_area,
             },
             "spring_smoothing": {
                 "n_iterations": self.spring_smoothing.n_iterations,
@@ -284,6 +291,7 @@ class FlattenConfig:
             "n_jobs": self.n_jobs,
             "strict_topology": self.strict_topology,
             "adaptive_recovery": self.adaptive_recovery,
+            "initial_scale": self.initial_scale,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -313,6 +321,7 @@ class FlattenConfig:
             n_jobs=data.get("n_jobs", -1),
             strict_topology=data.get("strict_topology", True),
             adaptive_recovery=data.get("adaptive_recovery", True),
+            initial_scale=data.get("initial_scale", 3.0),
         )
 
     @classmethod
