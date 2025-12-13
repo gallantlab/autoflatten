@@ -1797,6 +1797,11 @@ class SurfaceFlattener:
 
         # Phase 0: Negative area removal
         if config.negative_area_removal.enabled:
+            # Only apply area-preserving scaling if enabled in config
+            # FreeSurfer has this step commented out, so it's disabled by default
+            scale_orig_area = (
+                self.orig_area if config.negative_area_removal.scale_area else None
+            )
             uv = remove_negative_area(
                 uv,
                 self.neighbors_jax,
@@ -1815,7 +1820,7 @@ class SurfaceFlattener:
                 n_coarse_steps=config.line_search.n_coarse_steps,
                 print_every=config.print_every,
                 verbose=verbose,
-                orig_area=self.orig_area,
+                orig_area=scale_orig_area,
             )
 
         # Main optimization phases

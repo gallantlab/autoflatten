@@ -119,6 +119,8 @@ class TestNegativeAreaRemovalConfig:
         assert config.max_passes == 5
         assert config.iters_per_level == 200
         assert config.base_tol == 0.5
+        # scale_area is disabled by default (FreeSurfer has this step commented out)
+        assert config.scale_area is False
 
 
 class TestSpringSmoothing:
@@ -550,27 +552,33 @@ class TestCompute3DSurfaceArea:
     def test_single_triangle(self):
         """Test area of a single triangle."""
         # Right triangle with legs of length 1
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
         faces = np.array([[0, 1, 2]])
         area = compute_3d_surface_area(vertices, faces)
         assert np.isclose(area, 0.5)  # Area = 0.5 * base * height = 0.5
 
     def test_unit_square(self):
         """Test area of unit square (two triangles)."""
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ])
-        faces = np.array([
-            [0, 1, 2],
-            [0, 2, 3],
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
+        faces = np.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ]
+        )
         area = compute_3d_surface_area(vertices, faces)
         assert np.isclose(area, 1.0)  # Unit square
 
@@ -578,11 +586,13 @@ class TestCompute3DSurfaceArea:
         """Test area of equilateral triangle with side length 2."""
         # Equilateral triangle with side length 2
         # Area = (sqrt(3)/4) * side^2 = sqrt(3)
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [1.0, np.sqrt(3), 0.0],
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [1.0, np.sqrt(3), 0.0],
+            ]
+        )
         faces = np.array([[0, 1, 2]])
         area = compute_3d_surface_area(vertices, faces)
         expected = np.sqrt(3)  # ≈ 1.732
@@ -591,11 +601,13 @@ class TestCompute3DSurfaceArea:
     def test_3d_surface(self):
         """Test area of a 3D surface (not flat)."""
         # Triangle tilted in 3D space
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0],
+            ]
+        )
         faces = np.array([[0, 1, 2]])
         area = compute_3d_surface_area(vertices, faces)
         # Cross product of edges: (1,0,0) x (0,1,1) = (0,-1,1)
@@ -605,25 +617,29 @@ class TestCompute3DSurfaceArea:
 
     def test_jax_version_matches(self):
         """Test that JIT version matches wrapper."""
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.5, 1.0, 0.5],
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 1.0, 0.5],
+            ]
+        )
         faces = np.array([[0, 1, 2]])
         area_wrapper = compute_3d_surface_area(vertices, faces)
-        area_jax = float(compute_3d_surface_area_jax(
-            jnp.asarray(vertices), jnp.asarray(faces)
-        ))
+        area_jax = float(
+            compute_3d_surface_area_jax(jnp.asarray(vertices), jnp.asarray(faces))
+        )
         assert np.isclose(area_wrapper, area_jax)
 
     def test_degenerate_triangle(self):
         """Test degenerate triangle (collinear points)."""
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],  # Collinear with first two
-        ])
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],  # Collinear with first two
+            ]
+        )
         faces = np.array([[0, 1, 2]])
         area = compute_3d_surface_area(vertices, faces)
         assert np.isclose(area, 0.0)
@@ -634,11 +650,13 @@ class TestCompute2DAreas:
 
     def test_single_ccw_triangle(self):
         """Test single counter-clockwise (correct) triangle."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ]
+        )
         faces = jnp.array([[0, 1, 2]])
         total_area, neg_area = compute_2d_areas(uv, faces)
         assert np.isclose(float(total_area), 0.5)
@@ -646,11 +664,13 @@ class TestCompute2DAreas:
 
     def test_single_cw_triangle(self):
         """Test single clockwise (flipped) triangle."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ]
+        )
         # Reversed winding: 0, 2, 1 instead of 0, 1, 2
         faces = jnp.array([[0, 2, 1]])
         total_area, neg_area = compute_2d_areas(uv, faces)
@@ -659,19 +679,23 @@ class TestCompute2DAreas:
 
     def test_mixed_orientation(self):
         """Test mesh with one CCW and one CW triangle."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.5, 1.0],
-            [1.5, 1.0],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.5, 1.0],
+                [1.5, 1.0],
+            ]
+        )
         # First triangle CCW (positive), second triangle CW (negative)
         # Triangle [1, 2, 3]: v0=(1,0), v1=(0.5,1), v2=(1.5,1)
         # cross = (0.5-1)*(1-0) - (1.5-1)*(1-0) = -0.5 - 0.5 = -1.0 → negative
-        faces = jnp.array([
-            [0, 1, 2],  # CCW - area = 0.5
-            [1, 2, 3],  # CW - area = -0.5
-        ])
+        faces = jnp.array(
+            [
+                [0, 1, 2],  # CCW - area = 0.5
+                [1, 2, 3],  # CW - area = -0.5
+            ]
+        )
         total_area, neg_area = compute_2d_areas(uv, faces)
         # Total area: 0.5 - 0.5 = 0
         assert np.isclose(float(total_area), 0.0)
@@ -685,11 +709,13 @@ class TestCompute2DAreas:
         (non-flipped) triangle areas, which is used in FreeSurfer's
         area-preserving scaling to normalize by "useful" area.
         """
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.5, 1.0],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.5, 1.0],
+            ]
+        )
         # Test with CCW (positive) triangle
         faces_ccw = jnp.array([[0, 1, 2]])
         total_ccw, neg_ccw = compute_2d_areas(uv, faces_ccw)
@@ -710,27 +736,33 @@ class TestCompute2DAreas:
 
     def test_unit_square(self):
         """Test unit square (two triangles, both positive)."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 1.0],
-        ])
-        faces = jnp.array([
-            [0, 1, 2],
-            [0, 2, 3],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ]
+        )
+        faces = jnp.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ]
+        )
         total_area, neg_area = compute_2d_areas(uv, faces)
         assert np.isclose(float(total_area), 1.0)
         assert np.isclose(float(neg_area), 0.0)
 
     def test_degenerate_triangle(self):
         """Test degenerate (zero area) triangle."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [2.0, 0.0],  # Collinear
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [2.0, 0.0],  # Collinear
+            ]
+        )
         faces = jnp.array([[0, 1, 2]])
         total_area, neg_area = compute_2d_areas(uv, faces)
         assert np.isclose(float(total_area), 0.0)
@@ -789,16 +821,20 @@ class TestApplyAreaPreservingScale:
     def test_preserves_target_area(self):
         """Test that scaling achieves target area."""
         # Create a simple unit square
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 1.0],
-        ])
-        faces = jnp.array([
-            [0, 1, 2],
-            [0, 2, 3],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ]
+        )
+        faces = jnp.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ]
+        )
         orig_area = 4.0  # Target area = 4 (double the current)
 
         scaled_uv = _apply_area_preserving_scale(uv, faces, orig_area)
@@ -809,16 +845,20 @@ class TestApplyAreaPreservingScale:
 
     def test_scaling_is_centered(self):
         """Test that scaling preserves centroid."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [2.0, 0.0],
-            [2.0, 2.0],
-            [0.0, 2.0],
-        ])
-        faces = jnp.array([
-            [0, 1, 2],
-            [0, 2, 3],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ]
+        )
+        faces = jnp.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ]
+        )
         orig_area = 16.0  # Target: scale up
 
         original_centroid = jnp.mean(uv, axis=0)
@@ -829,16 +869,20 @@ class TestApplyAreaPreservingScale:
 
     def test_scale_down(self):
         """Test scaling down (target area < current area)."""
-        uv = jnp.array([
-            [0.0, 0.0],
-            [2.0, 0.0],
-            [2.0, 2.0],
-            [0.0, 2.0],
-        ])
-        faces = jnp.array([
-            [0, 1, 2],
-            [0, 2, 3],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+            ]
+        )
+        faces = jnp.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ]
+        )
         # Current area = 4, target = 1
         orig_area = 1.0
 
@@ -849,17 +893,21 @@ class TestApplyAreaPreservingScale:
     def test_handles_negative_area_triangles(self):
         """Test handling of mesh with flipped triangles."""
         # Create mesh with one flipped triangle
-        uv = jnp.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.5, 1.0],
-            [1.5, 0.5],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.5, 1.0],
+                [1.5, 0.5],
+            ]
+        )
         # First triangle CCW, second CW (flipped)
-        faces = jnp.array([
-            [0, 1, 2],  # CCW
-            [1, 2, 3],  # Could be either orientation
-        ])
+        faces = jnp.array(
+            [
+                [0, 1, 2],  # CCW
+                [1, 2, 3],  # Could be either orientation
+            ]
+        )
         orig_area = 2.0
 
         # Should not raise, should handle gracefully
@@ -869,11 +917,13 @@ class TestApplyAreaPreservingScale:
     def test_division_by_zero_protection(self):
         """Test that degenerate case doesn't cause division by zero."""
         # Degenerate mesh: all vertices at same point
-        uv = jnp.array([
-            [0.0, 0.0],
-            [0.0, 0.0],
-            [0.0, 0.0],
-        ])
+        uv = jnp.array(
+            [
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ]
+        )
         faces = jnp.array([[0, 1, 2]])
         orig_area = 1.0
 

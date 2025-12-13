@@ -116,6 +116,10 @@ class NegativeAreaRemovalConfig:
         Convergence tolerance for this phase.
     enabled : bool
         Whether to run negative area removal.
+    scale_area : bool
+        Whether to apply area-preserving scaling at each iteration.
+        This maintains the original 3D surface area during optimization.
+        FreeSurfer has this step commented out, so it's disabled by default.
     """
 
     base_averages: int = 256
@@ -125,6 +129,7 @@ class NegativeAreaRemovalConfig:
     iters_per_level: int = 200
     base_tol: float = 0.5
     enabled: bool = True
+    scale_area: bool = False
 
 
 @dataclass
@@ -262,6 +267,7 @@ class FlattenConfig:
                 "iters_per_level": self.negative_area_removal.iters_per_level,
                 "base_tol": self.negative_area_removal.base_tol,
                 "enabled": self.negative_area_removal.enabled,
+                "scale_area": self.negative_area_removal.scale_area,
             },
             "spring_smoothing": {
                 "n_iterations": self.spring_smoothing.n_iterations,
