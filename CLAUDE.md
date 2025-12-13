@@ -215,8 +215,8 @@ The pyflatten backend implements FreeSurfer-style optimization with JAX:
 from autoflatten.flatten import FlattenConfig, SurfaceFlattener
 
 config = FlattenConfig()
-config.kring.k_ring = 20  # Neighborhood size
-config.kring.n_neighbors_per_ring = 30  # Angular sampling
+config.kring.k_ring = 7  # Neighborhood size
+config.kring.n_neighbors_per_ring = 12  # Angular sampling
 
 flattener = SurfaceFlattener(config)
 flattener.load_data("lh.patch.3d", "lh.fiducial")

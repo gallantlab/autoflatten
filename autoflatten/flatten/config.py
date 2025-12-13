@@ -21,8 +21,8 @@ class KRingConfig:
         Use None to include all neighbors (no angular sampling).
     """
 
-    k_ring: int = 20
-    n_neighbors_per_ring: Optional[int] = 30
+    k_ring: int = 7
+    n_neighbors_per_ring: Optional[int] = 12
 
 
 @dataclass

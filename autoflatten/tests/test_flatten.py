@@ -41,8 +41,8 @@ class TestKRingConfig:
     def test_default_values(self):
         """Test default values for KRingConfig."""
         config = KRingConfig()
-        assert config.k_ring == 20
-        assert config.n_neighbors_per_ring == 30
+        assert config.k_ring == 7
+        assert config.n_neighbors_per_ring == 12
 
     def test_custom_values(self):
         """Test custom values for KRingConfig."""

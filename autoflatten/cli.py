@@ -909,14 +909,14 @@ def add_pyflatten_args(parser):
     group.add_argument(
         "--k-ring",
         type=int,
-        default=20,
-        help="K-ring neighborhood size (default: 20)",
+        default=7,
+        help="K-ring neighborhood size (default: 7)",
     )
     group.add_argument(
         "--n-neighbors",
         type=int,
-        default=30,
-        help="Neighbors per ring for angular sampling (default: 30)",
+        default=12,
+        help="Neighbors per ring for angular sampling (default: 12)",
     )
     group.add_argument(
         "--print-every",

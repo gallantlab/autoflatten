@@ -1841,6 +1841,9 @@ class SurfaceFlattener:
         if self._compute_energies is None:
             raise RuntimeError("Must call prepare_optimization before run")
 
+        # Track total elapsed time
+        total_start_time = time.time()
+
         config = self.config
         verbose = config.verbose
 
@@ -2043,12 +2046,25 @@ class SurfaceFlattener:
             )
         )
 
+        # Calculate total elapsed time
+        total_elapsed = time.time() - total_start_time
+
         if verbose:
             print(f"\n{'=' * 85}")
             print("FINAL RESULT")
             print(f"{'=' * 85}")
             print(f"Flipped triangles: {n_flipped_init} -> {n_flipped_final}")
             print(f"Mean % distance error: {mean_pct_error:.2f}%")
+            # Format elapsed time
+            hours = int(total_elapsed // 3600)
+            minutes = int((total_elapsed % 3600) // 60)
+            seconds = total_elapsed % 60
+            if hours > 0:
+                print(f"Total elapsed time: {hours}h {minutes}m {seconds:.1f}s")
+            elif minutes > 0:
+                print(f"Total elapsed time: {minutes}m {seconds:.1f}s")
+            else:
+                print(f"Total elapsed time: {seconds:.1f}s")
 
         return uv
 
