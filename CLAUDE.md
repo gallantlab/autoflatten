@@ -136,7 +136,7 @@ The CLI supports three modes:
 
 **pyflatten backend** (default):
 - JAX-accelerated gradient descent with vectorized line search
-- Multi-phase optimization: negative area removal → area-dominant → balanced → distance-dominant
+- FreeSurfer-style 3-epoch optimization: negative area removal → epoch_1 → epoch_2 → epoch_3 → final NAR
 - FreeSurfer-style convergence criteria
 - Final spring smoothing for visual quality
 - Output: `{hemi}.autoflatten.flat.patch.3d` + log file
@@ -194,12 +194,12 @@ The pyflatten backend implements FreeSurfer-style optimization with JAX:
    - Numba-accelerated Dijkstra's algorithm
    - Angular sampling for efficient memory usage
 
-2. **Multi-phase Optimization**:
-   - Negative area removal (high area weight)
-   - Area-dominant phase (area_ratio=10)
-   - Balanced phase (area_ratio=1)
-   - Distance-dominant phase (area_ratio=0.1)
-   - Distance refinement (area_ratio=0.05)
+2. **FreeSurfer-style 3-Epoch Optimization**:
+   - Initial negative area removal (l_nlarea=1.0, varying l_dist)
+   - Epoch 1: Area-dominant (l_nlarea=1.0, l_dist=0.1)
+   - Epoch 2: Balanced (l_nlarea=1.0, l_dist=1.0)
+   - Epoch 3: Distance-dominant (l_nlarea=0.1, l_dist=1.0)
+   - Final negative area removal (tighter tolerance)
 
 3. **Energy Functions**:
    - J_d: Metric distortion (preserve geodesic distances)
