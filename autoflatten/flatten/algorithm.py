@@ -529,28 +529,32 @@ def make_energy_fn(
 def make_weighted_gradient_fn(
     grad_J_d_fn,
     grad_J_a_fn,
+    avg_nbrs: float,
 ):
-    """Create function to compute weighted gradient with normalized components.
+    """Create function to compute weighted gradient with FreeSurfer-style normalization.
+
+    FreeSurfer normalizes the distance gradient by 1/avg_nbrs to balance the
+    gradient magnitudes between distance and area terms.
 
     Args:
         grad_J_d_fn: JIT-compiled distance energy gradient function
         grad_J_a_fn: JIT-compiled area energy gradient function
+        avg_nbrs: Average number of neighbors per vertex (for gradient normalization)
 
     Returns:
-        Function: (uv, area_weight) -> gradient
+        Function: (uv, l_dist, l_nlarea) -> gradient
     """
 
-    def compute_weighted_gradient(uv, area_weight):
+    def compute_weighted_gradient(uv, l_dist, l_nlarea):
         g_d = grad_J_d_fn(uv)
         g_a = grad_J_a_fn(uv)
 
-        norm_d = jnp.linalg.norm(g_d) + 1e-12
-        norm_a = jnp.linalg.norm(g_a) + 1e-12
+        # FreeSurfer-style: normalize distance gradient by avg_nbrs
+        # This balances the gradient magnitudes between distance and area terms
+        g_d_normalized = g_d / avg_nbrs
 
-        g_d_normalized = g_d / norm_d
-        g_a_normalized = g_a / norm_a
-
-        return g_d_normalized + area_weight * g_a_normalized
+        # Weighted combination: l_dist * g_d_normalized + l_nlarea * g_a
+        return l_dist * g_d_normalized + l_nlarea * g_a
 
     return compute_weighted_gradient
 
@@ -693,6 +697,7 @@ def run_smoothed_optimization(
     smooth_neighbors_jax: jnp.ndarray,
     smooth_mask_jax: jnp.ndarray,
     smooth_counts_jax: jnp.ndarray,
+    avg_nbrs: float,
     iters_per_level: int = 50,
     print_every: int = 10,
     verbose: bool = True,
@@ -718,6 +723,7 @@ def run_smoothed_optimization(
         smooth_neighbors_jax: Smoothing adjacency
         smooth_mask_jax: Smoothing validity mask
         smooth_counts_jax: Smoothing neighbor counts
+        avg_nbrs: Average number of neighbors per vertex (for gradient normalization)
         iters_per_level: Max iterations per smoothing level
         print_every: Print progress every N iterations
         verbose: Print progress messages
@@ -732,7 +738,22 @@ def run_smoothed_optimization(
     energy_fn = make_energy_fn(
         lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
     )
-    grad_fn = jax.jit(jax.grad(lambda uv: energy_fn(uv)[0]))
+
+    # Create separate gradient functions for FreeSurfer-style normalization
+    @jax.jit
+    def grad_J_d_fn(uv):
+        return jax.grad(
+            lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
+        )(uv)
+
+    @jax.jit
+    def grad_J_a_fn(uv):
+        return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
+
+    # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
+    compute_weighted_gradient = make_weighted_gradient_fn(
+        grad_J_d_fn, grad_J_a_fn, avg_nbrs
+    )
 
     line_search_fn = make_vectorized_line_search(
         energy_fn, n_coarse_steps=n_coarse_steps
@@ -752,13 +773,15 @@ def run_smoothed_optimization(
         print("-" * 100)
 
     for n_avg in smoothing_schedule:
+        # FreeSurfer-style tolerance scaling (tighter at low n_avg)
         scaled_tol = base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
 
         nsmall = 0
         old_sse = None
 
         for i in range(iters_per_level):
-            grad = grad_fn(uv)
+            # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
+            grad = compute_weighted_gradient(uv, lambda_d, lambda_a)
 
             if n_avg > 0:
                 grad_smooth = smooth_gradient(
@@ -777,11 +800,13 @@ def run_smoothed_optimization(
             current_sse = float(energy)
             alpha_val = float(alpha)
 
+            # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
             rel_change = 0.0
             if old_sse is not None and old_sse > 0:
                 rel_change = (old_sse - current_sse) / old_sse
 
-                if rel_change < scaled_tol:
+                # Divide scaled_tol by 100 to match FreeSurfer's formula
+                if rel_change < scaled_tol / 100.0:
                     nsmall += 1
                     total_small += 1
                 else:
@@ -864,6 +889,7 @@ def run_adaptive_optimization(
     smooth_mask_jax: jnp.ndarray,
     smooth_counts_jax: jnp.ndarray,
     compute_energies_fn,
+    avg_nbrs: float,
     iters_per_level: int = 50,
     print_every: int = 10,
     verbose: bool = True,
@@ -895,6 +921,7 @@ def run_adaptive_optimization(
         smooth_mask_jax: Smoothing validity mask
         smooth_counts_jax: Smoothing neighbor counts
         compute_energies_fn: Function to compute (J_d, J_a) for energy tracking
+        avg_nbrs: Average number of neighbors per vertex (for gradient normalization)
         iters_per_level: Max iterations per smoothing level
         print_every: Print progress every N iterations
         verbose: Print progress messages
@@ -912,7 +939,22 @@ def run_adaptive_optimization(
     energy_fn = make_energy_fn(
         lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
     )
-    grad_fn = jax.jit(jax.grad(lambda uv: energy_fn(uv)[0]))
+
+    # Create separate gradient functions for FreeSurfer-style normalization
+    @jax.jit
+    def grad_J_d_fn(uv):
+        return jax.grad(
+            lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
+        )(uv)
+
+    @jax.jit
+    def grad_J_a_fn(uv):
+        return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
+
+    # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
+    compute_weighted_gradient = make_weighted_gradient_fn(
+        grad_J_d_fn, grad_J_a_fn, avg_nbrs
+    )
 
     line_search_fn = make_vectorized_line_search(
         energy_fn, n_coarse_steps=n_coarse_steps
@@ -940,13 +982,15 @@ def run_adaptive_optimization(
         print("-" * 100)
 
     for n_avg in smoothing_schedule:
+        # FreeSurfer-style tolerance scaling (tighter at low n_avg)
         scaled_tol = base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
 
         nsmall = 0
         old_sse = None
 
         for i in range(iters_per_level):
-            grad = grad_fn(uv)
+            # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
+            grad = compute_weighted_gradient(uv, lambda_d, lambda_a)
 
             if n_avg > 0:
                 grad_smooth = smooth_gradient(
@@ -1024,11 +1068,13 @@ def run_adaptive_optimization(
                 # Update threshold to prevent repeated triggers
                 flipped_threshold = max(n_flipped_after * 5, flipped_threshold)
 
+            # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
             rel_change = 0.0
             if old_sse is not None and old_sse > 0:
                 rel_change = (old_sse - current_sse) / old_sse
 
-                if rel_change < scaled_tol:
+                # Divide scaled_tol by 100 to match FreeSurfer's formula
+                if rel_change < scaled_tol / 100.0:
                     nsmall += 1
                     total_small += 1
                 else:
@@ -1154,6 +1200,7 @@ def remove_negative_area(
     compute_energies_fn,
     grad_J_d_fn,
     grad_J_a_fn,
+    avg_nbrs: float,
     config: NegativeAreaRemovalConfig,
     convergence_max_small: int = 50000,
     convergence_total_small: int = 15000,
@@ -1176,6 +1223,7 @@ def remove_negative_area(
         compute_energies_fn: Function to compute (J_d, J_a)
         grad_J_d_fn: JIT-compiled distance energy gradient
         grad_J_a_fn: JIT-compiled area energy gradient
+        avg_nbrs: Average number of neighbors per vertex (for gradient normalization)
         config: Negative area removal configuration
         convergence_max_small: Max consecutive small steps
         convergence_total_small: Max total small steps
@@ -1189,7 +1237,9 @@ def remove_negative_area(
     Returns:
         UV coordinates with reduced negative area
     """
-    compute_weighted_gradient = make_weighted_gradient_fn(grad_J_d_fn, grad_J_a_fn)
+    compute_weighted_gradient = make_weighted_gradient_fn(
+        grad_J_d_fn, grad_J_a_fn, avg_nbrs
+    )
 
     def make_schedule(base):
         schedule = []
@@ -1213,7 +1263,19 @@ def remove_negative_area(
         )
         print(f"{'=' * 85}")
 
-    for pass_idx in range(min(config.max_passes, len(config.l_dist_ratios))):
+    # Check if we can skip NAR entirely (FreeSurfer only checks before starting)
+    n_flipped = int(count_flipped_triangles(uv, faces_jax))
+    total_faces = len(faces_jax)
+    pct_neg = 100.0 * n_flipped / total_faces
+    if pct_neg <= config.min_area_pct:
+        if verbose:
+            print(f"\nSkipping NAR: {pct_neg:.2f}% <= {config.min_area_pct}% target")
+        elapsed = time.time() - start_time
+        return uv, total_iters, elapsed
+
+    # Run through ALL l_dist_ratios (FreeSurfer always runs all 5, no early stopping)
+    n_ratios = len(config.l_dist_ratios)
+    for pass_idx in range(n_ratios):
         l_dist = config.l_dist_ratios[pass_idx]
 
         n_flipped = int(count_flipped_triangles(uv, faces_jax))
@@ -1222,15 +1284,10 @@ def remove_negative_area(
 
         if verbose:
             print(
-                f"\n--- Pass {pass_idx + 1}/{config.max_passes}: "
+                f"\n--- Pass {pass_idx + 1}/{n_ratios}: "
                 f"l_nlarea={config.l_nlarea}, l_dist={l_dist:.0e}, "
                 f"flipped={n_flipped} ({pct_neg:.2f}%) ---"
             )
-
-        if pct_neg <= config.min_area_pct:
-            if verbose:
-                print(f"  Early stop: {pct_neg:.2f}% <= {config.min_area_pct}% target")
-            break
 
         J_d_curr, J_a_curr = compute_energies_fn(uv)
         J_d_curr, J_a_curr = float(J_d_curr), float(J_a_curr)
@@ -1261,6 +1318,7 @@ def remove_negative_area(
         iteration = 0
 
         for n_avg in smoothing_schedule:
+            # FreeSurfer-style tolerance scaling (tighter at low n_avg)
             scaled_tol = config.base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
             nsmall = 0
             old_sse = None
@@ -1272,8 +1330,8 @@ def remove_negative_area(
                 if orig_area is not None:
                     uv = _apply_area_preserving_scale(uv, faces_jax, orig_area)
 
-                # Use l_nlarea for gradient weighting (search direction)
-                grad = compute_weighted_gradient(uv, config.l_nlarea)
+                # FreeSurfer-style gradient: l_dist * (g_d / avg_nbrs) + l_nlarea * g_a
+                grad = compute_weighted_gradient(uv, l_dist, config.l_nlarea)
 
                 if n_avg > 0:
                     grad_smooth = smooth_gradient(
@@ -1293,11 +1351,13 @@ def remove_negative_area(
                 current_sse = float(energy)
                 alpha_val = float(alpha)
 
+                # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
                 rel_change = 0.0
                 if old_sse is not None and old_sse > 0:
                     rel_change = (old_sse - current_sse) / old_sse
 
-                    if rel_change < scaled_tol:
+                    # Divide scaled_tol by 100 to match FreeSurfer's formula
+                    if rel_change < scaled_tol / 100.0:
                         nsmall += 1
                         total_small += 1
                     else:
@@ -1513,6 +1573,9 @@ class SurfaceFlattener:
         # K-ring data (set by compute_kring_distances)
         self.k_rings: Optional[list] = None
         self.target_distances: Optional[list] = None
+        self.avg_neighbors: Optional[float] = (
+            None  # For FreeSurfer-style gradient normalization
+        )
 
         # JAX arrays (set by prepare_optimization)
         self.neighbors_jax: Optional[jnp.ndarray] = None
@@ -1687,12 +1750,14 @@ class SurfaceFlattener:
                         target_distances=np.array(self.target_distances, dtype=object),
                     )
 
+        # Compute and store average neighbors (used for FreeSurfer-style gradient normalization)
+        total_neighbors = sum(len(n) for n in self.k_rings)
+        self.avg_neighbors = total_neighbors / len(self.k_rings)
+
         if self.config.verbose:
-            total_neighbors = sum(len(n) for n in self.k_rings)
-            avg_neighbors = total_neighbors / len(self.k_rings)
             print(
                 f"Distance constraints: {total_neighbors:,} edges, "
-                f"avg {avg_neighbors:.1f} neighbors/vertex"
+                f"avg {self.avg_neighbors:.1f} neighbors/vertex"
             )
 
     def prepare_optimization(self) -> None:
@@ -1820,6 +1885,7 @@ class SurfaceFlattener:
                 self._compute_energies,
                 self._grad_J_d,
                 self._grad_J_a,
+                self.avg_neighbors,
                 config.negative_area_removal,
                 convergence_max_small=config.convergence.max_small,
                 convergence_total_small=config.convergence.total_small,
@@ -1875,6 +1941,7 @@ class SurfaceFlattener:
                     smooth_mask_jax=self.smooth_mask_jax,
                     smooth_counts_jax=self.smooth_counts_jax,
                     compute_energies_fn=self._compute_energies,
+                    avg_nbrs=self.avg_neighbors,
                     iters_per_level=phase.iters_per_level,
                     print_every=config.print_every,
                     verbose=verbose,
@@ -1896,6 +1963,7 @@ class SurfaceFlattener:
                     smooth_neighbors_jax=self.smooth_neighbors_jax,
                     smooth_mask_jax=self.smooth_mask_jax,
                     smooth_counts_jax=self.smooth_counts_jax,
+                    avg_nbrs=self.avg_neighbors,
                     iters_per_level=phase.iters_per_level,
                     print_every=config.print_every,
                     verbose=verbose,
@@ -1912,17 +1980,17 @@ class SurfaceFlattener:
                 print("\n" + "=" * 85)
                 print(
                     "FINAL NEGATIVE AREA REMOVAL "
-                    f"(l_nlarea={final_nar.l_nlarea}, l_dist={final_nar.l_dist})"
+                    f"(l_nlarea={final_nar.l_nlarea}, "
+                    f"l_dist_ratios={final_nar.l_dist_ratios})"
                 )
                 print("=" * 85)
 
-            # Create a NegativeAreaRemovalConfig with single l_dist value
+            # Create a NegativeAreaRemovalConfig using the full ratio schedule
             final_nar_config = NegativeAreaRemovalConfig(
                 base_averages=final_nar.base_averages,
                 min_area_pct=config.negative_area_removal.min_area_pct,
-                max_passes=final_nar.max_passes,
                 l_nlarea=final_nar.l_nlarea,
-                l_dist_ratios=[final_nar.l_dist],  # Single fixed l_dist
+                l_dist_ratios=final_nar.l_dist_ratios,
                 iters_per_level=final_nar.iters_per_level,
                 base_tol=final_nar.base_tol,
                 enabled=True,
@@ -1941,6 +2009,7 @@ class SurfaceFlattener:
                 compute_energies_fn=self._compute_energies,
                 grad_J_d_fn=self._grad_J_d,
                 grad_J_a_fn=self._grad_J_a,
+                avg_nbrs=self.avg_neighbors,
                 config=final_nar_config,
                 convergence_max_small=config.convergence.max_small,
                 convergence_total_small=config.convergence.total_small,

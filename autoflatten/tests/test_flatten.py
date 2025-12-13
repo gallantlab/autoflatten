@@ -120,7 +120,7 @@ class TestNegativeAreaRemovalConfig:
         assert config.enabled is True
         assert config.base_averages == 1024  # FreeSurfer default
         assert config.min_area_pct == 0.5
-        assert config.max_passes == 2  # FreeSurfer default
+        # Note: max_passes was removed - FreeSurfer always runs all ratios
         assert config.l_nlarea == 1.0  # Fixed area weight
         assert config.l_dist_ratios == [
             1e-6,
@@ -128,7 +128,7 @@ class TestNegativeAreaRemovalConfig:
             1e-3,
             1e-2,
             1e-1,
-        ]  # FreeSurfer ratios
+        ]  # FreeSurfer ratios (all 5 always run)
         assert config.iters_per_level == 30  # FreeSurfer default
         assert config.base_tol == 0.5
         # scale_area is disabled by default (FreeSurfer has this step commented out)
@@ -962,9 +962,9 @@ class TestFinalNegativeAreaRemovalConfig:
         config = FinalNegativeAreaRemovalConfig()
         assert config.enabled is True
         assert config.base_averages == 32  # Capped in FreeSurfer
-        assert config.max_passes == 2
         assert config.l_nlarea == 1.0
-        assert config.l_dist == 0.1  # Fixed at 0.1 for final NAR
+        # Uses full ratio schedule like initial NAR
+        assert config.l_dist_ratios == [1e-6, 1e-5, 1e-3, 1e-2, 1e-1]
         assert config.base_tol == 0.01  # Tighter than initial
         assert config.iters_per_level == 30
 
@@ -973,17 +973,15 @@ class TestFinalNegativeAreaRemovalConfig:
         config = FinalNegativeAreaRemovalConfig(
             enabled=False,
             base_averages=16,
-            max_passes=3,
             l_nlarea=2.0,
-            l_dist=0.2,
+            l_dist_ratios=[1e-4, 1e-3, 1e-2],
             base_tol=0.005,
             iters_per_level=50,
         )
         assert config.enabled is False
         assert config.base_averages == 16
-        assert config.max_passes == 3
         assert config.l_nlarea == 2.0
-        assert config.l_dist == 0.2
+        assert config.l_dist_ratios == [1e-4, 1e-3, 1e-2]
         assert config.base_tol == 0.005
         assert config.iters_per_level == 50
 
@@ -1003,7 +1001,13 @@ class TestFinalNegativeAreaRemovalSerialization:
         assert "final_negative_area_removal" in d
         assert d["final_negative_area_removal"]["enabled"] is True
         assert d["final_negative_area_removal"]["base_averages"] == 32
-        assert d["final_negative_area_removal"]["l_dist"] == 0.1
+        assert d["final_negative_area_removal"]["l_dist_ratios"] == [
+            1e-6,
+            1e-5,
+            1e-3,
+            1e-2,
+            1e-1,
+        ]
 
     def test_from_dict_loads_final_nar(self):
         """Test that from_dict correctly loads final_negative_area_removal."""
@@ -1011,9 +1015,8 @@ class TestFinalNegativeAreaRemovalSerialization:
             "final_negative_area_removal": {
                 "enabled": False,
                 "base_averages": 16,
-                "max_passes": 1,
                 "l_nlarea": 0.5,
-                "l_dist": 0.05,
+                "l_dist_ratios": [1e-4, 1e-3],
                 "base_tol": 0.02,
                 "iters_per_level": 20,
             }
@@ -1021,9 +1024,8 @@ class TestFinalNegativeAreaRemovalSerialization:
         config = FlattenConfig.from_dict(d)
         assert config.final_negative_area_removal.enabled is False
         assert config.final_negative_area_removal.base_averages == 16
-        assert config.final_negative_area_removal.max_passes == 1
         assert config.final_negative_area_removal.l_nlarea == 0.5
-        assert config.final_negative_area_removal.l_dist == 0.05
+        assert config.final_negative_area_removal.l_dist_ratios == [1e-4, 1e-3]
         assert config.final_negative_area_removal.base_tol == 0.02
         assert config.final_negative_area_removal.iters_per_level == 20
 
@@ -1032,7 +1034,7 @@ class TestFinalNegativeAreaRemovalSerialization:
         config = FlattenConfig()
         config.final_negative_area_removal.enabled = False
         config.final_negative_area_removal.base_averages = 64
-        config.final_negative_area_removal.l_dist = 0.2
+        config.final_negative_area_removal.l_dist_ratios = [1e-5, 1e-4, 1e-3]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             temp_path = f.name
@@ -1043,7 +1045,11 @@ class TestFinalNegativeAreaRemovalSerialization:
             loaded = FlattenConfig.from_json_file(temp_path)
             assert loaded.final_negative_area_removal.enabled is False
             assert loaded.final_negative_area_removal.base_averages == 64
-            assert loaded.final_negative_area_removal.l_dist == 0.2
+            assert loaded.final_negative_area_removal.l_dist_ratios == [
+                1e-5,
+                1e-4,
+                1e-3,
+            ]
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)

@@ -108,19 +108,24 @@ class NegativeAreaRemovalConfig:
     Uses FreeSurfer-style fixed l_nlarea=1.0 with varying l_dist ratios.
     Reference: mrisurf.c:8338-8506 (mrisRemoveNegativeArea)
 
+    FreeSurfer always runs through the ENTIRE l_dist_ratios schedule exactly once.
+    The early stopping code in FreeSurfer is disabled (#if 0), so all ratio
+    passes execute regardless of the current negative area percentage.
+
     Attributes
     ----------
     base_averages : int
         Starting smoothing level.
     min_area_pct : float
-        Target percentage of flipped triangles to stop early.
-    max_passes : int
-        Maximum number of passes through the l_dist ratio schedule.
+        Target percentage of flipped triangles. Only checked BEFORE starting
+        NAR (to skip entirely if already below threshold). Once started,
+        all ratio passes run to completion.
     l_nlarea : float
         Fixed nonlinear area weight.
     l_dist_ratios : list of float
-        Sequence of distance weights for successive passes.
+        Sequence of distance weights to iterate through.
         FreeSurfer uses [1e-6, 1e-5, 1e-3, 1e-2, 1e-1].
+        ALL ratios are always used (no truncation).
     iters_per_level : int
         Maximum iterations per smoothing level.
     base_tol : float
@@ -133,15 +138,14 @@ class NegativeAreaRemovalConfig:
         FreeSurfer has this step commented out, so it's disabled by default.
     """
 
-    base_averages: int = 1024  # FreeSurfer default (previously 256 in pyflatten)
-    min_area_pct: float = 0.5
-    max_passes: int = 2  # FreeSurfer default (previously 5 in pyflatten)
+    base_averages: int = 1024  # FreeSurfer default
+    min_area_pct: float = 0.5  # Only checked before starting, not during
     l_nlarea: float = 1.0  # Fixed area weight
-    # Distance weight ratios tried in order; max_passes limits how many are used
+    # All ratios are used in order (FreeSurfer runs all 5, no truncation)
     l_dist_ratios: list[float] = field(
         default_factory=lambda: [1e-6, 1e-5, 1e-3, 1e-2, 1e-1]
     )
-    iters_per_level: int = 30  # FreeSurfer default (previously 200 in pyflatten)
+    iters_per_level: int = 30  # FreeSurfer default
     base_tol: float = 0.5
     enabled: bool = True
     scale_area: bool = False
@@ -184,18 +188,19 @@ class FinalNegativeAreaRemovalConfig:
 
     Reference: mrisurf.c:7886-7901
 
+    Like the initial NAR, this runs through the full l_dist_ratios schedule.
+
     Attributes
     ----------
     enabled : bool
         Whether to run final negative area removal.
     base_averages : int
         Starting smoothing level (capped at 32 in FreeSurfer).
-    max_passes : int
-        Maximum number of passes through the l_dist ratio schedule.
     l_nlarea : float
         Fixed nonlinear area weight.
-    l_dist : float
-        Fixed distance weight (FreeSurfer uses 0.1).
+    l_dist_ratios : list of float
+        Sequence of distance weights to iterate through.
+        Same as initial NAR: [1e-6, 1e-5, 1e-3, 1e-2, 1e-1].
     base_tol : float
         Convergence tolerance (tighter than initial NAR).
     iters_per_level : int
@@ -204,9 +209,11 @@ class FinalNegativeAreaRemovalConfig:
 
     enabled: bool = True
     base_averages: int = 32  # Capped at 32 in FreeSurfer
-    max_passes: int = 2
     l_nlarea: float = 1.0
-    l_dist: float = 0.1  # Fixed at 0.1 (not varying like initial NAR)
+    # Same ratio schedule as initial NAR
+    l_dist_ratios: list[float] = field(
+        default_factory=lambda: [1e-6, 1e-5, 1e-3, 1e-2, 1e-1]
+    )
     base_tol: float = 0.01  # Tighter than initial 0.5
     iters_per_level: int = 30
 
@@ -323,7 +330,6 @@ class FlattenConfig:
             "negative_area_removal": {
                 "base_averages": self.negative_area_removal.base_averages,
                 "min_area_pct": self.negative_area_removal.min_area_pct,
-                "max_passes": self.negative_area_removal.max_passes,
                 "l_nlarea": self.negative_area_removal.l_nlarea,
                 "l_dist_ratios": self.negative_area_removal.l_dist_ratios,
                 "iters_per_level": self.negative_area_removal.iters_per_level,
@@ -334,9 +340,8 @@ class FlattenConfig:
             "final_negative_area_removal": {
                 "enabled": self.final_negative_area_removal.enabled,
                 "base_averages": self.final_negative_area_removal.base_averages,
-                "max_passes": self.final_negative_area_removal.max_passes,
                 "l_nlarea": self.final_negative_area_removal.l_nlarea,
-                "l_dist": self.final_negative_area_removal.l_dist,
+                "l_dist_ratios": self.final_negative_area_removal.l_dist_ratios,
                 "base_tol": self.final_negative_area_removal.base_tol,
                 "iters_per_level": self.final_negative_area_removal.iters_per_level,
             },

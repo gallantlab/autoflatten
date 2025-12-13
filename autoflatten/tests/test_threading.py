@@ -28,9 +28,7 @@ class TestConfigureThreading:
 
         assert "XLA_FLAGS" in os.environ
         assert "--xla_force_host_platform_device_count=4" in os.environ["XLA_FLAGS"]
-        assert (
-            "--xla_cpu_multi_thread_eigen_thread_count=4" in os.environ["XLA_FLAGS"]
-        )
+        assert "--xla_cpu_multi_thread_eigen_thread_count=4" in os.environ["XLA_FLAGS"]
         assert "--xla_cpu_multi_thread_eigen=true" in os.environ["XLA_FLAGS"]
 
     def test_xla_flags_are_not_duplicated(self, monkeypatch):
@@ -62,7 +60,10 @@ class TestConfigureThreading:
         tokens = xla_flags.split()
         assert sum(t.startswith("--xla_cpu_multi_thread_eigen=") for t in tokens) == 1
         assert (
-            sum(t.startswith("--xla_cpu_multi_thread_eigen_thread_count") for t in tokens)
+            sum(
+                t.startswith("--xla_cpu_multi_thread_eigen_thread_count")
+                for t in tokens
+            )
             == 1
         )
 
