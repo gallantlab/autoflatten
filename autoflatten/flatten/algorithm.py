@@ -1270,8 +1270,7 @@ def remove_negative_area(
     if pct_neg <= config.min_area_pct:
         if verbose:
             print(f"\nSkipping NAR: {pct_neg:.2f}% <= {config.min_area_pct}% target")
-        elapsed = time.time() - start_time
-        return uv, total_iters, elapsed
+        return np.array(uv)
 
     # Run through ALL l_dist_ratios (FreeSurfer always runs all 5, no early stopping)
     n_ratios = len(config.l_dist_ratios)
