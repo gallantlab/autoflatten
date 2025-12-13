@@ -561,6 +561,7 @@ def cmd_run_full_pipeline(args):
                 "config_path": args.pyflatten_config,
                 "n_jobs": n_cores_per_hemi,
                 "cache_distances": args.debug_save_distances,
+                "print_every": args.print_every,
             }
         )
     elif args.backend == "freesurfer":
@@ -750,6 +751,7 @@ def cmd_flatten(args):
                 "config_path": args.pyflatten_config,
                 "n_jobs": args.n_cores,
                 "cache_distances": args.debug_save_distances,
+                "print_every": args.print_every,
             }
         )
     elif args.backend == "freesurfer":
@@ -917,16 +919,21 @@ def add_pyflatten_args(parser):
         help="Neighbors per ring for angular sampling (default: 30)",
     )
     group.add_argument(
+        "--print-every",
+        type=int,
+        default=1,
+        help="Print progress every N iterations (default: 1 = every iteration)",
+    )
+    group.add_argument(
         "--skip-phase",
         type=str,
         nargs="*",
         choices=[
-            "area_dominant",
-            "balanced",
-            "distance_dominant",
-            "distance_refinement",
+            "epoch_1",
+            "epoch_2",
+            "epoch_3",
         ],
-        help="Phases to skip",
+        help="Phases to skip (epoch_1, epoch_2, epoch_3)",
     )
     group.add_argument(
         "--skip-spring-smoothing",

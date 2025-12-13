@@ -69,13 +69,17 @@ class LineSearchConfig:
 class PhaseConfig:
     """Configuration for a single optimization phase.
 
+    Uses FreeSurfer-style direct energy weights (l_nlarea, l_dist) instead
+    of a ratio. Reference: mrisurf.c mrisIntegrationEpoch().
+
     Attributes
     ----------
     name : str
         Human-readable phase name.
-    area_ratio : float
-        Ratio of area energy to distance energy weight.
-        Higher values prioritize reducing flipped triangles.
+    l_nlarea : float
+        Weight for nonlinear area energy (prevents flipped triangles).
+    l_dist : float
+        Weight for distance energy (preserves geodesic distances).
     smoothing_schedule : list of int
         List of gradient averaging counts.
     iters_per_level : int
@@ -87,11 +91,12 @@ class PhaseConfig:
     """
 
     name: str
-    area_ratio: float
+    l_nlarea: float = 1.0
+    l_dist: float = 1.0
     smoothing_schedule: list[int] = field(
         default_factory=lambda: [1024, 256, 64, 16, 4, 1, 0]
     )
-    iters_per_level: int = 200
+    iters_per_level: int = 40  # FreeSurfer default (was 200)
     base_tol: Optional[float] = None
     enabled: bool = True
 
@@ -100,6 +105,9 @@ class PhaseConfig:
 class NegativeAreaRemovalConfig:
     """Configuration for the negative area removal phase.
 
+    Uses FreeSurfer-style fixed l_nlarea=1.0 with varying l_dist ratios.
+    Reference: mrisurf.c:8338-8506 (mrisRemoveNegativeArea)
+
     Attributes
     ----------
     base_averages : int
@@ -107,9 +115,12 @@ class NegativeAreaRemovalConfig:
     min_area_pct : float
         Target percentage of flipped triangles to stop early.
     max_passes : int
-        Maximum number of passes with decreasing area weight.
-    area_weights : list of float
-        Sequence of area weights for successive passes.
+        Maximum number of passes through the l_dist ratio schedule.
+    l_nlarea : float
+        Fixed nonlinear area weight.
+    l_dist_ratios : list of float
+        Sequence of distance weights for successive passes.
+        FreeSurfer uses [1e-6, 1e-5, 1e-3, 1e-2, 1e-1].
     iters_per_level : int
         Maximum iterations per smoothing level.
     base_tol : float
@@ -122,11 +133,15 @@ class NegativeAreaRemovalConfig:
         FreeSurfer has this step commented out, so it's disabled by default.
     """
 
-    base_averages: int = 256
+    base_averages: int = 1024  # FreeSurfer default (previously 256 in pyflatten)
     min_area_pct: float = 0.5
-    max_passes: int = 5
-    area_weights: list[float] = field(default_factory=lambda: [1e4, 1e3, 1e2, 10, 1])
-    iters_per_level: int = 200
+    max_passes: int = 2  # FreeSurfer default (previously 5 in pyflatten)
+    l_nlarea: float = 1.0  # Fixed area weight
+    # Distance weight ratios tried in order; max_passes limits how many are used
+    l_dist_ratios: list[float] = field(
+        default_factory=lambda: [1e-6, 1e-5, 1e-3, 1e-2, 1e-1]
+    )
+    iters_per_level: int = 30  # FreeSurfer default (previously 200 in pyflatten)
     base_tol: float = 0.5
     enabled: bool = True
     scale_area: bool = False
@@ -160,33 +175,73 @@ class SpringSmoothingConfig:
     enabled: bool = True
 
 
+@dataclass
+class FinalNegativeAreaRemovalConfig:
+    """Configuration for the final negative area removal step.
+
+    This runs after the main optimization epochs with tighter tolerance
+    and capped averaging to clean up any remaining flipped triangles.
+
+    Reference: mrisurf.c:7886-7901
+
+    Attributes
+    ----------
+    enabled : bool
+        Whether to run final negative area removal.
+    base_averages : int
+        Starting smoothing level (capped at 32 in FreeSurfer).
+    max_passes : int
+        Maximum number of passes through the l_dist ratio schedule.
+    l_nlarea : float
+        Fixed nonlinear area weight.
+    l_dist : float
+        Fixed distance weight (FreeSurfer uses 0.1).
+    base_tol : float
+        Convergence tolerance (tighter than initial NAR).
+    iters_per_level : int
+        Maximum iterations per smoothing level.
+    """
+
+    enabled: bool = True
+    base_averages: int = 32  # Capped at 32 in FreeSurfer
+    max_passes: int = 2
+    l_nlarea: float = 1.0
+    l_dist: float = 0.1  # Fixed at 0.1 (not varying like initial NAR)
+    base_tol: float = 0.01  # Tighter than initial 0.5
+    iters_per_level: int = 30
+
+
 def _default_phases() -> list[PhaseConfig]:
-    """Return default optimization phases matching FreeSurfer approach."""
+    """Return default optimization phases matching FreeSurfer's 3 epochs.
+
+    FreeSurfer uses three mrisIntegrationEpoch calls with:
+    - Epoch 1: l_nlarea=1.0, l_dist=0.1 (area dominant)
+    - Epoch 2: l_nlarea=1.0, l_dist=1.0 (balanced)
+    - Epoch 3: l_nlarea=0.1, l_dist=1.0 (distance dominant)
+
+    Reference: mrisurf.c:7805-7839, area_coefs=[1.0, 1.0, 0.1], dist_coefs=[0.1, 1.0, 1.0]
+    """
     return [
         PhaseConfig(
-            name="area_dominant",
-            area_ratio=10.0,
+            name="epoch_1",
+            l_nlarea=1.0,
+            l_dist=0.1,
             smoothing_schedule=[1024, 256, 64, 16, 4, 1, 0],
-            iters_per_level=200,
+            iters_per_level=40,
         ),
         PhaseConfig(
-            name="balanced",
-            area_ratio=1.0,
+            name="epoch_2",
+            l_nlarea=1.0,
+            l_dist=1.0,
             smoothing_schedule=[1024, 256, 64, 16, 4, 1, 0],
-            iters_per_level=200,
+            iters_per_level=40,
         ),
         PhaseConfig(
-            name="distance_dominant",
-            area_ratio=0.1,
+            name="epoch_3",
+            l_nlarea=0.1,
+            l_dist=1.0,
             smoothing_schedule=[1024, 256, 64, 16, 4, 1, 0],
-            iters_per_level=200,
-        ),
-        PhaseConfig(
-            name="distance_refinement",
-            area_ratio=0.05,
-            smoothing_schedule=[256, 64, 16, 4, 1, 0],
-            iters_per_level=500,
-            base_tol=0.05,
+            iters_per_level=40,
         ),
     ]
 
@@ -205,6 +260,8 @@ class FlattenConfig:
         Line search parameters.
     negative_area_removal : NegativeAreaRemovalConfig
         Negative area removal phase config.
+    final_negative_area_removal : FinalNegativeAreaRemovalConfig
+        Final negative area removal config (runs after main epochs).
     spring_smoothing : SpringSmoothingConfig
         Final spring smoothing phase config.
     phases : list of PhaseConfig
@@ -223,6 +280,7 @@ class FlattenConfig:
         Enable adaptive flipped-triangle recovery during
         distance refinement phase. When flipped count exceeds threshold,
         temporarily increases area weight to fix flipped triangles.
+        Disabled by default to match FreeSurfer's fixed schedule.
     """
 
     kring: KRingConfig = field(default_factory=KRingConfig)
@@ -230,6 +288,9 @@ class FlattenConfig:
     line_search: LineSearchConfig = field(default_factory=LineSearchConfig)
     negative_area_removal: NegativeAreaRemovalConfig = field(
         default_factory=NegativeAreaRemovalConfig
+    )
+    final_negative_area_removal: FinalNegativeAreaRemovalConfig = field(
+        default_factory=FinalNegativeAreaRemovalConfig
     )
     spring_smoothing: SpringSmoothingConfig = field(
         default_factory=SpringSmoothingConfig
@@ -239,7 +300,7 @@ class FlattenConfig:
     verbose: bool = True
     n_jobs: int = -1
     strict_topology: bool = True
-    adaptive_recovery: bool = True
+    adaptive_recovery: bool = False  # Disabled by default for FreeSurfer mode
     initial_scale: float = 3.0  # Scale factor after initial 2D projection
 
     def to_dict(self) -> dict:
@@ -263,11 +324,21 @@ class FlattenConfig:
                 "base_averages": self.negative_area_removal.base_averages,
                 "min_area_pct": self.negative_area_removal.min_area_pct,
                 "max_passes": self.negative_area_removal.max_passes,
-                "area_weights": self.negative_area_removal.area_weights,
+                "l_nlarea": self.negative_area_removal.l_nlarea,
+                "l_dist_ratios": self.negative_area_removal.l_dist_ratios,
                 "iters_per_level": self.negative_area_removal.iters_per_level,
                 "base_tol": self.negative_area_removal.base_tol,
                 "enabled": self.negative_area_removal.enabled,
                 "scale_area": self.negative_area_removal.scale_area,
+            },
+            "final_negative_area_removal": {
+                "enabled": self.final_negative_area_removal.enabled,
+                "base_averages": self.final_negative_area_removal.base_averages,
+                "max_passes": self.final_negative_area_removal.max_passes,
+                "l_nlarea": self.final_negative_area_removal.l_nlarea,
+                "l_dist": self.final_negative_area_removal.l_dist,
+                "base_tol": self.final_negative_area_removal.base_tol,
+                "iters_per_level": self.final_negative_area_removal.iters_per_level,
             },
             "spring_smoothing": {
                 "n_iterations": self.spring_smoothing.n_iterations,
@@ -278,7 +349,8 @@ class FlattenConfig:
             "phases": [
                 {
                     "name": p.name,
-                    "area_ratio": p.area_ratio,
+                    "l_nlarea": p.l_nlarea,
+                    "l_dist": p.l_dist,
                     "smoothing_schedule": p.smoothing_schedule,
                     "iters_per_level": p.iters_per_level,
                     "base_tol": p.base_tol,
@@ -307,20 +379,27 @@ class FlattenConfig:
         negative_area_removal = NegativeAreaRemovalConfig(
             **data.get("negative_area_removal", {})
         )
+        final_negative_area_removal = FinalNegativeAreaRemovalConfig(
+            **data.get("final_negative_area_removal", {})
+        )
         spring_smoothing = SpringSmoothingConfig(**data.get("spring_smoothing", {}))
-        phases = [PhaseConfig(**p) for p in data.get("phases", _default_phases())]
+        phases_data = data.get("phases", _default_phases())
+        phases = [
+            p if isinstance(p, PhaseConfig) else PhaseConfig(**p) for p in phases_data
+        ]
         return cls(
             kring=kring,
             convergence=convergence,
             line_search=line_search,
             negative_area_removal=negative_area_removal,
+            final_negative_area_removal=final_negative_area_removal,
             spring_smoothing=spring_smoothing,
             phases=phases,
             print_every=data.get("print_every", 100),
             verbose=data.get("verbose", True),
             n_jobs=data.get("n_jobs", -1),
             strict_topology=data.get("strict_topology", True),
-            adaptive_recovery=data.get("adaptive_recovery", True),
+            adaptive_recovery=data.get("adaptive_recovery", False),  # Default to False
             initial_scale=data.get("initial_scale", 3.0),
         )
 

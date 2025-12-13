@@ -1213,8 +1213,8 @@ def remove_negative_area(
         )
         print(f"{'=' * 85}")
 
-    for pass_idx in range(min(config.max_passes, len(config.area_weights))):
-        area_weight = config.area_weights[pass_idx]
+    for pass_idx in range(min(config.max_passes, len(config.l_dist_ratios))):
+        l_dist = config.l_dist_ratios[pass_idx]
 
         n_flipped = int(count_flipped_triangles(uv, faces_jax))
         total_faces = len(faces_jax)
@@ -1223,8 +1223,8 @@ def remove_negative_area(
         if verbose:
             print(
                 f"\n--- Pass {pass_idx + 1}/{config.max_passes}: "
-                f"area_weight = {area_weight:.0e}, flipped = {n_flipped} "
-                f"({pct_neg:.2f}%) ---"
+                f"l_nlarea={config.l_nlarea}, l_dist={l_dist:.0e}, "
+                f"flipped={n_flipped} ({pct_neg:.2f}%) ---"
             )
 
         if pct_neg <= config.min_area_pct:
@@ -1237,9 +1237,9 @@ def remove_negative_area(
 
         smoothing_schedule = make_schedule(config.base_averages)
 
-        lambda_d, lambda_a = compute_normalized_lambdas(
-            J_d_curr, J_a_curr, ratio=area_weight
-        )
+        # Use fixed FreeSurfer-style weights directly
+        lambda_d = l_dist
+        lambda_a = config.l_nlarea
         combined_energy_fn = make_energy_fn(
             lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
         )
@@ -1272,7 +1272,8 @@ def remove_negative_area(
                 if orig_area is not None:
                     uv = _apply_area_preserving_scale(uv, faces_jax, orig_area)
 
-                grad = compute_weighted_gradient(uv, area_weight)
+                # Use l_nlarea for gradient weighting (search direction)
+                grad = compute_weighted_gradient(uv, config.l_nlarea)
 
                 if n_avg > 0:
                     grad_smooth = smooth_gradient(
@@ -1598,6 +1599,11 @@ class SurfaceFlattener:
         # IMPORTANT: Use reduced surface (self.vertices, self.faces) which has
         # cuts and medial wall already removed - this is the actual patch area
         self.orig_area = compute_3d_surface_area(self.vertices, self.faces)
+        if self.orig_area <= 0:
+            raise ValueError(
+                f"Surface has non-positive area ({self.orig_area:.6f}). "
+                "This indicates a degenerate mesh that cannot be flattened."
+            )
         if self.config.verbose:
             print(f"Original 3D patch surface area: {self.orig_area:.2f}")
 
@@ -1832,18 +1838,18 @@ class SurfaceFlattener:
                 print("\n" + "=" * 85)
                 print(
                     f"MAIN OPTIMIZATION: Phase {phase_idx + 1} - {phase.name} "
-                    f"(area/dist ratio = {phase.area_ratio})"
+                    f"(l_nlarea={phase.l_nlarea}, l_dist={phase.l_dist})"
                 )
                 print("=" * 85)
 
             J_d_curr, J_a_curr = self._compute_energies(jnp.asarray(uv))
-            lambda_d, lambda_a = compute_normalized_lambdas(
-                float(J_d_curr), float(J_a_curr), ratio=phase.area_ratio
-            )
+            # Use fixed FreeSurfer-style weights directly
+            lambda_d = phase.l_dist
+            lambda_a = phase.l_nlarea
 
             if verbose:
                 print(f"  J_d={float(J_d_curr):.4f}, J_a={float(J_a_curr):.6f}")
-                print(f"  lambda_d={lambda_d:.2e}, lambda_a={lambda_a:.2e}")
+                print(f"  l_dist={lambda_d:.2e}, l_nlarea={lambda_a:.2e}")
 
             base_tol = (
                 phase.base_tol
@@ -1851,10 +1857,9 @@ class SurfaceFlattener:
                 else config.convergence.base_tol
             )
 
-            # Use adaptive optimization for distance_refinement phase if enabled
-            use_adaptive = (
-                config.adaptive_recovery and phase.name == "distance_refinement"
-            )
+            # Use adaptive optimization for the final epoch if enabled
+            # (historically named "distance_refinement", now "epoch_3" by default)
+            use_adaptive = config.adaptive_recovery and phase.name == "epoch_3"
 
             if use_adaptive:
                 uv = run_adaptive_optimization(
@@ -1899,6 +1904,51 @@ class SurfaceFlattener:
                     total_small_limit=config.convergence.total_small,
                     n_coarse_steps=config.line_search.n_coarse_steps,
                 )
+
+        # Final negative area removal (FreeSurfer step 3)
+        if config.final_negative_area_removal.enabled:
+            final_nar = config.final_negative_area_removal
+            if verbose:
+                print("\n" + "=" * 85)
+                print(
+                    "FINAL NEGATIVE AREA REMOVAL "
+                    f"(l_nlarea={final_nar.l_nlarea}, l_dist={final_nar.l_dist})"
+                )
+                print("=" * 85)
+
+            # Create a NegativeAreaRemovalConfig with single l_dist value
+            final_nar_config = NegativeAreaRemovalConfig(
+                base_averages=final_nar.base_averages,
+                min_area_pct=config.negative_area_removal.min_area_pct,
+                max_passes=final_nar.max_passes,
+                l_nlarea=final_nar.l_nlarea,
+                l_dist_ratios=[final_nar.l_dist],  # Single fixed l_dist
+                iters_per_level=final_nar.iters_per_level,
+                base_tol=final_nar.base_tol,
+                enabled=True,
+                scale_area=False,
+            )
+
+            uv = remove_negative_area(
+                uv,
+                neighbors_jax=self.neighbors_jax,
+                targets_jax=self.targets_jax,
+                mask_jax=self.mask_jax,
+                faces_jax=self.faces_jax,
+                smooth_neighbors_jax=self.smooth_neighbors_jax,
+                smooth_mask_jax=self.smooth_mask_jax,
+                smooth_counts_jax=self.smooth_counts_jax,
+                compute_energies_fn=self._compute_energies,
+                grad_J_d_fn=self._grad_J_d,
+                grad_J_a_fn=self._grad_J_a,
+                config=final_nar_config,
+                convergence_max_small=config.convergence.max_small,
+                convergence_total_small=config.convergence.total_small,
+                n_coarse_steps=config.line_search.n_coarse_steps,
+                print_every=config.print_every,
+                verbose=verbose,
+                orig_area=None,  # No area-preserving scaling for final NAR
+            )
 
         # Final spring smoothing
         if config.spring_smoothing.enabled:

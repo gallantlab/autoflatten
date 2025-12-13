@@ -108,6 +108,8 @@ def compute_metric_energy_edges(uv, src, dst, targets, n_vertices):
     - src gather is sequential (cache-friendly)
     - All edges are independent (better parallelism)
 
+    Returns raw sum without normalization (FreeSurfer-style).
+
     Parameters
     ----------
     uv : ndarray of shape (V, 2)
@@ -119,12 +121,12 @@ def compute_metric_energy_edges(uv, src, dst, targets, n_vertices):
     targets : ndarray of shape (E,)
         Target distances
     n_vertices : int
-        Number of vertices (for normalization)
+        Number of vertices (kept for API compatibility, no longer used)
 
     Returns
     -------
     float
-        Scalar energy value
+        Scalar energy value (raw sum)
     """
     # Gather source and destination positions
     # src is sorted, so uv[src] has good cache locality
@@ -138,8 +140,8 @@ def compute_metric_energy_edges(uv, src, dst, targets, n_vertices):
     # Squared errors (no masking needed - all edges are valid)
     errors = (current_dists - targets) ** 2
 
-    # Sum and normalize by 4V
-    return jnp.sum(errors) / (4 * n_vertices)
+    # Sum without normalization (FreeSurfer-style raw sum)
+    return jnp.sum(errors)
 
 
 @jax.jit
@@ -181,7 +183,9 @@ def compute_both_energies_edges(
 def compute_metric_energy(uv, neighbors, targets, mask):
     """Compute metric distortion energy J_d (vectorized, JIT-compiled).
 
-    J_d = (1/4V) * sum_i sum_{n in N(i)} (d_in^t - d_in^0)^2
+    J_d = sum_i sum_{n in N(i)} (d_in^t - d_in^0)^2
+
+    Note: Returns raw sum without normalization (FreeSurfer-style).
 
     Parameters
     ----------
@@ -199,7 +203,9 @@ def compute_metric_energy(uv, neighbors, targets, mask):
     float
         Scalar energy value
     """
-    n_vertices = len(uv)
+    # Note: n_vertices was previously used for normalization but is no longer
+    # needed with FreeSurfer-style raw sum. Line kept for clarity about what
+    # changed from the original normalized version.
 
     # Get neighbor positions: (V, max_neighbors, 2)
     neighbor_pos = uv[neighbors]
@@ -215,8 +221,8 @@ def compute_metric_energy(uv, neighbors, targets, mask):
     # Squared error with masking
     errors = jnp.where(mask, (current_dists - targets) ** 2, 0.0)
 
-    # Sum and normalize by 4V
-    return jnp.sum(errors) / (4 * n_vertices)
+    # Sum without normalization (FreeSurfer-style raw sum)
+    return jnp.sum(errors)
 
 
 @jax.jit
@@ -444,9 +450,7 @@ def compute_3d_surface_area(vertices: np.ndarray, faces: np.ndarray) -> float:
     float
         Total surface area
     """
-    return float(
-        compute_3d_surface_area_jax(jnp.asarray(vertices), jnp.asarray(faces))
-    )
+    return float(compute_3d_surface_area_jax(jnp.asarray(vertices), jnp.asarray(faces)))
 
 
 @jax.jit

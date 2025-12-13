@@ -14,14 +14,21 @@ from ..flatten.threading import configure_threading
 
 def _check_pyflatten_available() -> bool:
     """Check if pyflatten dependencies are available."""
-    try:
-        import jax
-        import igl
-        import numba
+    import logging
 
-        return True
-    except ImportError:
+    logger = logging.getLogger(__name__)
+
+    missing = []
+    for module in ["jax", "igl", "numba"]:
+        try:
+            __import__(module)
+        except ImportError as e:
+            missing.append(f"{module}: {e}")
+
+    if missing:
+        logger.debug(f"Pyflatten dependencies unavailable: {'; '.join(missing)}")
         return False
+    return True
 
 
 class PyflattenBackend(FlattenBackend):
@@ -61,6 +68,7 @@ class PyflattenBackend(FlattenBackend):
         n_jobs: int = -1,
         cache_distances: bool = False,
         tqdm_position: int = 0,
+        print_every: int = 1,
         **kwargs,
     ) -> str:
         """Flatten a cortical surface patch using pyflatten.
@@ -80,7 +88,7 @@ class PyflattenBackend(FlattenBackend):
         n_neighbors_per_ring : int or None
             Number of angular samples per ring (None = use all neighbors)
         skip_phases : list of str, optional
-            Phase names to skip (e.g., ['distance_refinement'])
+            Phase names to skip (e.g., ['epoch_3'])
         skip_spring_smoothing : bool
             Whether to skip final spring smoothing
         skip_neg_area : bool
@@ -93,6 +101,8 @@ class PyflattenBackend(FlattenBackend):
             Whether to cache computed k-ring distances
         tqdm_position : int
             Position of tqdm progress bar (for stacking bars in parallel execution)
+        print_every : int
+            Print progress every N iterations (default: 1 = every iteration)
         **kwargs
             Additional arguments (ignored)
 
@@ -125,6 +135,7 @@ class PyflattenBackend(FlattenBackend):
         config.kring.n_neighbors_per_ring = n_neighbors_per_ring
         config.verbose = verbose
         config.n_jobs = n_jobs
+        config.print_every = print_every
 
         if skip_spring_smoothing:
             config.spring_smoothing.enabled = False
