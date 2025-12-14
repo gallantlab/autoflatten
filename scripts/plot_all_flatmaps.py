@@ -11,7 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 
 from autoflatten.freesurfer import read_patch, read_surface, extract_patch_faces
 from autoflatten.viz import compute_triangle_areas, parse_log_file
@@ -249,6 +249,9 @@ def plot_all_flatmaps(
             print(f"Warning: Could not load data for {participant}: {e}")
             participant_data[participant] = None
 
+    # Check that at least one participant loaded successfully
+    if not all_log_areas:
+        raise RuntimeError("No participant data could be loaded; cannot compute area percentiles.")
     # Compute consistent color limits
     vmin = np.percentile(all_log_areas, 1)
     vmax = np.percentile(all_log_areas, 99)
@@ -345,6 +348,9 @@ def plot_all_flatmaps(
     else:
         # "individual" mode: each flatmap fills its subplot
         # Use the maximum extent across all flatmaps for consistent visual size
+        if not axes_bounds:
+            print("Warning: No flatmap data was loaded; nothing to plot.")
+            return fig
         max_extent = max(
             max(xmax - xmin, ymax - ymin) for xmin, xmax, ymin, ymax in axes_bounds
         )
@@ -437,7 +443,7 @@ def main():
 
     args = parser.parse_args()
 
-    fig = plot_all_flatmaps(
+    plot_all_flatmaps(
         args.data_dir,
         subjects_dir=args.subjects_dir,
         output_path=args.output,
