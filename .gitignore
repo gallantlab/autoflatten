@@ -176,3 +176,6 @@ output_tests
 
 # Claude Code - personal settings (not for version control)
 .claude/settings.local.json
+
+# setuptools-scm generated version file
+autoflatten/_version.py
