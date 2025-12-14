@@ -16,7 +16,6 @@ AutoFlatten is a Python pipeline for automatically creating flattened versions o
 ```bash
 pip install -e .              # Install package in development mode
 pip install -e ".[test]"      # Install with test dependencies
-pip install -e ".[cuda]"      # Install with CUDA support for GPU acceleration
 ```
 
 ### Testing
