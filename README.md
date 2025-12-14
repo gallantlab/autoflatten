@@ -121,6 +121,9 @@ autoflatten /path/to/subjects/sub-01 --parallel
 
 # Process only left hemisphere
 autoflatten /path/to/subjects/sub-01 --hemispheres lh
+
+# Specify base surface explicitly (default: auto-detects {hemi}.fiducial or {hemi}.smoothwm)
+autoflatten /path/to/subjects/sub-01 --base-surface /path/to/lh.smoothwm
 ```
 
 ### Projection Only
@@ -141,8 +144,8 @@ Flatten an existing patch file:
 ```bash
 autoflatten flatten lh.autoflatten.patch.3d
 
-# Specify base surface explicitly
-autoflatten flatten lh.autoflatten.patch.3d --base-surface /path/to/lh.fiducial
+# Specify base surface explicitly (default: auto-detects {hemi}.fiducial or {hemi}.smoothwm)
+autoflatten flatten lh.autoflatten.patch.3d --base-surface /path/to/lh.smoothwm
 
 # Customize pyflatten parameters
 autoflatten flatten lh.autoflatten.patch.3d --k-ring 25 --n-neighbors 40
@@ -199,12 +202,22 @@ For each processed hemisphere, the pipeline creates:
 
 ## Configuration
 
+### Common Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--base-surface` | auto-detect | Path to base surface file ({hemi}.fiducial or {hemi}.smoothwm) |
+| `--output-dir` | subject's surf/ | Directory to save output files |
+| `--hemispheres` | both | Hemispheres to process (lh, rh, or both) |
+| `--parallel` | False | Process hemispheres in parallel |
+| `--overwrite` | False | Overwrite existing files |
+
 ### pyflatten Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--k-ring` | 20 | K-ring neighborhood size |
-| `--n-neighbors` | 30 | Neighbors per ring (angular sampling) |
+| `--k-ring` | 7 | K-ring neighborhood size |
+| `--n-neighbors` | 12 | Neighbors per ring (angular sampling) |
 | `--n-cores` | -1 | CPU cores (-1 = all) |
 | `--skip-phase` | - | Skip specific optimization phases |
 | `--skip-spring-smoothing` | False | Skip final smoothing |
