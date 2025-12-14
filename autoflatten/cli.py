@@ -1091,13 +1091,19 @@ Examples:
 """,
     )
 
-    # Add subject_dir to main parser for default full pipeline behavior
-    parser.add_argument(
-        "subject_dir",
-        nargs="?",
-        help="Path to FreeSurfer subject directory (runs full pipeline)",
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Hidden 'run' subcommand for default full pipeline behavior
+    # This is inserted automatically when user runs: autoflatten /path/to/subject
+    # Users can also explicitly call: autoflatten run /path/to/subject
+    parser_run = subparsers.add_parser(
+        "run", help="Run full pipeline (projection + flattening)"
     )
-    parser.add_argument(
+    parser_run.add_argument(
+        "subject_dir",
+        help="Path to FreeSurfer subject directory",
+    )
+    parser_run.add_argument(
         "--base-surface",
         help=(
             "Path to base surface file for flattening. "
@@ -1105,13 +1111,11 @@ Examples:
             "in the subject's surf/ directory."
         ),
     )
-    add_common_args(parser)
-    add_projection_args(parser)
-    add_backend_args(parser)
-    add_pyflatten_args(parser)
-    add_freesurfer_args(parser)
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    add_common_args(parser_run)
+    add_projection_args(parser_run)
+    add_backend_args(parser_run)
+    add_pyflatten_args(parser_run)
+    add_freesurfer_args(parser_run)
 
     # 'project' subcommand
     parser_project = subparsers.add_parser(
@@ -1181,6 +1185,16 @@ Examples:
     )
     parser_plot.set_defaults(func=cmd_plot)
 
+    # Handle default case: autoflatten /path/to/subject [options]
+    # Insert 'run' subcommand when first arg looks like a path
+    known_commands = {"project", "flatten", "plot", "run"}
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1] not in known_commands
+        and not sys.argv[1].startswith("-")
+    ):
+        sys.argv.insert(1, "run")
+
     args = parser.parse_args()
 
     # Handle command dispatch
@@ -1190,8 +1204,7 @@ Examples:
         return cmd_flatten(args)
     elif args.command == "plot":
         return cmd_plot(args)
-    elif args.subject_dir:
-        # No subcommand but subject_dir provided = run full pipeline
+    elif args.command == "run":
         return cmd_run_full_pipeline(args)
     else:
         parser.print_help()
