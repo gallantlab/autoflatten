@@ -15,6 +15,7 @@ from autoflatten.flatten.config import (
     LineSearchConfig,
     NegativeAreaRemovalConfig,
     SpringSmoothingConfig,
+    FinalNegativeAreaRemovalConfig,
     get_kring_cache_filename,
 )
 from autoflatten.flatten import count_flipped_triangles
@@ -40,8 +41,8 @@ class TestKRingConfig:
     def test_default_values(self):
         """Test default values for KRingConfig."""
         config = KRingConfig()
-        assert config.k_ring == 20
-        assert config.n_neighbors_per_ring == 30
+        assert config.k_ring == 7
+        assert config.n_neighbors_per_ring == 12
 
     def test_custom_values(self):
         """Test custom values for KRingConfig."""
@@ -83,12 +84,13 @@ class TestPhaseConfig:
     """Tests for PhaseConfig dataclass."""
 
     def test_default_values(self):
-        """Test default values for PhaseConfig (requires name and area_ratio)."""
-        config = PhaseConfig(name="test", area_ratio=1.0)
+        """Test default values for PhaseConfig (requires name)."""
+        config = PhaseConfig(name="test")
         assert config.name == "test"
-        assert config.area_ratio == 1.0
+        assert config.l_nlarea == 1.0
+        assert config.l_dist == 1.0
         assert config.enabled is True
-        assert config.iters_per_level == 200
+        assert config.iters_per_level == 40  # FreeSurfer default
         assert config.base_tol is None
         assert len(config.smoothing_schedule) == 7
 
@@ -96,13 +98,15 @@ class TestPhaseConfig:
         """Test custom phase configuration."""
         config = PhaseConfig(
             name="test_phase",
-            area_ratio=10.0,
+            l_nlarea=1.0,
+            l_dist=0.1,
             enabled=True,
             iters_per_level=100,
             base_tol=0.5,
         )
         assert config.name == "test_phase"
-        assert config.area_ratio == 10.0
+        assert config.l_nlarea == 1.0
+        assert config.l_dist == 0.1
         assert config.iters_per_level == 100
         assert config.base_tol == 0.5
 
@@ -114,10 +118,18 @@ class TestNegativeAreaRemovalConfig:
         """Test default values for NegativeAreaRemovalConfig."""
         config = NegativeAreaRemovalConfig()
         assert config.enabled is True
-        assert config.base_averages == 256
+        assert config.base_averages == 1024  # FreeSurfer default
         assert config.min_area_pct == 0.5
-        assert config.max_passes == 5
-        assert config.iters_per_level == 200
+        # Note: max_passes was removed - FreeSurfer always runs all ratios
+        assert config.l_nlarea == 1.0  # Fixed area weight
+        assert config.l_dist_ratios == [
+            1e-6,
+            1e-5,
+            1e-3,
+            1e-2,
+            1e-1,
+        ]  # FreeSurfer ratios (all 5 always run)
+        assert config.iters_per_level == 30  # FreeSurfer default
         assert config.base_tol == 0.5
         # scale_area is disabled by default (FreeSurfer has this step commented out)
         assert config.scale_area is False
@@ -146,16 +158,23 @@ class TestFlattenConfig:
         assert isinstance(config.spring_smoothing, SpringSmoothingConfig)
         assert config.verbose is True
         assert config.n_jobs == -1
-        assert len(config.phases) == 4  # 4 default phases
+        assert len(config.phases) == 3  # 3 FreeSurfer-style epochs
+        assert config.adaptive_recovery is False  # Disabled by default
 
     def test_default_phases(self):
-        """Test that default phases are created correctly."""
+        """Test that default phases are created correctly (FreeSurfer 3-epoch structure)."""
         config = FlattenConfig()
         phase_names = [p.name for p in config.phases]
-        assert "area_dominant" in phase_names
-        assert "balanced" in phase_names
-        assert "distance_dominant" in phase_names
-        assert "distance_refinement" in phase_names
+        assert "epoch_1" in phase_names
+        assert "epoch_2" in phase_names
+        assert "epoch_3" in phase_names
+        # Check FreeSurfer-style weights
+        epoch_1 = config.phases[0]
+        assert epoch_1.l_nlarea == 1.0
+        assert epoch_1.l_dist == 0.1
+        epoch_3 = config.phases[2]
+        assert epoch_3.l_nlarea == 0.1
+        assert epoch_3.l_dist == 1.0
 
     def test_to_dict(self):
         """Test conversion to dictionary."""
@@ -175,7 +194,7 @@ class TestFlattenConfig:
             "n_jobs": 4,
             # Need to provide phases with required fields or use default
             "phases": [
-                {"name": "test_phase", "area_ratio": 1.0},
+                {"name": "test_phase", "l_nlarea": 1.0, "l_dist": 0.1},
             ],
         }
         config = FlattenConfig.from_dict(d)
@@ -183,6 +202,8 @@ class TestFlattenConfig:
         assert config.kring.n_neighbors_per_ring == 20
         assert config.verbose is False
         assert config.n_jobs == 4
+        assert config.phases[0].l_nlarea == 1.0
+        assert config.phases[0].l_dist == 0.1
 
     def test_json_roundtrip(self):
         """Test JSON save/load roundtrip."""
@@ -793,7 +814,7 @@ class TestInitialScaleConfig:
         """Test that from_dict correctly loads initial_scale."""
         d = {
             "initial_scale": 2.5,
-            "phases": [{"name": "test", "area_ratio": 1.0}],
+            "phases": [{"name": "test", "l_nlarea": 1.0, "l_dist": 1.0}],
         }
         config = FlattenConfig.from_dict(d)
         assert config.initial_scale == 2.5
@@ -931,3 +952,144 @@ class TestApplyAreaPreservingScale:
         scaled_uv = _apply_area_preserving_scale(uv, faces, orig_area)
         assert not jnp.any(jnp.isnan(scaled_uv))
         assert not jnp.any(jnp.isinf(scaled_uv))
+
+
+class TestFinalNegativeAreaRemovalConfig:
+    """Tests for FinalNegativeAreaRemovalConfig dataclass."""
+
+    def test_default_values(self):
+        """Test default values match FreeSurfer defaults."""
+        config = FinalNegativeAreaRemovalConfig()
+        assert config.enabled is True
+        assert config.base_averages == 32  # Capped in FreeSurfer
+        assert config.l_nlarea == 1.0
+        # Uses full ratio schedule like initial NAR
+        assert config.l_dist_ratios == [1e-6, 1e-5, 1e-3, 1e-2, 1e-1]
+        assert config.base_tol == 0.01  # Tighter than initial
+        assert config.iters_per_level == 30
+
+    def test_custom_values(self):
+        """Test custom values for FinalNegativeAreaRemovalConfig."""
+        config = FinalNegativeAreaRemovalConfig(
+            enabled=False,
+            base_averages=16,
+            l_nlarea=2.0,
+            l_dist_ratios=[1e-4, 1e-3, 1e-2],
+            base_tol=0.005,
+            iters_per_level=50,
+        )
+        assert config.enabled is False
+        assert config.base_averages == 16
+        assert config.l_nlarea == 2.0
+        assert config.l_dist_ratios == [1e-4, 1e-3, 1e-2]
+        assert config.base_tol == 0.005
+        assert config.iters_per_level == 50
+
+    def test_disabled_by_default_is_false(self):
+        """Verify final NAR is enabled by default (unlike scale_area)."""
+        config = FinalNegativeAreaRemovalConfig()
+        assert config.enabled is True
+
+
+class TestFinalNegativeAreaRemovalSerialization:
+    """Tests for FinalNegativeAreaRemovalConfig serialization in FlattenConfig."""
+
+    def test_to_dict_includes_final_nar(self):
+        """Test that to_dict includes final_negative_area_removal."""
+        config = FlattenConfig()
+        d = config.to_dict()
+        assert "final_negative_area_removal" in d
+        assert d["final_negative_area_removal"]["enabled"] is True
+        assert d["final_negative_area_removal"]["base_averages"] == 32
+        assert d["final_negative_area_removal"]["l_dist_ratios"] == [
+            1e-6,
+            1e-5,
+            1e-3,
+            1e-2,
+            1e-1,
+        ]
+
+    def test_from_dict_loads_final_nar(self):
+        """Test that from_dict correctly loads final_negative_area_removal."""
+        d = {
+            "final_negative_area_removal": {
+                "enabled": False,
+                "base_averages": 16,
+                "l_nlarea": 0.5,
+                "l_dist_ratios": [1e-4, 1e-3],
+                "base_tol": 0.02,
+                "iters_per_level": 20,
+            }
+        }
+        config = FlattenConfig.from_dict(d)
+        assert config.final_negative_area_removal.enabled is False
+        assert config.final_negative_area_removal.base_averages == 16
+        assert config.final_negative_area_removal.l_nlarea == 0.5
+        assert config.final_negative_area_removal.l_dist_ratios == [1e-4, 1e-3]
+        assert config.final_negative_area_removal.base_tol == 0.02
+        assert config.final_negative_area_removal.iters_per_level == 20
+
+    def test_json_roundtrip_preserves_final_nar(self):
+        """Test JSON roundtrip preserves final_negative_area_removal settings."""
+        config = FlattenConfig()
+        config.final_negative_area_removal.enabled = False
+        config.final_negative_area_removal.base_averages = 64
+        config.final_negative_area_removal.l_dist_ratios = [1e-5, 1e-4, 1e-3]
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        try:
+            with open(temp_path, "w") as f:
+                f.write(config.to_json())
+            loaded = FlattenConfig.from_json_file(temp_path)
+            assert loaded.final_negative_area_removal.enabled is False
+            assert loaded.final_negative_area_removal.base_averages == 64
+            assert loaded.final_negative_area_removal.l_dist_ratios == [
+                1e-5,
+                1e-4,
+                1e-3,
+            ]
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+class TestInitialScaleInProjection:
+    """Tests for initial_scale configuration and its effect on projection."""
+
+    def test_initial_scale_default_value(self):
+        """Test that initial_scale defaults to 3.0 (FreeSurfer default)."""
+        config = FlattenConfig()
+        assert config.initial_scale == 3.0
+
+    def test_initial_scale_in_to_dict(self):
+        """Test that initial_scale is included in to_dict."""
+        config = FlattenConfig()
+        config.initial_scale = 2.5
+        d = config.to_dict()
+        assert "initial_scale" in d
+        assert d["initial_scale"] == 2.5
+
+    def test_initial_scale_from_dict(self):
+        """Test that initial_scale is loaded from dict."""
+        d = {"initial_scale": 4.0}
+        config = FlattenConfig.from_dict(d)
+        assert config.initial_scale == 4.0
+
+    def test_initial_scale_json_roundtrip(self):
+        """Test JSON roundtrip preserves initial_scale."""
+        config = FlattenConfig()
+        config.initial_scale = 5.0
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        try:
+            with open(temp_path, "w") as f:
+                f.write(config.to_json())
+            loaded = FlattenConfig.from_json_file(temp_path)
+            assert loaded.initial_scale == 5.0
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
