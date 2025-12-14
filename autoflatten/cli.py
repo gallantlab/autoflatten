@@ -618,7 +618,7 @@ def cmd_run_full_pipeline(args):
                     args.backend,
                     True,  # verbose
                     True,  # run_plot
-                    args.base_surface,
+                    None,  # base_surface (auto-detect)
                     **{**backend_kwargs, "tqdm_position": idx},
                 ): hemi
                 for idx, hemi in enumerate(hemispheres)
@@ -644,7 +644,7 @@ def cmd_run_full_pipeline(args):
                     args.backend,
                     True,  # verbose
                     True,  # run_plot
-                    args.base_surface,
+                    None,  # base_surface (auto-detect)
                     **backend_kwargs,
                 )
             except Exception:
@@ -1102,14 +1102,6 @@ Examples:
     parser_run.add_argument(
         "subject_dir",
         help="Path to FreeSurfer subject directory",
-    )
-    parser_run.add_argument(
-        "--base-surface",
-        help=(
-            "Path to base surface file for flattening. "
-            "By default, auto-detects {hemi}.fiducial or {hemi}.smoothwm "
-            "in the subject's surf/ directory."
-        ),
     )
     add_common_args(parser_run)
     add_projection_args(parser_run)

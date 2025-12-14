@@ -64,9 +64,6 @@ autoflatten flatten lh.autoflatten.patch.3d
 # Use FreeSurfer backend instead of pyflatten:
 autoflatten /path/to/subjects/sub-01 --backend freesurfer
 
-# Specify base surface (default: auto-detects {hemi}.fiducial or {hemi}.smoothwm):
-autoflatten /path/to/subjects/sub-01 --base-surface /path/to/lh.smoothwm
-
 # Plot a flattened surface:
 autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
 ```
@@ -251,4 +248,4 @@ flattener.save_result(uv, "lh.flat.patch.3d")
 
 5. **Log files**: pyflatten creates detailed log files (`*.flat.patch.3d.log`) with optimization progress and final metrics.
 
-6. **Base surface auto-detection**: By default, looks for `{hemi}.fiducial` first, then falls back to `{hemi}.smoothwm`. Use `--base-surface` to specify a custom path.
+6. **Base surface auto-detection**: For the full pipeline, automatically uses `{hemi}.fiducial` (falls back to `{hemi}.smoothwm`) from the subject's surf/ directory. For `flatten` subcommand, use `--base-surface` to specify a custom path.

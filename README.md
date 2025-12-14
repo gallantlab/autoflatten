@@ -121,9 +121,6 @@ autoflatten /path/to/subjects/sub-01 --parallel
 
 # Process only left hemisphere
 autoflatten /path/to/subjects/sub-01 --hemispheres lh
-
-# Specify base surface explicitly (default: auto-detects {hemi}.fiducial or {hemi}.smoothwm)
-autoflatten /path/to/subjects/sub-01 --base-surface /path/to/lh.smoothwm
 ```
 
 ### Projection Only
@@ -206,7 +203,6 @@ For each processed hemisphere, the pipeline creates:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--base-surface` | auto-detect | Path to base surface file ({hemi}.fiducial or {hemi}.smoothwm) |
 | `--output-dir` | subject's surf/ | Directory to save output files |
 | `--hemispheres` | both | Hemispheres to process (lh, rh, or both) |
 | `--parallel` | False | Process hemispheres in parallel |
