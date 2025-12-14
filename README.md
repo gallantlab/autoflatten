@@ -87,9 +87,6 @@ Create patch files without running flattening:
 
 ```bash
 autoflatten project /path/to/subjects/sub-01 --output-dir /path/to/output
-
-# Skip geodesic refinement (faster but less accurate cuts)
-autoflatten project /path/to/subjects/sub-01 --no-refine-geodesic
 ```
 
 ### Flattening Only
