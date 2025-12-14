@@ -12,48 +12,6 @@ AutoFlatten is a Python pipeline for automatically creating flattened 2D represe
 - **Parallel hemisphere processing**
 - **Visualization** with area distortion metrics
 
-## Architecture
-
-```mermaid
-flowchart TD
-    subgraph CLI["autoflatten CLI"]
-        A["autoflatten /path/to/subject"]
-    end
-
-    subgraph PROJ["PROJECTION PHASE (autoflatten project)"]
-        B["Template Loading<br/>(fsaverage cuts)"]
-        C["Cut Mapping<br/>(mri_label2label)"]
-        D["Continuity Fixing<br/>(NetworkX graphs)"]
-        E["Geodesic Refinement<br/>(shortest paths)"]
-        F[("Patch File<br/>{hemi}.autoflatten.patch.3d")]
-    end
-
-    subgraph FLAT["FLATTENING PHASE (autoflatten flatten)"]
-        G{"Backend<br/>Selection"}
-        subgraph PY["pyflatten (default)"]
-            H1["K-ring distances"]
-            H2["Multi-phase optimization"]
-            H3["Spring smoothing"]
-        end
-        subgraph FS["freesurfer"]
-            I["mris_flatten"]
-        end
-        J[("Flat Patch<br/>{hemi}.autoflatten.flat.patch.3d")]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G -->|"--backend pyflatten"| H1
-    H1 --> H2 --> H3
-    G -->|"--backend freesurfer"| I
-    H3 --> J
-    I --> J
-```
-
 ## Requirements
 
 - Python 3.10+
@@ -169,6 +127,46 @@ For each processed hemisphere, the pipeline creates:
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
 
 ## How It Works
+
+```mermaid
+flowchart TD
+    subgraph CLI["autoflatten CLI"]
+        A["autoflatten /path/to/subject"]
+    end
+
+    subgraph PROJ["PROJECTION PHASE (autoflatten project)"]
+        B["Template Loading<br/>(fsaverage cuts)"]
+        C["Cut Mapping<br/>(mri_label2label)"]
+        D["Continuity Fixing<br/>(NetworkX graphs)"]
+        E["Geodesic Refinement<br/>(shortest paths)"]
+        F[("Patch File<br/>{hemi}.autoflatten.patch.3d")]
+    end
+
+    subgraph FLAT["FLATTENING PHASE (autoflatten flatten)"]
+        G{"Backend<br/>Selection"}
+        subgraph PY["pyflatten (default)"]
+            H1["K-ring distances"]
+            H2["Multi-phase optimization"]
+            H3["Spring smoothing"]
+        end
+        subgraph FS["freesurfer"]
+            I["mris_flatten"]
+        end
+        J[("Flat Patch<br/>{hemi}.autoflatten.flat.patch.3d")]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G -->|"--backend pyflatten"| H1
+    H1 --> H2 --> H3
+    G -->|"--backend freesurfer"| I
+    H3 --> J
+    I --> J
+```
 
 ### Projection Phase
 
