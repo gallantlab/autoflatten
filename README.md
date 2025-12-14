@@ -146,8 +146,10 @@ flowchart TD
         G{"Backend<br/>Selection"}
         subgraph PY["pyflatten (default)"]
             H1["K-ring distances"]
-            H2["Multi-phase optimization"]
-            H3["Spring smoothing"]
+            H2["Initial NAR"]
+            H3["3-epoch optimization"]
+            H4["Final NAR"]
+            H5["Spring smoothing"]
         end
         subgraph FS["freesurfer"]
             I["mris_flatten"]
@@ -162,9 +164,9 @@ flowchart TD
     E --> F
     F --> G
     G -->|"--backend pyflatten"| H1
-    H1 --> H2 --> H3
+    H1 --> H2 --> H3 --> H4 --> H5
     G -->|"--backend freesurfer"| I
-    H3 --> J
+    H5 --> J
     I --> J
 ```
 
@@ -182,18 +184,24 @@ flowchart TD
 
 ### Flattening Phase (pyflatten backend)
 
-1. **K-ring Distance Computation**: Compute geodesic distances to k-hop neighbors using Numba-accelerated Dijkstra
+The pyflatten backend implements a JAX-accelerated version of FreeSurfer's `mris_flatten` algorithm:
 
-2. **Initial Projection**: Project 3D coordinates onto 2D plane via FreeSurfer-style initialization
+1. **K-ring Distance Computation**: Compute geodesic distances to k-hop neighbors using Numba-accelerated Dijkstra's algorithm with optional angular sampling
 
-3. **Multi-phase Optimization**:
-   - Negative area removal (fix flipped triangles)
-   - Area-dominant phase (prevent triangle flipping)
-   - Balanced phase (equal area/distance weights)
-   - Distance-dominant phase (preserve geodesic distances)
-   - Distance refinement (fine-tune metric preservation)
+2. **Initial Projection**: Project 3D patch onto 2D plane perpendicular to the average surface normal, with FreeSurfer-style scaling (default 3×)
 
-4. **Spring Smoothing**: Final Laplacian smoothing for visual quality
+3. **Negative Area Removal (NAR)**: Fix flipped triangles from initial projection using gradient descent with `l_nlarea=1.0` and progressively increasing `l_dist` weights `[1e-6, 1e-5, 1e-3, 1e-2, 1e-1]`
+
+4. **3-Epoch Optimization** (matches FreeSurfer's `mrisIntegrationEpoch` schedule):
+   - **Epoch 1** (area-dominant): `l_nlarea=1.0`, `l_dist=0.1` — prioritizes preventing triangle flips
+   - **Epoch 2** (balanced): `l_nlarea=1.0`, `l_dist=1.0` — equal weight to area and distance preservation
+   - **Epoch 3** (distance-dominant): `l_nlarea=0.1`, `l_dist=1.0` — prioritizes geodesic distance preservation
+
+   Each epoch uses a gradient smoothing schedule `[1024, 256, 64, 16, 4, 1, 0]` with FreeSurfer-style convergence criteria
+
+5. **Final Negative Area Removal**: Clean up any remaining flipped triangles with tighter tolerance
+
+6. **Spring Smoothing**: Laplacian smoothing that pulls vertices toward their neighbor centroids for visually smoother flatmaps
 
 ## Configuration
 
@@ -260,6 +268,12 @@ ruff format .
 ## License
 
 BSD 2-Clause License. See LICENSE file for details.
+
+## References
+
+The pyflatten algorithm is based on the cortical surface flattening method implemented in [FreeSurfer](https://github.com/freesurfer/freesurfer), and described in:
+
+> Fischl, B., Sereno, M. I., & Dale, A. M. (1999). **Cortical surface-based analysis II: Inflation, flattening, and a surface-based coordinate system.** *NeuroImage*, 9(2), 195-207. [doi:10.1006/nimg.1998.0396](https://doi.org/10.1006/nimg.1998.0396)
 
 ## Acknowledgments
 
