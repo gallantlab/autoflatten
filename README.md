@@ -33,9 +33,6 @@ uv pip install .
 
 # With test dependencies
 uv pip install ".[test]"
-
-# With CUDA support for GPU acceleration
-uv pip install ".[cuda]"
 ```
 
 ### Using pip
@@ -233,13 +230,11 @@ The pyflatten backend implements a JAX-accelerated version of FreeSurfer's `mris
 | `--dilate` | 1 | Number of dilations |
 | `--passes` | 1 | Number of passes |
 
-## Available Templates
+## Templates
 
-The package includes built-in templates in `autoflatten/default_templates/`:
+The package includes a built-in template in `autoflatten/default_templates/`:
 
 - **fsaverage_cuts_template.json** (default): Standard template based on fsaverage, created by Mark Lescroart and Natalia Bilenko
-- **SUBJ_A_cut_template.json**: Alternative cut pattern
-- **SUBJ_B_cut_template.json**: Alternative cut pattern
 
 Use a custom template with `--template-file /path/to/template.json`.
 

@@ -54,3 +54,7 @@ include = ["autoflatten*"]
 
 [tool.setuptools.package-data]
 autoflatten = ["default_templates/*.json"]
+
+[tool.codespell]
+skip = ".git*"
+check-hidden = true
