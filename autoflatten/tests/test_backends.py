@@ -133,8 +133,8 @@ class TestFindBaseSurface:
             result = find_base_surface(patch_path)
             assert result == fiducial_path
 
-    def test_find_base_surface_with_white_fallback(self):
-        """Test finding base surface falling back to white."""
+    def test_find_base_surface_with_smoothwm_fallback(self):
+        """Test finding base surface falling back to smoothwm."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create mock FreeSurfer structure
             surf_dir = os.path.join(tmpdir, "sub-01", "surf")
@@ -145,13 +145,13 @@ class TestFindBaseSurface:
             with open(patch_path, "wb") as f:
                 f.write(b"\x00" * 10)
 
-            # Create only white surface (no fiducial)
-            white_path = os.path.join(surf_dir, "lh.white")
-            with open(white_path, "wb") as f:
+            # Create only smoothwm surface (no fiducial)
+            smoothwm_path = os.path.join(surf_dir, "lh.smoothwm")
+            with open(smoothwm_path, "wb") as f:
                 f.write(b"\x00" * 10)
 
             result = find_base_surface(patch_path)
-            assert result == white_path
+            assert result == smoothwm_path
 
     def test_find_base_surface_rh_hemisphere(self):
         """Test finding base surface for right hemisphere."""
