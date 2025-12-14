@@ -33,9 +33,6 @@ uv pip install .
 
 # With test dependencies
 uv pip install ".[test]"
-
-# With CUDA support for GPU acceleration
-uv pip install ".[cuda]"
 ```
 
 ### Using pip
