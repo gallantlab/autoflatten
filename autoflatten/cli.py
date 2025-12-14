@@ -367,6 +367,7 @@ def process_hemisphere(
     backend=None,
     verbose=True,
     run_plot=True,
+    base_surface=None,
     **backend_kwargs,
 ):
     """
@@ -394,6 +395,9 @@ def process_hemisphere(
         Print progress messages
     run_plot : bool
         Whether to generate PNG plot after flattening
+    base_surface : str, optional
+        Path to base surface file for flattening. If None, auto-detects
+        {hemi}.fiducial or {hemi}.smoothwm in the subject's surf/ directory.
     **backend_kwargs
         Additional arguments for the backend
 
@@ -427,10 +431,25 @@ def process_hemisphere(
     # Run flattening if requested
     if run_flatten:
         # Determine surface path
-        surf_dir = os.path.join(subject_dir, "surf")
-        surface_path = os.path.join(surf_dir, f"{hemi}.fiducial")
-        if not os.path.exists(surface_path):
-            surface_path = os.path.join(surf_dir, f"{hemi}.white")
+        if base_surface:
+            surface_path = base_surface
+            if not os.path.exists(surface_path):
+                raise FileNotFoundError(
+                    f"Base surface not found: {surface_path}\n"
+                    "Please provide a valid path with --base-surface."
+                )
+        else:
+            surf_dir = os.path.join(subject_dir, "surf")
+            surface_path = os.path.join(surf_dir, f"{hemi}.fiducial")
+            if not os.path.exists(surface_path):
+                surface_path = os.path.join(surf_dir, f"{hemi}.smoothwm")
+            if not os.path.exists(surface_path):
+                raise FileNotFoundError(
+                    f"Base surface not found. Looked for:\n"
+                    f"  - {os.path.join(surf_dir, f'{hemi}.fiducial')}\n"
+                    f"  - {os.path.join(surf_dir, f'{hemi}.smoothwm')}\n"
+                    "Please provide a valid path with --base-surface."
+                )
 
         # Determine output path
         flat_file = os.path.join(output_dir, f"{hemi}.autoflatten.flat.patch.3d")
@@ -581,8 +600,6 @@ def cmd_run_full_pipeline(args):
         )
 
     results = {}
-    run_flatten = not args.no_flatten
-    run_plot = not args.no_plot
 
     # Process hemispheres
     if args.parallel and len(hemispheres) > 1:
@@ -595,12 +612,13 @@ def cmd_run_full_pipeline(args):
                     hemi,
                     output_dir,
                     args.template_file,
-                    run_flatten,
+                    True,  # run_flatten
                     args.overwrite,
                     not args.no_refine_geodesic,
                     args.backend,
                     True,  # verbose
-                    run_plot,
+                    True,  # run_plot
+                    None,  # base_surface (auto-detect)
                     **{**backend_kwargs, "tqdm_position": idx},
                 ): hemi
                 for idx, hemi in enumerate(hemispheres)
@@ -620,12 +638,13 @@ def cmd_run_full_pipeline(args):
                     hemi,
                     output_dir,
                     args.template_file,
-                    run_flatten,
+                    True,  # run_flatten
                     args.overwrite,
                     not args.no_refine_geodesic,
                     args.backend,
-                    True,
-                    run_plot,
+                    True,  # verbose
+                    True,  # run_plot
+                    None,  # base_surface (auto-detect)
                     **backend_kwargs,
                 )
             except Exception:
@@ -639,10 +658,8 @@ def cmd_run_full_pipeline(args):
         if hemi in results:
             print(f"{hemi.upper()} Hemisphere:")
             print(f"  Patch file: {results[hemi].get('patch_file', 'Not created')}")
-            if run_flatten:
-                print(f"  Flat file: {results[hemi].get('flat_file', 'Not created')}")
-            if run_plot and run_flatten:
-                print(f"  Plot file: {results[hemi].get('plot_file', 'Not created')}")
+            print(f"  Flat file: {results[hemi].get('flat_file', 'Not created')}")
+            print(f"  Plot file: {results[hemi].get('plot_file', 'Not created')}")
 
     return 0
 
@@ -714,13 +731,22 @@ def cmd_flatten(args):
     # Auto-detect base surface if not specified
     if args.base_surface:
         surface_path = args.base_surface
+        if not os.path.exists(surface_path):
+            print(f"Error: Base surface not found: {surface_path}")
+            return 1
     else:
         from autoflatten.backends import find_base_surface
 
         surface_path = find_base_surface(patch_path)
         if surface_path is None:
+            # Determine hemisphere for informative error message
+            patch_name = os.path.basename(patch_path)
+            hemi = "lh" if patch_name.startswith("lh.") else "rh"
+            patch_dir = os.path.dirname(patch_path)
             print(
-                "Error: Could not auto-detect base surface. "
+                f"Error: Could not auto-detect base surface. Looked for:\n"
+                f"  - {os.path.join(patch_dir, f'{hemi}.fiducial')}\n"
+                f"  - {os.path.join(patch_dir, f'{hemi}.smoothwm')}\n"
                 "Please specify --base-surface."
             )
             return 1
@@ -1044,7 +1070,7 @@ def add_common_args(parser):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Autoflatten: Automatic Cortical Surface Flattening",
+        description="autoflatten: Automatic Cortical Surface Flattening",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1067,9 +1093,21 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Note: We don't add subject_dir to the root parser because it conflicts
-    # with subparser positional arguments. Instead, we handle the case of
-    # no subcommand by checking sys.argv directly in main().
+    # Hidden 'run' subcommand for default full pipeline behavior
+    # This is inserted automatically when user runs: autoflatten /path/to/subject
+    # Users can also explicitly call: autoflatten run /path/to/subject
+    parser_run = subparsers.add_parser(
+        "run", help="Run full pipeline (projection + flattening)"
+    )
+    parser_run.add_argument(
+        "subject_dir",
+        help="Path to FreeSurfer subject directory",
+    )
+    add_common_args(parser_run)
+    add_projection_args(parser_run)
+    add_backend_args(parser_run)
+    add_pyflatten_args(parser_run)
+    add_freesurfer_args(parser_run)
 
     # 'project' subcommand
     parser_project = subparsers.add_parser(
@@ -1095,7 +1133,11 @@ Examples:
     )
     parser_flatten.add_argument(
         "--base-surface",
-        help="Path to base surface (auto-detected if in FreeSurfer structure)",
+        help=(
+            "Path to base surface file. "
+            "By default, auto-detects {hemi}.fiducial or {hemi}.smoothwm "
+            "in the same directory as the patch file."
+        ),
     )
     parser_flatten.add_argument(
         "-o",
@@ -1135,51 +1177,30 @@ Examples:
     )
     parser_plot.set_defaults(func=cmd_plot)
 
-    # Legacy 'run' subcommand (alias for default behavior)
-    parser_run = subparsers.add_parser(
-        "run",
-        help="Run full pipeline (legacy, same as default)",
-    )
-    parser_run.add_argument(
-        "subject_dir",
-        help="Path to FreeSurfer subject directory (or subject ID for legacy mode)",
-    )
-    add_common_args(parser_run)
-    add_projection_args(parser_run)
-    add_backend_args(parser_run)
-    add_pyflatten_args(parser_run)
-    add_freesurfer_args(parser_run)
-    parser_run.add_argument(
-        "--no-flatten",
-        action="store_true",
-        help="Skip flattening",
-    )
-    parser_run.add_argument(
-        "--no-plot",
-        action="store_true",
-        help="Skip PNG plot generation",
-    )
-    parser_run.set_defaults(func=cmd_run_full_pipeline)
-
-    # Handle case where no subcommand is given but a path is provided
-    # This allows "autoflatten /path/to/subject" syntax
+    # Handle default case: autoflatten /path/to/subject [options]
+    # Insert 'run' subcommand when first arg looks like a path
     known_commands = {"project", "flatten", "plot", "run"}
     if (
         len(sys.argv) > 1
         and sys.argv[1] not in known_commands
         and not sys.argv[1].startswith("-")
     ):
-        # Insert 'run' as the subcommand
         sys.argv.insert(1, "run")
 
     args = parser.parse_args()
 
-    # Handle default command (no subcommand specified)
-    if args.command is None:
+    # Handle command dispatch
+    if args.command == "project":
+        return cmd_project(args)
+    elif args.command == "flatten":
+        return cmd_flatten(args)
+    elif args.command == "plot":
+        return cmd_plot(args)
+    elif args.command == "run":
+        return cmd_run_full_pipeline(args)
+    else:
         parser.print_help()
         return 1
-
-    return args.func(args)
 
 
 if __name__ == "__main__":

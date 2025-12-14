@@ -111,12 +111,7 @@ def find_base_surface(patch_path: str) -> Optional[str]:
     if fiducial.exists():
         return str(fiducial)
 
-    # Fall back to white surface
-    white = surf_dir / f"{hemi}.white"
-    if white.exists():
-        return str(white)
-
-    # Try smoothwm (used by some FreeSurfer versions)
+    # Fall back to smoothwm (standard FreeSurfer surface)
     smoothwm = surf_dir / f"{hemi}.smoothwm"
     if smoothwm.exists():
         return str(smoothwm)
