@@ -293,7 +293,12 @@ def test_merge_small_components():
 
     # Call function with more than 5 components and max_cuts=5 (old behavior)
     updated_medial_wall, main_cuts = merge_small_components(
-        cut_components, medial_wall, medial_wall_border, G_full, pts_inflated, max_cuts=5
+        cut_components,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=5,
     )
 
     # Check if small cut 1 was merged with main cut 1
@@ -309,7 +314,12 @@ def test_merge_small_components():
     fewer_cuts = cut_components[:3]  # Only 3 components
 
     updated_medial_wall, main_cuts = merge_small_components(
-        fewer_cuts, medial_wall, medial_wall_border, G_full, pts_inflated, max_cuts=5
+        fewer_cuts,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=5,
     )
 
     # Should return 3 components (no padding when using max_cuts)
@@ -317,7 +327,12 @@ def test_merge_small_components():
     
     # Test with no max_cuts (new flexible behavior)
     updated_medial_wall, main_cuts = merge_small_components(
-        cut_components, medial_wall, medial_wall_border, G_full, pts_inflated, max_cuts=None
+        cut_components,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=None,
     )
     
     # Should keep all 7 components without merging
