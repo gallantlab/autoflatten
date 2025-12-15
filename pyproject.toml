@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "autoflatten"
 dynamic = ["version"]
-description = "Automatic Surface Flattening Pipeline"
+description = "Automatically create cortical flatmaps from FreeSurfer surfaces"
 readme = "README.md"
 license = "BSD-2-Clause"
 classifiers = [
@@ -45,12 +45,6 @@ test = [
     "pytest",
     "pytest-cov",
     "codecov",
-]
-cuda = [
-    "jax[cuda12]>=0.4.0",
-]
-viz3d = [
-    "polyscope>=2.0.0",
 ]
 
 [project.scripts]
