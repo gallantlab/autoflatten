@@ -3,6 +3,7 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:  # Manual trigger for testing TestPyPI
 
 jobs:
   build:
@@ -40,6 +41,7 @@ jobs:
 
   publish-to-pypi:
     name: Publish to PyPI
+    if: github.event_name == 'release'  # Skip on manual workflow_dispatch
     needs: build
     runs-on: ubuntu-latest
     environment:
