@@ -65,11 +65,16 @@ def _find_geometric_endpoints(cut_vertices, pts):
 def ensure_continuous_cuts(vertex_dict, subject, hemi):
     """
     Make cuts continuous using Euclidean distances on the inflated surface for speed.
+    
+    Works with arbitrary patch configurations - processes all cuts dynamically
+    based on the keys present in vertex_dict (excluding 'mwall').
 
     Parameters
     ----------
     vertex_dict : dict
-        Dictionary containing medial wall and cut vertices.
+        Dictionary containing medial wall and cut vertices. Keys can be arbitrary
+        cut names (e.g., 'calcarine', 'cut1', 'occipital', etc.). The special key
+        'mwall' is reserved for medial wall vertices.
     subject : str
         Subject identifier.
     hemi : str
@@ -108,10 +113,11 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
                 weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
                 G.add_edge(v1, v2, weight=weight)
 
-    # Process each cut (using anatomical names from template)
-    cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
+    # Process each cut (extract cut names dynamically from vertex_dict)
+    # Skip the medial wall ('mwall') key, process all other keys as cuts
+    cut_names = [key for key in vertex_dict.keys() if key != "mwall"]
     for cut_key in cut_names:
-        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+        if len(vertex_dict[cut_key]) == 0:
             continue
 
         print(f"Processing {cut_key}...")
@@ -513,11 +519,16 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
     and replaces them with the shortest geodesic path on the target surface between
     the cut endpoints. This should produce more anatomically direct cuts and reduce
     distortion during flattening.
+    
+    Works with arbitrary patch configurations - processes all cuts dynamically
+    based on the keys present in vertex_dict (excluding 'mwall').
 
     Parameters
     ----------
     vertex_dict : dict
-        Dictionary containing medial wall and cut vertices.
+        Dictionary containing medial wall and cut vertices. Keys can be arbitrary
+        cut names (e.g., 'calcarine', 'cut1', 'occipital', etc.). The special key
+        'mwall' is reserved for medial wall vertices.
     subject : str
         Subject identifier.
     hemi : str
