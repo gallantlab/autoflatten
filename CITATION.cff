@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces"
+type: software
+authors:
+  - family-names: "Visconti di Oleggio Castello"
+    given-names: "Matteo"
+    orcid: "https://orcid.org/0000-0001-7931-5272"
+    affiliation: "Department of Neuroscience, University of California, Berkeley"
+  - family-names: "Gallant"
+    given-names: "Jack L."
+    orcid: "https://orcid.org/0000-0001-7273-1054"
+    affiliation: "Department of Neuroscience, University of California, Berkeley"
+repository-code: "https://github.com/gallantlab/autoflatten"
+url: "https://github.com/gallantlab/autoflatten"
+license: BSD-2-Clause
+version: 1.0.1
+date-released: 2025-12-15
+doi: 10.5281/zenodo.17933206
+keywords:
+  - neuroimaging
+  - cortical surface
+  - FreeSurfer
+  - surface flattening
+  - fMRI
+  - flatmap
+  - brain mapping

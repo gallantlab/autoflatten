@@ -208,6 +208,24 @@ pre-commit install
 ruff format .
 ```
 
+## Citation
+
+If you use autoflatten in your research, please cite:
+
+> Visconti di Oleggio Castello, M., & Gallant, J. L. (2025). autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces (v1.0.1). Zenodo. https://doi.org/10.5281/zenodo.17933206
+
+```bibtex
+@software{visconti_di_oleggio_castello_2025_autoflatten,
+  author       = {Visconti di Oleggio Castello, Matteo and Gallant, Jack L.},
+  title        = {autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces},
+  year         = 2025,
+  publisher    = {Zenodo},
+  version      = {v1.0.1},
+  doi          = {10.5281/zenodo.17933206},
+  url          = {https://doi.org/10.5281/zenodo.17933206}
+}
+```
+
 ## License
 
 BSD 2-Clause License. See LICENSE file for details.
