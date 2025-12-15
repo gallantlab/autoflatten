@@ -731,3 +731,78 @@ def test_fill_holes_in_patch_simple_hole():
     assert result & inner_ring, (
         f"Expected inner ring vertices {inner_ring} to be in result, got {result}"
     )
+
+
+def test_validate_patch_topology():
+    """
+    Test patch topology validation with various configurations.
+    """
+    from autoflatten.core import validate_patch_topology
+    from unittest.mock import patch
+    
+    # Create a simple valid patch with disk topology
+    # A strip of 6 vertices forming a simple connected disk
+    pts = np.array([
+        [0, 0, 0], [1, 0, 0], [2, 0, 0],
+        [0, 1, 0], [1, 1, 0], [2, 1, 0],
+        [0, 2, 0], [1, 2, 0]
+    ])
+    
+    # Faces forming a connected strip (disk topology when vertex 0 is excluded)
+    polys = np.array([
+        [0, 1, 3],
+        [1, 4, 3],
+        [1, 2, 4],
+        [2, 5, 4],
+        [3, 4, 6],
+        [4, 7, 6]
+    ])
+    
+    # Test 1: Valid disk topology (excluding one corner vertex)
+    vertex_dict = {
+        "mwall": np.array([0]),  # Exclude corner
+    }
+    
+    with patch('autoflatten.core.load_surface', return_value=(pts, polys)):
+        is_valid, issues, info = validate_patch_topology(
+            vertex_dict, "test_subject", "lh", verbose=False
+        )
+        
+        # Since this is a simple test mesh, we mainly check that the function runs
+        # without errors and returns the expected structure
+        assert isinstance(is_valid, bool)
+        assert isinstance(issues, list)
+        assert 'n_components' in info
+        assert 'n_boundary_loops' in info
+        assert 'patch_size' in info
+        assert info['patch_size'] == 7  # 8 vertices - 1 excluded
+    
+    # Test 2: Empty patch (all vertices excluded)
+    vertex_dict = {
+        "mwall": np.arange(8),  # Exclude everything
+    }
+    
+    with patch('autoflatten.core.load_surface', return_value=(pts, polys)):
+        is_valid, issues, info = validate_patch_topology(
+            vertex_dict, "test_subject", "lh", verbose=False
+        )
+        
+        assert not is_valid, "Expected invalid topology for empty patch"
+        assert any("No" in issue and "remain" in issue for issue in issues)
+        assert info['patch_size'] == 0
+    
+    # Test 3: Multiple cuts creating arbitrary patch
+    vertex_dict = {
+        "mwall": np.array([0, 7]),  # Exclude two vertices
+        "cut1": np.array([3]),
+    }
+    
+    with patch('autoflatten.core.load_surface', return_value=(pts, polys)):
+        is_valid, issues, info = validate_patch_topology(
+            vertex_dict, "test_subject", "lh", verbose=False
+        )
+        
+        # Function should work with arbitrary cut names
+        assert isinstance(is_valid, bool)
+        assert info['excluded_size'] == 3  # 0, 7, and 3
+        assert info['patch_size'] == 5  # 8 - 3
