@@ -210,7 +210,7 @@ ruff format .
 
 ## Citation
 
-If you use autoflatten in your research, please cite:
+If you use autoflatten in your research, please cite both autoflatten and the original FreeSurfer flattening method:
 
 > Visconti di Oleggio Castello, M., & Gallant, J. L. (2025). autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces (v1.0.1). Zenodo. https://doi.org/10.5281/zenodo.17933206
 
@@ -226,15 +226,24 @@ If you use autoflatten in your research, please cite:
 }
 ```
 
+> Fischl, B., Sereno, M. I., & Dale, A. M. (1999). Cortical surface-based analysis II: Inflation, flattening, and a surface-based coordinate system. *NeuroImage*, 9(2), 195-207. https://doi.org/10.1006/nimg.1998.0396
+
+```bibtex
+@article{fischl1999cortical,
+  author       = {Fischl, Bruce and Sereno, Martin I. and Dale, Anders M.},
+  title        = {Cortical surface-based analysis {II}: Inflation, flattening, and a surface-based coordinate system},
+  journal      = {NeuroImage},
+  year         = 1999,
+  volume       = 9,
+  number       = 2,
+  pages        = {195--207},
+  doi          = {10.1006/nimg.1998.0396}
+}
+```
+
 ## License
 
 BSD 2-Clause License. See LICENSE file for details.
-
-## References
-
-The pyflatten algorithm is based on the cortical surface flattening method implemented in [FreeSurfer](https://github.com/freesurfer/freesurfer), and described in:
-
-> Fischl, B., Sereno, M. I., & Dale, A. M. (1999). **Cortical surface-based analysis II: Inflation, flattening, and a surface-based coordinate system.** *NeuroImage*, 9(2), 195-207. [doi:10.1006/nimg.1998.0396](https://doi.org/10.1006/nimg.1998.0396)
 
 ## Acknowledgments
 
