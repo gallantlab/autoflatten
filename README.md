@@ -189,6 +189,42 @@ The package includes a built-in template in `autoflatten/default_templates/`:
 
 Use a custom template with `--template-file /path/to/template.json`.
 
+### Custom Patches and Arbitrary Regions
+
+**NEW**: autoflatten now supports flexible patch configurations beyond the standard 5-cut template:
+
+- **Arbitrary number of cuts**: Not limited to the 5 standard cuts (calcarine, medial1-3, temporal)
+- **Custom cut names**: Use any names you want (e.g., `occipital`, `temporal`, `custom_region`)
+- **Isolated patches**: Create patches for specific regions (e.g., just the occipital pole or temporal lobe)
+- **No medial wall required**: The `mwall` key can be empty for isolated patches
+
+**Example: Create a custom template**
+```python
+from autoflatten.utils import save_json
+
+template_dict = {
+    "lh_mwall": [100, 101, 102],  # Optional medial wall
+    "lh_occipital_boundary": [1, 2, 3, 4, 5],  # Custom cut
+    "lh_temporal_boundary": [10, 11, 12, 13],  # Custom cut
+    "rh_mwall": [100, 101, 102],
+    "rh_occipital_boundary": [1, 2, 3, 4, 5],
+    "rh_temporal_boundary": [10, 11, 12, 13],
+}
+
+save_json("my_custom_template.json", template_dict)
+```
+
+**Validate topology** before flattening:
+```python
+from autoflatten import validate_patch_topology
+
+is_valid, issues, info = validate_patch_topology(
+    vertex_dict, subject="your_subject", hemi="lh"
+)
+```
+
+See `examples/custom_patch_example.py` for detailed examples and `examples/README.md` for more information.
+
 ## Development
 
 ```bash
