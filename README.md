@@ -122,48 +122,6 @@ For each processed hemisphere, the pipeline creates:
 
 ## How It Works
 
-```mermaid
-flowchart TD
-    subgraph CLI["autoflatten CLI"]
-        A["autoflatten /path/to/subject"]
-    end
-
-    subgraph PROJ["PROJECTION PHASE (autoflatten project)"]
-        B["Template Loading<br/>(fsaverage cuts)"]
-        C["Cut Mapping<br/>(mri_label2label)"]
-        D["Continuity Fixing<br/>(NetworkX graphs)"]
-        E["Geodesic Refinement<br/>(shortest paths)"]
-        F[("Patch File<br/>{hemi}.autoflatten.patch.3d")]
-    end
-
-    subgraph FLAT["FLATTENING PHASE (autoflatten flatten)"]
-        G{"Backend<br/>Selection"}
-        subgraph PY["pyflatten (default)"]
-            H1["K-ring distances"]
-            H2["Initial NAR"]
-            H3["3-epoch optimization"]
-            H4["Final NAR"]
-            H5["Spring smoothing"]
-        end
-        subgraph FS["freesurfer"]
-            I["mris_flatten"]
-        end
-        J[("Flat Patch<br/>{hemi}.autoflatten.flat.patch.3d")]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G -->|"--backend pyflatten"| H1
-    H1 --> H2 --> H3 --> H4 --> H5
-    G -->|"--backend freesurfer"| I
-    H5 --> J
-    I --> J
-```
-
 ### Projection Phase
 
 1. **Template Loading**: Load cut definitions from fsaverage template (medial wall + 5 anatomical cuts: calcarine, medial1-3, temporal)
