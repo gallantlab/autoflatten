@@ -239,3 +239,4 @@ The pyflatten algorithm is based on the cortical surface flattening method imple
 ## Acknowledgments
 
 - Default [fsaverage template cuts](https://figshare.com/articles/dataset/fsaverage_subject_for_pycortex/) by Mark Lescroart and Natalia Bilenko
+- Geodesic refinement step inspired by code from Bhavin Gupta and Alex Huth
