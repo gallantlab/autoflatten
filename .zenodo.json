@@ -1,0 +1,44 @@
+{
+  "title": "autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces",
+  "description": "Python pipeline for automatically creating flattened versions of FreeSurfer cortical surfaces. Features JAX-accelerated optimization with vectorized gradient descent, template-based cut mapping via FreeSurfer's surface registration, and FreeSurfer-compatible patch file output.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "BSD-2-Clause",
+  "language": "eng",
+  "creators": [
+    {
+      "name": "Visconti di Oleggio Castello, Matteo",
+      "orcid": "0000-0001-7931-5272",
+      "affiliation": "Department of Neuroscience, University of California, Berkeley",
+      "type": "ProjectMember"
+    },
+    {
+      "name": "Gallant, Jack L.",
+      "orcid": "0000-0001-7273-1054",
+      "affiliation": "Department of Neuroscience, University of California, Berkeley",
+      "type": "ProjectLeader"
+    }
+  ],
+  "keywords": [
+    "neuroimaging",
+    "cortical surface",
+    "FreeSurfer",
+    "surface flattening",
+    "fMRI",
+    "flatmap",
+    "brain mapping"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/gallantlab/autoflatten",
+      "relation": "isSupplementTo",
+      "resource_type": "software",
+      "scheme": "url"
+    }
+  ],
+  "grants": [
+    {
+      "id": "10.13039/100000002::RF1AG029577"
+    }
+  ]
+}
