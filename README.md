@@ -23,31 +23,22 @@
 
 ## Installation
 
-### Using uv (recommended)
+### From PyPI
 
 ```bash
-# Clone the repository
-git clone https://github.com/gallantlab/autoflatten.git
-cd autoflatten
-
-# Install with uv
-uv pip install .
-
-# With test dependencies
-uv pip install ".[test]"
+pip install autoflatten
 ```
 
-### Using pip
+### From source (for development)
 
 ```bash
-# Clone the repository
 git clone https://github.com/gallantlab/autoflatten.git
 cd autoflatten
 
-# Install in development mode
-pip install -e .
+# Using uv (recommended)
+uv pip install -e ".[test]"
 
-# With test dependencies
+# Using pip
 pip install -e ".[test]"
 ```
 
