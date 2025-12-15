@@ -27,7 +27,6 @@ dependencies = [
     # Core dependencies (autoflatten projection)
     "numpy",
     "networkx",
-    "pycortex",
     "scikit-learn",
     "packaging",
     # pyflatten dependencies (flattening algorithm)

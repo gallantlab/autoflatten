@@ -1,6 +1,5 @@
 """Functions to derive a template for cuts to be used in autoflatten."""
 
-import cortex
 import networkx as nx
 import numpy as np
 from sklearn.decomposition import PCA
