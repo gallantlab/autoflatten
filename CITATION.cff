@@ -14,9 +14,7 @@ authors:
 repository-code: "https://github.com/gallantlab/autoflatten"
 url: "https://github.com/gallantlab/autoflatten"
 license: BSD-2-Clause
-version: 1.0.1
-date-released: 2025-12-15
-doi: 10.5281/zenodo.17933206
+doi: 10.5281/zenodo.17933205
 keywords:
   - neuroimaging
   - cortical surface

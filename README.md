@@ -212,7 +212,7 @@ ruff format .
 
 If you use autoflatten in your research, please cite both autoflatten and the original FreeSurfer flattening method:
 
-> Visconti di Oleggio Castello, M., & Gallant, J. L. (2025). autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces (v1.0.1). Zenodo. https://doi.org/10.5281/zenodo.17933206
+> Visconti di Oleggio Castello, M., & Gallant, J. L. (2025). autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces. Zenodo. https://doi.org/10.5281/zenodo.17933205
 
 ```bibtex
 @software{visconti_di_oleggio_castello_2025_autoflatten,
@@ -220,9 +220,8 @@ If you use autoflatten in your research, please cite both autoflatten and the or
   title        = {autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces},
   year         = 2025,
   publisher    = {Zenodo},
-  version      = {v1.0.1},
-  doi          = {10.5281/zenodo.17933206},
-  url          = {https://doi.org/10.5281/zenodo.17933206}
+  doi          = {10.5281/zenodo.17933205},
+  url          = {https://doi.org/10.5281/zenodo.17933205}
 }
 ```
 
