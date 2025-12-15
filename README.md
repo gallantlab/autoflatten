@@ -8,7 +8,7 @@
 
 - **Automatic cut mapping** from a template to individual subjects
 - **Two backends for the flattening process**:
-  - **pyflatten** (default): our own JAX-accelerated Python implementation of FreeSurfer's `mris_flatten` algorithm
+  - **pyflatten** (default): our own JAX-accelerated Python implementation of FreeSurfer's `mris_flatten` algorithm. Provides similar results as FreeSurfer's `mris_flatten`, but it is much faster.
   - **freesurfer**: FreeSurfer `mris_flatten` wrapper
 - **Visualization** with area distortion metrics
 
