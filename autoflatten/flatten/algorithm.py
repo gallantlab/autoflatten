@@ -359,7 +359,8 @@ def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray
     # igl.per_vertex_normals returns area-weighted average of adjacent face normals
     vertex_normals = igl.per_vertex_normals(vertices, faces)
 
-    # Step 2: Compute average normal (sum of vertex normals, magnitude doesn't matter)
+    # Step 2: Compute average normal (sum of vertex normals; direction matters for rotation,
+    # and the vector is normalized before use)
     avg_normal = vertex_normals.sum(axis=0)
 
     # Step 3 & 4: Center vertices at origin
