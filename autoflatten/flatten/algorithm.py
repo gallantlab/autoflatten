@@ -336,9 +336,17 @@ def count_boundary_loops(faces: np.ndarray) -> tuple[int, list[np.ndarray]]:
 def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """Project onto plane perpendicular to average surface normal.
 
-    This implements FreeSurfer's initial projection strategy for surface
-    flattening. The projection finds the average normal and rotates the
-    mesh so this normal points in the +Z direction, then takes XY coordinates.
+    This implements FreeSurfer's MRISflattenPatch initial projection strategy.
+    The algorithm:
+    1. Computes vertex normals (average of adjacent face normals per vertex)
+    2. Sums vertex normals to get average normal direction
+    3. Centers vertices at origin
+    4. Rotates mesh so average normal aligns with +Z axis
+    5. Takes XY coordinates as the 2D projection
+
+    The rotation uses FreeSurfer's exact transform() function formulation.
+    No hemisphere-specific logic is used - the geometry naturally determines
+    the orientation.
 
     Args:
         vertices: (V, 3) vertex coordinates
@@ -347,33 +355,43 @@ def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray
     Returns:
         (V, 2) UV coordinates
     """
-    face_normals = igl.per_face_normals(vertices, faces, np.array([0.0, 0.0, 0.0]))
-    face_areas = igl.doublearea(vertices, faces) / 2
-    avg_normal = (face_normals * face_areas[:, np.newaxis]).sum(axis=0)
+    # Step 1: Compute vertex normals
+    # igl.per_vertex_normals returns area-weighted average of adjacent face normals
+    vertex_normals = igl.per_vertex_normals(vertices, faces)
+
+    # Step 2: Compute average normal (sum of vertex normals; direction matters for rotation,
+    # and the vector is normalized before use)
+    avg_normal = vertex_normals.sum(axis=0)
+
+    # Step 3 & 4: Center vertices at origin
+    centroid = vertices.mean(axis=0)
+    centered = vertices - centroid
+
+    # Step 5: Normalize the average normal
     avg_normal = avg_normal / np.linalg.norm(avg_normal)
+    nx, ny, nz = avg_normal
 
-    target = np.array([0.0, 0.0, 1.0])
-    v = np.cross(avg_normal, target)
-    c = np.dot(avg_normal, target)
+    # Step 6: Compute d = sqrt(nx² + ny²)
+    d = np.sqrt(nx * nx + ny * ny)
 
-    if np.linalg.norm(v) < 1e-10:
-        R = np.eye(3) if c > 0 else np.diag([1, 1, -1])
+    # Step 7: Apply rotation transform if patch isn't already in xy-plane
+    if d > 1e-6:
+        # FreeSurfer's transform() rotation matrix
+        # Maps average normal (nx, ny, nz) to z-axis (0, 0, 1)
+        R = np.array(
+            [
+                [nx * nz / d, ny * nz / d, -d],
+                [-ny / d, nx / d, 0.0],
+                [nx, ny, nz],
+            ]
+        )
+        rotated = centered @ R.T
     else:
-        s = np.linalg.norm(v)
-        vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-        R = np.eye(3) + vx + vx @ vx * (1 - c) / (s * s)
+        # Average normal already points along z-axis, no rotation needed
+        rotated = centered
 
-    rotated = vertices @ R.T
+    # Step 8: Take XY coordinates (projection onto xy-plane)
     uv = rotated[:, :2]
-
-    # Fix orientation if most triangles are flipped
-    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
-    areas = 0.5 * (
-        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
-        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
-    )
-    if np.sum(areas < 0) > len(faces) / 2:
-        uv[:, 0] = -uv[:, 0]
 
     return uv
 
