@@ -229,7 +229,7 @@ def identify_medial_wall_border(medial_wall, G_full):
 
 
 def merge_small_components(
-    cut_components, medial_wall, medial_wall_border, G_full, pts_inflated
+    cut_components, medial_wall, medial_wall_border, G_full, pts_inflated, max_cuts=None
 ):
     """
     Merge small components with nearest large components.
@@ -246,23 +246,30 @@ def merge_small_components(
         Full graph of the surface.
     pts_inflated : numpy.ndarray
         3D coordinates of inflated surface vertices.
+    max_cuts : int, optional
+        Maximum number of cuts to keep. If None, keeps all cuts without merging.
+        Default is None for flexible patch support.
 
     Returns
     -------
     tuple
         (updated_medial_wall, main_cuts) where:
         - updated_medial_wall: Set of medial wall vertices after merging
-        - main_cuts: List of cut components after merging (max 5)
+        - main_cuts: List of cut components after merging
     """
     updated_medial_wall = medial_wall.copy()
 
-    # If we have too many cut components, merge smaller ones
-    if len(cut_components) > 5:
-        print(f"Found {len(cut_components)} cut components, merging smaller components")
+    # If max_cuts is not specified, keep all components without merging
+    if max_cuts is None:
+        return updated_medial_wall, cut_components
 
-        # Take the 5 largest as our main cuts
-        main_cuts = cut_components[:5]
-        small_cuts = cut_components[5:]
+    # If we have too many cut components, merge smaller ones
+    if len(cut_components) > max_cuts:
+        print(f"Found {len(cut_components)} cut components, merging to {max_cuts}")
+
+        # Take the largest components as main cuts
+        main_cuts = cut_components[:max_cuts]
+        small_cuts = cut_components[max_cuts:]
 
         # For each small component, find which main component it's closest to
         for small_comp in small_cuts:
@@ -307,13 +314,6 @@ def merge_small_components(
     else:
         main_cuts = cut_components
 
-    # If we don't have enough cut components, add empty components
-    while len(main_cuts) < 5:
-        print(
-            f"Warning: Found only {len(main_cuts)} cut components, adding empty component"
-        )
-        main_cuts.append(set())
-
     return updated_medial_wall, main_cuts
 
 
@@ -321,6 +321,9 @@ def classify_cuts_anatomically(cut_components, pts_inflated, medial_wall):
     """
     Classify cuts based on their anatomical positions after projecting onto YZ plane
     and normalizing orientation.
+    
+    This function is designed for the standard fsaverage template with 5 specific cuts.
+    For arbitrary patches, this function may not be applicable.
 
     Parameters
     ----------
@@ -334,11 +337,29 @@ def classify_cuts_anatomically(cut_components, pts_inflated, medial_wall):
     Returns
     -------
     dict
-        Dictionary mapping anatomical names to cut indices in consistent order:
-        'calcarine', 'medial1', 'medial2', 'medial3', 'temporal'
+        Dictionary mapping anatomical names to cut indices. Returns generic names
+        (cut1, cut2, etc.) if anatomical classification is not appropriate.
     """
+    
+    # If we don't have exactly 5 cuts, use generic naming
+    if len(cut_components) != 5:
+        print(f"Found {len(cut_components)} cuts (not 5), using generic naming")
+        result_dict = {}
+        for i, cut in enumerate(cut_components):
+            if cut:
+                result_dict[f"cut{i+1}"] = i
+        return result_dict
+    
+    # If medial wall is empty or too small, use generic naming
+    if len(medial_wall) < 10:
+        print("Medial wall too small for anatomical classification, using generic naming")
+        result_dict = {}
+        for i, cut in enumerate(cut_components):
+            if cut:
+                result_dict[f"cut{i+1}"] = i
+        return result_dict
 
-    # Initialize result dictionary with consistent order
+    # Initialize result dictionary with consistent order for 5-cut template
     result_dict = {
         "calcarine": None,
         "medial1": None,
@@ -453,7 +474,7 @@ def classify_cuts_anatomically(cut_components, pts_inflated, medial_wall):
     return result_dict
 
 
-def identify_surface_components(subject, hemi):
+def identify_surface_components(subject, hemi, max_cuts=None, classify_anatomically=True):
     """
     Main function to identify medial wall and cuts on a subject's surface.
 
@@ -463,12 +484,19 @@ def identify_surface_components(subject, hemi):
         Pycortex subject identifier.
     hemi : str
         Hemisphere identifier ('lh' or 'rh').
+    max_cuts : int, optional
+        Maximum number of cuts to identify. If None, keeps all detected cuts.
+        Default is None for flexible patch support.
+    classify_anatomically : bool, optional
+        Whether to classify cuts anatomically (only works for standard 5-cut template).
+        If False or if not applicable, uses generic names (cut1, cut2, etc.).
+        Default is True.
 
     Returns
     -------
     vertex_dict : dict
-        Dictionary containing the medial wall vertices and anatomically named cut vertices.
-        Keys are "mwall", "calcarine", "medial1", "medial2", "medial3", and "temporal".
+        Dictionary containing the medial wall vertices and cut vertices.
+        Keys include "mwall" and cut names (either anatomical like "calcarine" or generic like "cut1").
     """
     # Step 1: Load surface data
     surface_data = get_surface_data(subject, hemi)
@@ -492,19 +520,25 @@ def identify_surface_components(subject, hemi):
     # Step 6: Identify medial wall border
     medial_wall_border = identify_medial_wall_border(medial_wall, G_full)
 
-    # Step 7: Merge small components
+    # Step 7: Merge small components (only if max_cuts is specified)
     medial_wall, main_cuts = merge_small_components(
         cut_components,
         medial_wall,
         medial_wall_border,
         G_full,
         surface_data["inflated_points"],
+        max_cuts=max_cuts,
     )
 
-    # Step 8: Classify cuts anatomically
-    name_mapping = classify_cuts_anatomically(
-        main_cuts, surface_data["inflated_points"], list(medial_wall)
-    )
+    # Step 8: Classify cuts (anatomically or generically)
+    if classify_anatomically:
+        name_mapping = classify_cuts_anatomically(
+            main_cuts, surface_data["inflated_points"], list(medial_wall)
+        )
+    else:
+        # Use generic naming
+        print(f"Using generic cut naming for {len(main_cuts)} cuts")
+        name_mapping = {f"cut{i+1}": i for i in range(len(main_cuts)) if main_cuts[i]}
 
     # Step 9: Create final vertex dictionary
     vertex_dict = {
@@ -521,7 +555,8 @@ def identify_surface_components(subject, hemi):
 
     # Print final information
     print(f"Final medial wall size: {len(medial_wall)}")
-    for name in ["calcarine", "medial1", "medial2", "medial3", "temporal"]:
-        print(f"Final {name} cut size: {len(vertex_dict[name])}")
+    for name in sorted(vertex_dict.keys()):
+        if name != "mwall":
+            print(f"Final {name} cut size: {len(vertex_dict[name])}")
 
     return vertex_dict

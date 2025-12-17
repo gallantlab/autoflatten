@@ -31,6 +31,130 @@ TRAPPED_VERTEX_MAX_BFS = 200
 HOLE_FILL_MAX_ITERATIONS = 10
 
 
+def validate_patch_topology(vertex_dict, subject, hemi, verbose=True):
+    """
+    Validate the topology of a patch defined by cuts and medial wall.
+    
+    Checks for:
+    1. Single connected component (no isolated regions)
+    2. Disk topology (exactly one boundary loop after excluding vertices)
+    3. Reasonable patch size
+    
+    Parameters
+    ----------
+    vertex_dict : dict
+        Dictionary containing medial wall and cut vertices. Keys should include
+        'mwall' and any cut names. All vertices in these keys will be excluded
+        from the patch.
+    subject : str
+        Subject identifier.
+    hemi : str
+        Hemisphere identifier ('lh' or 'rh').
+    verbose : bool, optional
+        If True, prints detailed validation results. Default is True.
+    
+    Returns
+    -------
+    is_valid : bool
+        True if patch has valid topology for flattening.
+    issues : list of str
+        List of topology issues found (empty if valid).
+    info : dict
+        Dictionary with topology information:
+        - 'n_components': Number of connected components in patch
+        - 'n_boundary_loops': Number of boundary loops
+        - 'patch_size': Number of vertices in patch
+        - 'excluded_size': Number of excluded vertices
+    """
+    issues = []
+    
+    # Load surface data
+    pts, polys = load_surface(subject, "smoothwm", hemi)
+    n_vertices = len(pts)
+    
+    # Collect all excluded vertices (medial wall + all cuts)
+    excluded = set()
+    for key, vertices in vertex_dict.items():
+        excluded.update(vertices)
+    
+    # Create mapping from old to new vertex indices (excluding excluded vertices)
+    included_vertices = [v for v in range(n_vertices) if v not in excluded]
+    if not included_vertices:
+        issues.append("No vertices remain after exclusions")
+        return False, issues, {
+            'n_components': 0,
+            'n_boundary_loops': 0,
+            'patch_size': 0,
+            'excluded_size': len(excluded)
+        }
+    
+    old_to_new = {old_v: new_v for new_v, old_v in enumerate(included_vertices)}
+    
+    # Filter faces to only include triangles with all vertices in the patch
+    valid_faces = []
+    for face in polys:
+        if all(v in old_to_new for v in face):
+            # Remap to new indices
+            new_face = [old_to_new[v] for v in face]
+            valid_faces.append(new_face)
+    
+    if not valid_faces:
+        issues.append("No valid faces remain after exclusions")
+        return False, issues, {
+            'n_components': 0,
+            'n_boundary_loops': 0,
+            'patch_size': len(included_vertices),
+            'excluded_size': len(excluded)
+        }
+    
+    valid_faces = np.array(valid_faces)
+    
+    # Check 1: Single connected component
+    G = nx.Graph()
+    for face in valid_faces:
+        G.add_edges_from([(face[0], face[1]), (face[1], face[2]), (face[2], face[0])])
+    
+    n_components = nx.number_connected_components(G)
+    if n_components > 1:
+        issues.append(f"Patch has {n_components} disconnected components (should be 1)")
+    
+    # Check 2: Count boundary loops
+    n_loops, loops = count_boundary_loops(valid_faces)
+    if n_loops != 1:
+        issues.append(
+            f"Patch has {n_loops} boundary loops (should be 1 for disk topology)"
+        )
+    
+    # Check 3: Reasonable patch size
+    patch_size = len(included_vertices)
+    if patch_size < 100:
+        issues.append(f"Patch is very small ({patch_size} vertices)")
+    
+    info = {
+        'n_components': n_components,
+        'n_boundary_loops': n_loops,
+        'patch_size': patch_size,
+        'excluded_size': len(excluded)
+    }
+    
+    is_valid = len(issues) == 0
+    
+    if verbose:
+        print("\n=== Patch Topology Validation ===")
+        print(f"Patch size: {patch_size} vertices")
+        print(f"Excluded: {len(excluded)} vertices")
+        print(f"Connected components: {n_components}")
+        print(f"Boundary loops: {n_loops}")
+        if is_valid:
+            print("✓ Patch has valid disk topology")
+        else:
+            print("✗ Topology issues found:")
+            for issue in issues:
+                print(f"  - {issue}")
+    
+    return is_valid, issues, info
+
+
 def _find_geometric_endpoints(cut_vertices, pts):
     """Find the two most geometrically distant vertices in a cut.
 
@@ -65,11 +189,16 @@ def _find_geometric_endpoints(cut_vertices, pts):
 def ensure_continuous_cuts(vertex_dict, subject, hemi):
     """
     Make cuts continuous using Euclidean distances on the inflated surface for speed.
+    
+    Works with arbitrary patch configurations - processes all cuts dynamically
+    based on the keys present in vertex_dict (excluding 'mwall').
 
     Parameters
     ----------
     vertex_dict : dict
-        Dictionary containing medial wall and cut vertices.
+        Dictionary containing medial wall and cut vertices. Keys can be arbitrary
+        cut names (e.g., 'calcarine', 'cut1', 'occipital', etc.). The special key
+        'mwall' is reserved for medial wall vertices.
     subject : str
         Subject identifier.
     hemi : str
@@ -108,10 +237,11 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
                 weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
                 G.add_edge(v1, v2, weight=weight)
 
-    # Process each cut (using anatomical names from template)
-    cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
+    # Process each cut (extract cut names dynamically from vertex_dict)
+    # Skip the medial wall ('mwall') key, process all other keys as cuts
+    cut_names = [key for key in vertex_dict.keys() if key != "mwall"]
     for cut_key in cut_names:
-        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+        if len(vertex_dict[cut_key]) == 0:
             continue
 
         print(f"Processing {cut_key}...")
@@ -513,11 +643,16 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
     and replaces them with the shortest geodesic path on the target surface between
     the cut endpoints. This should produce more anatomically direct cuts and reduce
     distortion during flattening.
+    
+    Works with arbitrary patch configurations - processes all cuts dynamically
+    based on the keys present in vertex_dict (excluding 'mwall').
 
     Parameters
     ----------
     vertex_dict : dict
-        Dictionary containing medial wall and cut vertices.
+        Dictionary containing medial wall and cut vertices. Keys can be arbitrary
+        cut names (e.g., 'calcarine', 'cut1', 'occipital', etc.). The special key
+        'mwall' is reserved for medial wall vertices.
     subject : str
         Subject identifier.
     hemi : str

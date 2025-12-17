@@ -291,9 +291,14 @@ def test_merge_small_components():
     pts_inflated[101] = [2, 2, 2]
     pts_inflated[12] = [2, 2.1, 2]  # Close to vertex 101 (medial wall border)
 
-    # Call function with more than 5 components
+    # Call function with more than 5 components and max_cuts=5 (old behavior)
     updated_medial_wall, main_cuts = merge_small_components(
-        cut_components, medial_wall, medial_wall_border, G_full, pts_inflated
+        cut_components,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=5,
     )
 
     # Check if small cut 1 was merged with main cut 1
@@ -302,20 +307,36 @@ def test_merge_small_components():
     # Check if small cut 2 was merged with medial wall
     assert 12 in updated_medial_wall
 
-    # Check that we still have 5 main cuts
+    # Check that we have exactly 5 main cuts
     assert len(main_cuts) == 5
 
-    # Test with less than 5 components
+    # Test with less than 5 components and max_cuts=5
     fewer_cuts = cut_components[:3]  # Only 3 components
 
     updated_medial_wall, main_cuts = merge_small_components(
-        fewer_cuts, medial_wall, medial_wall_border, G_full, pts_inflated
+        fewer_cuts,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=5,
     )
 
-    # Should have padded to 5 components total with empty sets
-    assert len(main_cuts) == 5
-    assert main_cuts[3] == set()
-    assert main_cuts[4] == set()
+    # Should return 3 components (no padding when using max_cuts)
+    assert len(main_cuts) == 3
+    
+    # Test with no max_cuts (new flexible behavior)
+    updated_medial_wall, main_cuts = merge_small_components(
+        cut_components,
+        medial_wall,
+        medial_wall_border,
+        G_full,
+        pts_inflated,
+        max_cuts=None,
+    )
+    
+    # Should keep all 7 components without merging
+    assert len(main_cuts) == 7
 
 
 def test_classify_cuts_anatomically():
