@@ -38,6 +38,39 @@ def rotate_coords(xy, angle_deg):
     return xy @ rotation_matrix.T
 
 
+def find_flat_patches(subject_dir):
+    """Find autoflatten flat patches for a subject.
+
+    Parameters
+    ----------
+    subject_dir : Path or str
+        Path to subject directory
+
+    Returns
+    -------
+    paths : tuple of Path or None
+        Tuple ``(lh_path, rh_path)`` of flat patch file paths if both
+        hemispheres are found, otherwise ``None``.
+    """
+    subject_dir = Path(subject_dir)
+
+    # Check FreeSurfer structure: subject/surf/
+    surf_dir = subject_dir / "surf"
+    if surf_dir.exists():
+        lh_flat = surf_dir / "lh.autoflatten.flat.patch.3d"
+        rh_flat = surf_dir / "rh.autoflatten.flat.patch.3d"
+        if lh_flat.exists() and rh_flat.exists():
+            return (lh_flat, rh_flat)
+
+    # Check flat structure: subject/
+    lh_flat = subject_dir / "lh.autoflatten.flat.patch.3d"
+    rh_flat = subject_dir / "rh.autoflatten.flat.patch.3d"
+    if lh_flat.exists() and rh_flat.exists():
+        return (lh_flat, rh_flat)
+
+    return None
+
+
 def load_flatmap_data(flat_patch_path, subject, subjects_dir, hemi):
     """Load flatmap data including vertices, faces, areas, and log info.
 
@@ -163,7 +196,7 @@ def plot_single_flatmap(ax, xy, faces, areas, rotation_deg, cmap="viridis"):
 
 def plot_all_flatmaps(
     data_dir,
-    subjects_dir,
+    subjects_dir=None,
     output_path=None,
     ncols=4,
     figsize_per_cell=(3, 2.5),
@@ -176,9 +209,12 @@ def plot_all_flatmaps(
     Parameters
     ----------
     data_dir : str or Path
-        Directory containing participant subdirectories with flatmap results
-    subjects_dir : str or Path
-        Path to FreeSurfer subjects directory
+        Directory containing participant subdirectories with flatmap results.
+        Can be a FreeSurfer subjects directory (patches in surf/) or a
+        separate output directory (patches directly in subject folders).
+    subjects_dir : str or Path, optional
+        Path to FreeSurfer subjects directory. If None, defaults to data_dir
+        (assumes data_dir is the FreeSurfer subjects directory).
     output_path : str or Path, optional
         If provided, save figure to this path
     ncols : int
@@ -198,22 +234,25 @@ def plot_all_flatmaps(
         The figure object
     """
     data_dir = Path(data_dir)
-    subjects_dir = Path(subjects_dir)
+    # Default subjects_dir to data_dir if not specified
+    if subjects_dir is None:
+        subjects_dir = data_dir
+    else:
+        subjects_dir = Path(subjects_dir)
 
     # Find all participant directories with flat patches
-    participants = []
+    participants = {}  # participant_name -> (lh_path, rh_path)
     for subdir in sorted(data_dir.iterdir()):
         if subdir.is_dir():
-            lh_flat = subdir / "lh.autoflatten.flat.patch.3d"
-            rh_flat = subdir / "rh.autoflatten.flat.patch.3d"
-            if lh_flat.exists() and rh_flat.exists():
-                participants.append(subdir.name)
+            flat_paths = find_flat_patches(subdir)
+            if flat_paths is not None:
+                participants[subdir.name] = flat_paths
 
     if not participants:
         raise ValueError(f"No valid participant data found in {data_dir}")
 
     n_participants = len(participants)
-    print(f"Found {n_participants} participants: {', '.join(participants)}")
+    print(f"Found {n_participants} participants: {', '.join(participants.keys())}")
 
     # Each participant has 2 hemispheres, arranged in grid
     n_cells = n_participants * 2
@@ -233,11 +272,7 @@ def plot_all_flatmaps(
 
     # First pass: load all data and collect area ranges
     participant_data = {}
-    for participant in participants:
-        subdir = data_dir / participant
-        lh_path = subdir / "lh.autoflatten.flat.patch.3d"
-        rh_path = subdir / "rh.autoflatten.flat.patch.3d"
-
+    for participant, (lh_path, rh_path) in participants.items():
         try:
             lh_data = load_flatmap_data(lh_path, participant, subjects_dir, "lh")
             rh_data = load_flatmap_data(rh_path, participant, subjects_dir, "rh")
@@ -251,7 +286,9 @@ def plot_all_flatmaps(
 
     # Check that at least one participant loaded successfully
     if not all_log_areas:
-        raise RuntimeError("No participant data could be loaded; cannot compute area percentiles.")
+        raise RuntimeError(
+            "No participant data could be loaded; cannot compute area percentiles."
+        )
     # Compute consistent color limits
     vmin = np.percentile(all_log_areas, 1)
     vmax = np.percentile(all_log_areas, 99)
@@ -259,7 +296,7 @@ def plot_all_flatmaps(
     # Second pass: plot
     # Build list of (participant, hemi, data) tuples
     plot_items = []
-    for participant in participants:
+    for participant in participants.keys():
         data = participant_data.get(participant)
         if data is not None:
             plot_items.append((participant, "lh", data["lh"]))
@@ -388,13 +425,16 @@ def main():
     parser.add_argument(
         "data_dir",
         type=str,
-        help="Directory containing participant subdirectories with flatmap results",
+        help="Directory containing participant subdirectories with flatmap results. "
+        "Can be a FreeSurfer subjects directory (patches in surf/) or a separate "
+        "output directory (patches directly in subject folders).",
     )
     parser.add_argument(
         "--subjects-dir",
         type=str,
-        required=True,
-        help="Path to FreeSurfer subjects directory",
+        default=None,
+        help="Path to FreeSurfer subjects directory. If not specified, defaults to "
+        "data_dir (assumes data_dir is the FreeSurfer subjects directory).",
     )
     parser.add_argument(
         "-o",
