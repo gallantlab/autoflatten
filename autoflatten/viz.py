@@ -218,9 +218,18 @@ def parse_log_file(log_path):
             elif filename.startswith("rh."):
                 result["hemisphere"] = "rh"
 
-    except (FileNotFoundError, IOError):
-        # Log file doesn't exist or can't be read - return empty result
+    except FileNotFoundError:
+        # Log file doesn't exist - this is expected and normal
         pass
+    except OSError as e:
+        # File exists but couldn't be read (permissions, I/O error, etc.)
+        import warnings
+
+        warnings.warn(
+            f"Could not read log file {log_path}: {e}",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return result
 
@@ -242,7 +251,7 @@ def plot_flatmap(
 
     Creates a three-panel figure showing:
     - Left: Mesh with flipped triangles highlighted in red
-    - Center: Per-vertex metric distortion (2D/3D edge length ratio)
+    - Center: Per-vertex metric distortion (percentage error between 2D and 3D distances)
     - Right: Histogram of distortion distribution
 
     Parameters
@@ -311,9 +320,14 @@ def plot_flatmap(
     if distance_method == "pyflatten":
         # Accurate 7-ring geodesic distances (same method as pyflatten, slower)
         k, n_samples = 7, 12
-    else:
+    elif distance_method == "fast":
         # Fast 2-ring distances (default) - all neighbors, no angular sampling
         k, n_samples = 2, None
+    else:
+        raise ValueError(
+            f"Invalid distance_method: {distance_method!r}. "
+            "Must be 'fast' or 'pyflatten'."
+        )
 
     vertex_dist, mean_dist = compute_kring_distortion(
         xy,
@@ -453,7 +467,7 @@ def plot_flatmap(
 
     # Color bars by distortion value using same colormap
     norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap_obj = plt.cm.get_cmap(distortion_cmap)
+    cmap_obj = plt.colormaps[distortion_cmap]
     colors = cmap_obj(norm(bin_centers))
 
     ax.bar(
