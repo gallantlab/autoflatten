@@ -48,8 +48,9 @@ def find_flat_patches(subject_dir):
 
     Returns
     -------
-    tuple or None
-        (lh_path, rh_path) if both hemispheres found, None otherwise
+    paths : tuple of Path or None
+        Tuple ``(lh_path, rh_path)`` of flat patch file paths if both
+        hemispheres are found, otherwise ``None``.
     """
     subject_dir = Path(subject_dir)
 
