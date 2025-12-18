@@ -1,7 +1,7 @@
 """Visualization utilities for flattened cortical surfaces.
 
 This module provides matplotlib-based visualization for flat patches,
-showing the mesh with flipped triangles highlighted and triangle areas.
+showing the mesh with flipped triangles highlighted and metric distortion.
 """
 
 import os
@@ -10,11 +10,15 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 
 from autoflatten.freesurfer import read_patch, read_surface, extract_patch_faces
 from autoflatten.backends import find_base_surface
+from autoflatten.flatten.distance import (
+    compute_kring_geodesic_distances,
+    compute_kring_geodesic_distances_angular,
+    GRAPH_DISTANCE_CORRECTION,
+)
 
 
 def compute_triangle_areas(vertices_2d, faces):
@@ -42,6 +46,129 @@ def compute_triangle_areas(vertices_2d, faces):
         - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
     )
     return areas
+
+
+def compute_kring_distortion(
+    xy,
+    base_vertices,
+    base_faces,
+    orig_indices,
+    k=7,
+    n_samples_per_ring=12,
+    verbose=True,
+):
+    """Compute per-vertex metric distortion using k-ring geodesic distances.
+
+    Uses the same approach as autoflatten optimization:
+    - Computes geodesic distances to k-ring neighbors on 3D surface
+    - Compares with Euclidean distances on 2D flatmap
+    - Returns percentage error per vertex: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
+
+    Parameters
+    ----------
+    xy : ndarray of shape (N, 2)
+        2D flat patch vertex coordinates
+    base_vertices : ndarray of shape (M, 3)
+        Full base surface 3D vertex coordinates
+    base_faces : ndarray of shape (F, 3)
+        Full base surface face indices
+    orig_indices : ndarray of shape (N,)
+        Mapping from patch vertex indices to full surface indices
+    k : int
+        Number of rings to include (default: 7, same as autoflatten)
+    n_samples_per_ring : int
+        Angular samples per ring (default: 12, same as autoflatten)
+    verbose : bool
+        Print progress messages
+
+    Returns
+    -------
+    vertex_distortion : ndarray of shape (N,)
+        Percentage distortion at each vertex
+    mean_distortion : float
+        Overall mean percentage distortion (same formula as autoflatten)
+    """
+    n_patch_vertices = len(xy)
+
+    # Build mapping from full surface indices to patch indices
+    # orig_indices[patch_idx] = full_idx, so we need the inverse
+    full_to_patch = {
+        full_idx: patch_idx for patch_idx, full_idx in enumerate(orig_indices)
+    }
+
+    # Extract the subgraph of the base surface that corresponds to the patch
+    # We need to compute k-ring distances on the FULL surface, then map back
+    patch_vertices_3d = base_vertices[orig_indices]
+
+    # Extract faces that are entirely within the patch
+    patch_face_mask = np.all(np.isin(base_faces, orig_indices), axis=1)
+    patch_faces_full = base_faces[patch_face_mask]
+
+    # Remap face indices from full surface to patch indices
+    patch_faces = np.array(
+        [[full_to_patch[v] for v in face] for face in patch_faces_full], dtype=np.int64
+    )
+
+    # Compute k-ring geodesic distances on the patch subgraph
+    if n_samples_per_ring is None:
+        # Use all neighbors (no angular sampling) - faster for k=1
+        if verbose:
+            print(f"Computing {k}-ring geodesic distances (all neighbors)...")
+        k_rings, target_distances = compute_kring_geodesic_distances(
+            patch_vertices_3d,
+            patch_faces,
+            k=k,
+            use_numba=True,
+            tqdm_position=0,
+        )
+    else:
+        # Use angular sampling
+        if verbose:
+            print(
+                f"Computing {k}-ring geodesic distances ({n_samples_per_ring} samples/ring)..."
+            )
+        k_rings, target_distances = compute_kring_geodesic_distances_angular(
+            patch_vertices_3d,
+            patch_faces,
+            k=k,
+            n_samples_per_ring=n_samples_per_ring,
+            use_numba=True,
+            tqdm_position=0,
+        )
+
+    if verbose:
+        print("Computing per-vertex distortion...")
+
+    # Compute per-vertex distortion
+    vertex_distortion = np.zeros(n_patch_vertices)
+    total_abs_error = 0.0
+    total_target = 0.0
+
+    for v in range(n_patch_vertices):
+        neighbors = k_rings[v]
+        targets = target_distances[v]
+
+        if len(neighbors) == 0:
+            vertex_distortion[v] = 0.0
+            continue
+
+        # Compute 2D Euclidean distances to neighbors
+        d_2d = np.linalg.norm(xy[neighbors] - xy[v], axis=1)
+
+        # Compute per-vertex distortion: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
+        abs_errors = np.abs(d_2d - targets)
+        vertex_distortion[v] = 100.0 * np.mean(abs_errors) / np.mean(targets)
+
+        # Accumulate for global mean
+        total_abs_error += np.sum(abs_errors)
+        total_target += np.sum(targets)
+
+    # Global mean distortion (same formula as autoflatten)
+    mean_distortion = (
+        100.0 * total_abs_error / total_target if total_target > 0 else 0.0
+    )
+
+    return vertex_distortion, mean_distortion
 
 
 def parse_log_file(log_path):
@@ -98,18 +225,20 @@ def plot_flatmap(
     base_surface_path=None,
     output_path=None,
     title=None,
-    figsize=(12, 6),
+    figsize=(14, 5),
     show_flipped=True,
     show_boundary=True,
-    cmap="viridis",
+    distortion_cmap="viridis",
+    distortion_method="1ring",
     dpi=150,
 ):
     """
     Plot a flattened cortical surface using matplotlib.
 
-    Creates a two-panel figure showing:
+    Creates a three-panel figure showing:
     - Left: Mesh with flipped triangles highlighted in red
-    - Right: Triangle areas on log scale
+    - Center: Per-vertex metric distortion (2D/3D edge length ratio)
+    - Right: Histogram of distortion distribution
 
     Parameters
     ----------
@@ -128,8 +257,10 @@ def plot_flatmap(
         Highlight flipped triangles in red
     show_boundary : bool
         Show boundary vertices as dots
-    cmap : str
-        Colormap for the mesh area visualization
+    distortion_cmap : str
+        Colormap for the distortion visualization (default: viridis)
+    distortion_method : str
+        Method for computing distortion: "1ring" (fast, default) or "kring" (accurate)
     dpi : int
         Resolution for saved figure
 
@@ -157,8 +288,8 @@ def plot_flatmap(
     # Read flat patch
     flat_vertices, orig_indices, is_border = read_patch(flat_patch_path)
 
-    # Read base surface to get faces
-    _, base_faces = read_surface(base_surface_path)
+    # Read base surface to get vertices and faces
+    base_vertices, base_faces = read_surface(base_surface_path)
 
     # Extract patch faces
     faces = extract_patch_faces(base_faces, orig_indices)
@@ -169,6 +300,24 @@ def plot_flatmap(
     # Compute triangle areas
     areas = compute_triangle_areas(xy, faces)
     n_flipped = np.sum(areas < 0)
+
+    # Compute per-vertex distortion
+    if distortion_method == "kring":
+        # Accurate k-ring geodesic distances (same method as autoflatten, slower)
+        k, n_samples = 7, 12
+    else:
+        # Fast 2-ring distances (default) - all neighbors, no angular sampling
+        k, n_samples = 2, None
+
+    vertex_dist, mean_dist = compute_kring_distortion(
+        xy,
+        base_vertices,
+        base_faces,
+        orig_indices,
+        k=k,
+        n_samples_per_ring=n_samples,
+        verbose=True,
+    )
 
     # Try to parse log file for optimization results
     log_path = flat_patch_path + ".log"
@@ -182,20 +331,20 @@ def plot_flatmap(
     else:
         main_title = Path(flat_patch_path).name
 
-    # Add optimization results to subtitle
-    subtitle_parts = [f"{len(flat_vertices):,} vertices, {len(faces):,} faces"]
-    if log_results.get("distance_error") is not None:
-        subtitle_parts.append(
-            f"{log_results['distance_error']}% error, "
-            f"{log_results.get('flipped', n_flipped)} flipped"
-        )
+    # Add results to subtitle - use log file error if available, otherwise computed
+    log_error = log_results.get("distance_error")
+    if log_error is not None:
+        error_str = f"{log_error:.2f}% error"
     else:
-        subtitle_parts.append(f"{n_flipped:,} flipped")
-
+        error_str = f"{mean_dist:.2f}% error"
+    subtitle_parts = [
+        f"{len(flat_vertices):,} vertices, {len(faces):,} faces",
+        f"{error_str}, {n_flipped} flipped",
+    ]
     subtitle = ", ".join(subtitle_parts)
 
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    # Create figure with 3 panels
+    fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True)
 
     # Create triangulation
     triang = tri.Triangulation(xy[:, 0], xy[:, 1], faces)
@@ -262,43 +411,74 @@ def plot_flatmap(
     if (show_flipped and n_flipped > 0) or (show_boundary and np.sum(is_border) > 0):
         ax.legend(loc="upper right", fontsize=8)
 
-    # Right plot: Triangle areas on log scale
+    # Center plot: Per-vertex metric distortion (percentage)
     ax = axes[1]
 
-    # Color by triangle area (log scale for visibility)
-    log_areas = np.log10(np.abs(areas) + 1e-10)
+    # Fixed color limits: 0-100%
+    vmin = 0
+    vmax = 100
 
-    # Use tripcolor for area visualization
-    tpc = ax.tripcolor(triang, log_areas, shading="flat", cmap=cmap)
+    # Use tripcolor with vertex values for smooth interpolation
+    tpc = ax.tripcolor(
+        triang,
+        vertex_dist,
+        shading="gouraud",
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+    )
 
-    # Create colorbar with matching height using axes_grid1
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="5%", pad=0.1)
-    fig.colorbar(tpc, cax=cax, label="log10(area)")
-
-    # Mark flipped triangles
-    if n_flipped > 0:
-        flipped_centroids = np.mean(xy[faces[areas < 0]], axis=1)
-        ax.scatter(
-            flipped_centroids[:, 0],
-            flipped_centroids[:, 1],
-            c="red",
-            s=20,
-            marker="x",
-            linewidths=1.5,
-            label=f"Flipped ({n_flipped})",
-            zorder=10,
-        )
-        ax.legend(loc="upper right", fontsize=8)
+    # Create colorbar
+    fig.colorbar(tpc, ax=ax, label="Distortion (%)", shrink=0.8)
 
     ax.set_aspect("equal")
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
-    ax.set_title("Triangle Areas (log scale)")
+    ax.set_title(f"Metric Distortion ({k}-ring)")
+
+    # Right plot: Histogram of distortion distribution
+    ax = axes[2]
+
+    # Compute histogram (clip to 0-100 range for display)
+    n_bins = 50
+    vertex_dist_clipped = np.clip(vertex_dist, vmin, vmax)
+    hist, bin_edges = np.histogram(vertex_dist_clipped, bins=n_bins, range=(vmin, vmax))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # Color bars by distortion value using same colormap
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    cmap_obj = plt.cm.get_cmap("viridis")
+    colors = cmap_obj(norm(bin_centers))
+
+    ax.bar(
+        bin_centers, hist, width=np.diff(bin_edges)[0], color=colors, edgecolor="none"
+    )
+
+    # Add mean and median lines (use weighted mean_dist from compute_kring_distortion)
+    median_dist = np.median(vertex_dist)
+    ax.axvline(
+        x=mean_dist,
+        color="black",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean: {mean_dist:.1f}%",
+    )
+    ax.axvline(
+        x=median_dist,
+        color="gray",
+        linestyle=":",
+        linewidth=1.5,
+        label=f"Median: {median_dist:.1f}%",
+    )
+
+    ax.set_xlabel("Distortion (%)")
+    ax.set_ylabel("Vertex Count")
+    ax.set_title(f"Distortion Distribution ({k}-ring)")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_xlim(vmin, vmax)
 
     # Add main title
     fig.suptitle(f"{main_title}\n{subtitle}", fontsize=12)
-    plt.tight_layout()
 
     if output_path:
         plt.savefig(output_path, dpi=dpi, bbox_inches="tight")

@@ -7,7 +7,10 @@ import tempfile
 
 import numpy as np
 
-from autoflatten.viz import compute_triangle_areas, parse_log_file
+from autoflatten.viz import (
+    compute_triangle_areas,
+    parse_log_file,
+)
 
 
 class TestComputeTriangleAreas:
