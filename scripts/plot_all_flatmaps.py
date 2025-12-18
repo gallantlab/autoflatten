@@ -43,7 +43,7 @@ def find_flat_patches(subject_dir):
 
     Parameters
     ----------
-    subject_dir : Path
+    subject_dir : Path or str
         Path to subject directory
 
     Returns
