@@ -17,7 +17,6 @@ from autoflatten.backends import find_base_surface
 from autoflatten.flatten.distance import (
     compute_kring_geodesic_distances,
     compute_kring_geodesic_distances_angular,
-    GRAPH_DISTANCE_CORRECTION,
 )
 
 
@@ -53,8 +52,8 @@ def compute_kring_distortion(
     base_vertices,
     base_faces,
     orig_indices,
-    k=7,
-    n_samples_per_ring=12,
+    k=2,
+    n_samples_per_ring=None,
     verbose=True,
 ):
     """Compute per-vertex metric distortion using k-ring geodesic distances.
@@ -63,6 +62,9 @@ def compute_kring_distortion(
     - Computes geodesic distances to k-ring neighbors on 3D surface
     - Compares with Euclidean distances on 2D flatmap
     - Returns percentage error per vertex: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
+
+    This should match plots in Fischl et al., 1999, and the computation
+    implemented in FreeSurfer.
 
     Parameters
     ----------
@@ -75,9 +77,10 @@ def compute_kring_distortion(
     orig_indices : ndarray of shape (N,)
         Mapping from patch vertex indices to full surface indices
     k : int
-        Number of rings to include (default: 7, same as autoflatten)
-    n_samples_per_ring : int
-        Angular samples per ring (default: 12, same as autoflatten)
+        Number of rings to include (default: 2, fast and accurate)
+    n_samples_per_ring : int or None
+        Angular samples per ring. If None, use all neighbors without angular
+        sampling (default: None, faster). Use 12 for pyflatten-style sampling.
     verbose : bool
         Print progress messages
 
@@ -92,26 +95,23 @@ def compute_kring_distortion(
 
     # Build mapping from full surface indices to patch indices
     # orig_indices[patch_idx] = full_idx, so we need the inverse
-    full_to_patch = {
-        full_idx: patch_idx for patch_idx, full_idx in enumerate(orig_indices)
-    }
+    full_to_patch = np.zeros(orig_indices.max() + 1, dtype=np.int64)
+    full_to_patch[orig_indices] = np.arange(len(orig_indices))
 
     # Extract the subgraph of the base surface that corresponds to the patch
-    # We need to compute k-ring distances on the FULL surface, then map back
+    # K-ring distances are computed on the patch subgraph only
     patch_vertices_3d = base_vertices[orig_indices]
 
     # Extract faces that are entirely within the patch
     patch_face_mask = np.all(np.isin(base_faces, orig_indices), axis=1)
     patch_faces_full = base_faces[patch_face_mask]
 
-    # Remap face indices from full surface to patch indices
-    patch_faces = np.array(
-        [[full_to_patch[v] for v in face] for face in patch_faces_full], dtype=np.int64
-    )
+    # Remap face indices from full surface to patch indices (vectorized)
+    patch_faces = full_to_patch[patch_faces_full]
 
     # Compute k-ring geodesic distances on the patch subgraph
     if n_samples_per_ring is None:
-        # Use all neighbors (no angular sampling) - faster for k=1
+        # Use all neighbors (no angular sampling); avoids angular-sampling overhead
         if verbose:
             print(f"Computing {k}-ring geodesic distances (all neighbors)...")
         k_rings, target_distances = compute_kring_geodesic_distances(
@@ -156,12 +156,17 @@ def compute_kring_distortion(
         d_2d = np.linalg.norm(xy[neighbors] - xy[v], axis=1)
 
         # Compute per-vertex distortion: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
-        abs_errors = np.abs(d_2d - targets)
-        vertex_distortion[v] = 100.0 * np.mean(abs_errors) / np.mean(targets)
+        mean_target = np.mean(targets)
+        if mean_target > 0.0:
+            abs_errors = np.abs(d_2d - targets)
+            vertex_distortion[v] = 100.0 * np.mean(abs_errors) / mean_target
 
-        # Accumulate for global mean
-        total_abs_error += np.sum(abs_errors)
-        total_target += np.sum(targets)
+            # Accumulate for global mean
+            total_abs_error += np.sum(abs_errors)
+            total_target += np.sum(targets)
+        else:
+            # If all target distances are zero, define local distortion as zero
+            vertex_distortion[v] = 0.0
 
     # Global mean distortion (same formula as autoflatten)
     mean_distortion = (
@@ -229,7 +234,7 @@ def plot_flatmap(
     show_flipped=True,
     show_boundary=True,
     distortion_cmap="viridis",
-    distortion_method="1ring",
+    distance_method="fast",
     dpi=150,
 ):
     """
@@ -259,8 +264,9 @@ def plot_flatmap(
         Show boundary vertices as dots
     distortion_cmap : str
         Colormap for the distortion visualization (default: viridis)
-    distortion_method : str
-        Method for computing distortion: "1ring" (fast, default) or "kring" (accurate)
+    distance_method : str
+        Method for computing distortion: "fast" (2-ring, all neighbors, default)
+        or "pyflatten" (7-ring, 12 angular samples per ring, more accurate but slower)
     dpi : int
         Resolution for saved figure
 
@@ -302,8 +308,8 @@ def plot_flatmap(
     n_flipped = np.sum(areas < 0)
 
     # Compute per-vertex distortion
-    if distortion_method == "kring":
-        # Accurate k-ring geodesic distances (same method as autoflatten, slower)
+    if distance_method == "pyflatten":
+        # Accurate 7-ring geodesic distances (same method as pyflatten, slower)
         k, n_samples = 7, 12
     else:
         # Fast 2-ring distances (default) - all neighbors, no angular sampling
@@ -423,7 +429,7 @@ def plot_flatmap(
         triang,
         vertex_dist,
         shading="gouraud",
-        cmap="viridis",
+        cmap=distortion_cmap,
         vmin=vmin,
         vmax=vmax,
     )
@@ -447,7 +453,7 @@ def plot_flatmap(
 
     # Color bars by distortion value using same colormap
     norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap_obj = plt.cm.get_cmap("viridis")
+    cmap_obj = plt.cm.get_cmap(distortion_cmap)
     colors = cmap_obj(norm(bin_centers))
 
     ax.bar(
