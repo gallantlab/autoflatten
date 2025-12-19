@@ -37,7 +37,7 @@ from autoflatten.freesurfer import create_patch_file, load_surface
 from autoflatten.logging import restore_logging, setup_logging
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
-from autoflatten.viz import plot_patch
+from autoflatten.viz import plot_patch, plot_projection
 
 
 def check_freesurfer_environment():
@@ -288,9 +288,24 @@ def run_projection(
         print(f"  Patch vertices: {n_patch_vertices}")
         print(f"  Output file: {patch_file}")
 
+        # Generate projection plot
+        print("\nGenerating Projection Plot")
+        print("-" * 26)
+        plot_output = os.path.join(output_dir, f"{hemi}.autoflatten.patch.png")
+        try:
+            plot_projection(
+                patch_path=patch_file,
+                subject_dir=subject_dir,
+                output_path=plot_output,
+            )
+        except Exception as e:
+            print(f"Warning: Failed to generate projection plot: {e}")
+
         print("\nRESULT")
         print("-" * 6)
         print(f"Patch file created: {patch_file}")
+        if os.path.exists(plot_output):
+            print(f"Projection plot: {plot_output}")
         print(f"Log file: {log_base}.log")
 
         # Footer
@@ -901,6 +916,44 @@ def cmd_plot(args):
         return 1
 
 
+def cmd_plot_projection(args):
+    """Plot a projection patch file showing the surface with cuts highlighted."""
+    print("Starting Autoflatten Projection Plotting...")
+
+    patch_file = args.patch
+    if not os.path.exists(patch_file):
+        print(f"Error: Patch file not found: {patch_file}")
+        return 1
+
+    # Determine subject directory
+    subject_dir = args.subject_dir if args.subject_dir else None
+
+    # Determine output path
+    if args.output:
+        output_path = os.path.abspath(args.output)
+    else:
+        # Default: same directory as patch, with .png extension
+        output_path = patch_file.replace(".3d", ".png")
+
+    print(f"Patch file: {patch_file}")
+    if subject_dir:
+        print(f"Subject directory: {subject_dir}")
+    print(f"Output: {output_path}")
+
+    try:
+        result = plot_projection(
+            patch_path=patch_file,
+            subject_dir=subject_dir,
+            output_path=output_path,
+        )
+        print(f"Successfully saved projection plot: {result}")
+        return 0
+    except Exception as e:
+        print(f"Failed to generate projection plot: {e}")
+        traceback.print_exc()
+        return 1
+
+
 # =============================================================================
 # Argument Parsers
 # =============================================================================
@@ -1177,9 +1230,29 @@ Examples:
     )
     parser_plot.set_defaults(func=cmd_plot)
 
+    # 'plot-projection' subcommand
+    parser_plot_projection = subparsers.add_parser(
+        "plot-projection",
+        help="Plot a projection patch file (3D surface with cuts)",
+    )
+    parser_plot_projection.add_argument(
+        "patch",
+        help="Path to the projection patch file (e.g., lh.autoflatten.patch.3d)",
+    )
+    parser_plot_projection.add_argument(
+        "--subject-dir",
+        help="Path to FreeSurfer subject directory (auto-detected if patch is in surf/)",
+    )
+    parser_plot_projection.add_argument(
+        "-o",
+        "--output",
+        help="Output path for the PNG image",
+    )
+    parser_plot_projection.set_defaults(func=cmd_plot_projection)
+
     # Handle default case: autoflatten /path/to/subject [options]
     # Insert 'run' subcommand when first arg looks like a path
-    known_commands = {"project", "flatten", "plot", "run"}
+    known_commands = {"project", "flatten", "plot", "plot-projection", "run"}
     if (
         len(sys.argv) > 1
         and sys.argv[1] not in known_commands
@@ -1196,6 +1269,8 @@ Examples:
         return cmd_flatten(args)
     elif args.command == "plot":
         return cmd_plot(args)
+    elif args.command == "plot-projection":
+        return cmd_plot_projection(args)
     elif args.command == "run":
         return cmd_run_full_pipeline(args)
     else:

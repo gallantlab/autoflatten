@@ -12,12 +12,71 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 import numpy as np
 
+import nibabel
+
 from autoflatten.freesurfer import read_patch, read_surface, extract_patch_faces
 from autoflatten.backends import find_base_surface
 from autoflatten.flatten.distance import (
     compute_kring_geodesic_distances,
     compute_kring_geodesic_distances_angular,
 )
+
+
+def load_curvature(curv_path):
+    """Load curvature data from FreeSurfer .curv file.
+
+    Parameters
+    ----------
+    curv_path : str
+        Path to the curvature file (e.g., lh.curv)
+
+    Returns
+    -------
+    curv : ndarray of shape (N,)
+        Per-vertex curvature values (positive = gyri, negative = sulci)
+    """
+    return nibabel.freesurfer.read_morph_data(curv_path)
+
+
+def _get_view_angles(hemi, view):
+    """Get elevation and azimuth for a specific view.
+
+    Parameters
+    ----------
+    hemi : str
+        Hemisphere ('lh' or 'rh')
+    view : str
+        View type ('medial', 'ventral', or 'frontal')
+
+    Returns
+    -------
+    elev, azim : tuple of float
+        Elevation and azimuth angles for ax.view_init()
+
+    Notes
+    -----
+    FreeSurfer coordinate system: X=right, Y=anterior, Z=superior.
+    Matplotlib view_init: azim rotates around Z axis, elev rotates around X axis.
+    """
+    if view == "medial":
+        # Medial view: looking AT the medial wall
+        # LH medial wall is at +X, so camera at +X looking toward -X (azim=0)
+        # RH medial wall is at -X, so camera at -X looking toward +X (azim=180)
+        if hemi == "lh":
+            return (0, 0)
+        else:
+            return (0, 180)
+    elif view == "ventral":
+        # Ventral view: looking from below
+        return (-90, 180)
+    elif view == "frontal":
+        # Frontal view: looking from anterior (front of brain)
+        # azim=-90 rotates so we look at the anterior surface
+        return (0, -90)
+    else:
+        raise ValueError(
+            f"Unknown view type: {view!r}. Must be 'medial', 'ventral', or 'frontal'."
+        )
 
 
 def compute_triangle_areas(vertices_2d, faces):
@@ -597,3 +656,264 @@ def plot_patch(
     )
 
     return final_img_name
+
+
+def plot_projection(
+    patch_path,
+    subject_dir=None,
+    output_path=None,
+    figsize=(12, 4),
+    dpi=150,
+    title=None,
+):
+    """Plot projection result on 3D inflated surface.
+
+    Creates a three-panel figure showing medial, ventral, and frontal views
+    of the inflated cortical surface colored by curvature, with removed
+    vertices (cuts + medial wall) highlighted in red.
+
+    Parameters
+    ----------
+    patch_path : str
+        Path to the projection patch file (e.g., lh.autoflatten.patch.3d)
+    subject_dir : str, optional
+        Path to FreeSurfer subject directory. If None, attempts to auto-detect
+        by looking for surf/ directory relative to patch_path.
+    output_path : str, optional
+        If provided, save figure to this path. Otherwise returns figure.
+    figsize : tuple
+        Figure size in inches (default: (12, 4))
+    dpi : int
+        Resolution for saved figure (default: 150)
+    title : str, optional
+        Custom title for the figure
+
+    Returns
+    -------
+    str or matplotlib.figure.Figure
+        If output_path is provided, returns the output path.
+        Otherwise returns the matplotlib figure.
+    """
+    # Detect hemisphere from patch filename
+    basename = os.path.basename(patch_path)
+    if basename.startswith("lh."):
+        hemi = "lh"
+    elif basename.startswith("rh."):
+        hemi = "rh"
+    else:
+        raise ValueError(
+            f"Cannot determine hemisphere from patch filename: {basename}. "
+            "Expected filename starting with 'lh.' or 'rh.'"
+        )
+
+    # Resolve subject_dir
+    if subject_dir is None:
+        # Try to find surf/ directory relative to patch path
+        patch_dir = Path(patch_path).parent
+        # Check if patch is in a surf/ directory
+        if patch_dir.name == "surf":
+            subject_dir = str(patch_dir.parent)
+        else:
+            raise ValueError(
+                f"Cannot auto-detect subject directory from {patch_path}. "
+                "Please provide --subject-dir argument."
+            )
+
+    surf_dir = os.path.join(subject_dir, "surf")
+    if not os.path.isdir(surf_dir):
+        # subject_dir might already be the surf directory
+        if os.path.isfile(os.path.join(subject_dir, f"{hemi}.inflated")):
+            surf_dir = subject_dir
+        else:
+            raise ValueError(
+                f"Cannot find surf directory in {subject_dir}. "
+                "Please verify the subject directory path."
+            )
+
+    # Read patch to get original_indices (vertices in patch)
+    _, orig_indices, _ = read_patch(patch_path)
+
+    # Load inflated surface
+    inflated_path = os.path.join(surf_dir, f"{hemi}.inflated")
+    if not os.path.exists(inflated_path):
+        raise FileNotFoundError(f"Inflated surface not found: {inflated_path}")
+    vertices, faces = read_surface(inflated_path)
+    n_vertices = len(vertices)
+
+    # Load curvature
+    curv_path = os.path.join(surf_dir, f"{hemi}.curv")
+    if os.path.exists(curv_path):
+        curv = load_curvature(curv_path)
+    else:
+        # Fall back to uniform coloring if curvature not available
+        print(f"Warning: Curvature file not found: {curv_path}")
+        curv = np.zeros(n_vertices)
+
+    # Mark faces that contain ANY removed vertex (these are cut/medial wall faces)
+    patch_vertex_set = set(orig_indices)
+    removed_set = set(range(n_vertices)) - patch_vertex_set
+    n_removed_vertices = len(removed_set)
+    face_is_cut = np.array(
+        [
+            faces[i, 0] in removed_set
+            or faces[i, 1] in removed_set
+            or faces[i, 2] in removed_set
+            for i in range(len(faces))
+        ]
+    )
+    n_cut_faces = face_is_cut.sum()
+
+    # Build title
+    if title is None:
+        subject_name = Path(subject_dir).name
+        title = f"{subject_name} {hemi} - autoflatten.patch.3d\n({n_removed_vertices:,} vertices, {n_cut_faces:,} faces removed)"
+
+    # Compute per-face colors:
+    # - Normal faces: gray based on curvature (sulci=dark, gyri=light)
+    # - Cut faces: RED
+    face_curv = curv[faces].mean(axis=1)  # Average curvature per face
+    gray_colors = np.where(face_curv > 0, 0.7, 0.3)  # Light for gyri, dark for sulci
+
+    # Build RGBA colors array
+    face_rgba = np.zeros((len(faces), 4))
+    # Normal faces: gray
+    face_rgba[~face_is_cut, 0] = gray_colors[~face_is_cut]
+    face_rgba[~face_is_cut, 1] = gray_colors[~face_is_cut]
+    face_rgba[~face_is_cut, 2] = gray_colors[~face_is_cut]
+    face_rgba[~face_is_cut, 3] = 1.0
+    # Cut faces: red
+    face_rgba[face_is_cut, 0] = 1.0
+    face_rgba[face_is_cut, 1] = 0.0
+    face_rgba[face_is_cut, 2] = 0.0
+    face_rgba[face_is_cut, 3] = 1.0
+
+    # Get vertex coordinates for each face: shape (n_faces, 3, 3)
+    verts_per_face = vertices[faces]
+
+    # Compute face normals for back-face culling
+    v0 = verts_per_face[:, 0, :]
+    v1 = verts_per_face[:, 1, :]
+    v2 = verts_per_face[:, 2, :]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    face_norm_lengths = np.linalg.norm(face_normals, axis=1, keepdims=True)
+    face_normals = face_normals / (face_norm_lengths + 1e-10)
+
+    # Compute face centroids for depth sorting
+    face_centroids = verts_per_face.mean(axis=1)
+
+    # Use 2D PolyCollection with manual projection for proper depth sorting
+    # Based on techniques from Nicolas Rougier's "Scientific Visualization: Python + Matplotlib"
+    # https://github.com/rougier/scientific-visualization-book
+    from matplotlib.collections import PolyCollection
+
+    # Create figure with 3 panels (medial, ventral, and frontal views)
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+
+    views = ["medial", "ventral", "frontal"]
+
+    # First pass: compute rotation matrices and store view data
+    # Use medial view's y-extent as reference for consistent height
+    view_data = []
+    margin = 5
+
+    for view in views:
+        elev, azim = _get_view_angles(hemi, view)
+        elev_rad = np.radians(elev)
+        azim_rad = np.radians(azim)
+
+        cos_a, sin_a = np.cos(azim_rad), np.sin(azim_rad)
+        cos_e, sin_e = np.cos(elev_rad), np.sin(elev_rad)
+
+        # Base rotation for azim=0: look from +X
+        # x' = y, y' = z, z' = x (depth)
+        R_base = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+        Rz = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]])
+        Rx = np.array([[1, 0, 0], [0, cos_e, -sin_e], [0, sin_e, cos_e]])
+        R = Rx @ R_base @ Rz
+
+        rotated_verts = vertices @ R.T
+        rotated_face_verts = verts_per_face @ R.T
+        rotated_normals = face_normals @ R.T
+        rotated_centroids = face_centroids @ R.T
+
+        # Back-face culling
+        visible_mask = rotated_normals[:, 2] > 0
+        visible_face_verts = rotated_face_verts[visible_mask]
+        visible_colors = face_rgba[visible_mask]
+        visible_centroids = rotated_centroids[visible_mask]
+
+        # Sort by depth
+        depth_order = np.argsort(visible_centroids[:, 2])
+        sorted_face_verts = visible_face_verts[depth_order]
+        sorted_colors = visible_colors[depth_order]
+
+        # Compute limits
+        x_min, x_max = (
+            rotated_verts[:, 0].min() - margin,
+            rotated_verts[:, 0].max() + margin,
+        )
+        y_min, y_max = (
+            rotated_verts[:, 1].min() - margin,
+            rotated_verts[:, 1].max() + margin,
+        )
+
+        view_data.append(
+            {
+                "sorted_face_verts": sorted_face_verts,
+                "sorted_colors": sorted_colors,
+                "x_min": x_min,
+                "x_max": x_max,
+                "y_min": y_min,
+                "y_max": y_max,
+                "y_center": (y_min + y_max) / 2,
+                "x_extent": x_max - x_min,
+                "y_extent": y_max - y_min,
+            }
+        )
+
+    # Use medial view's y-extent as reference for consistent height
+    ref = view_data[0]
+    ref_y_extent = ref["y_extent"]
+
+    # Compute width ratios based on each view's actual x-extent
+    width_ratios = [data["x_extent"] for data in view_data]
+
+    # Use GridSpec for variable-width subplots
+    from matplotlib.gridspec import GridSpec
+
+    gs = GridSpec(1, 3, figure=fig, width_ratios=width_ratios)
+
+    # Second pass: plot with consistent height but variable width
+    for i, (view, data) in enumerate(zip(views, view_data)):
+        ax = fig.add_subplot(gs[i])
+
+        # Project to 2D
+        verts_2d = data["sorted_face_verts"][:, :, :2]
+
+        # Create 2D PolyCollection
+        poly = PolyCollection(
+            verts_2d,
+            facecolors=data["sorted_colors"],
+            edgecolors="face",
+            linewidths=0,
+            antialiaseds=False,
+        )
+        ax.add_collection(poly)
+
+        # Set axis limits - use each view's x-extent, but medial's y-extent for height
+        ax.set_xlim(data["x_min"], data["x_max"])
+        y_center = data["y_center"]
+        ax.set_ylim(y_center - ref_y_extent / 2, y_center + ref_y_extent / 2)
+        ax.set_aspect("equal")
+        ax.axis("off")
+
+    # Add main title
+    fig.suptitle(title, fontsize=12, y=0.95)
+
+    if output_path:
+        plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        print(f"Saved projection plot to {output_path}")
+        plt.close()
+        return output_path
+    else:
+        return fig

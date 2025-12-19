@@ -11,6 +11,8 @@ from autoflatten.viz import (
     compute_kring_distortion,
     compute_triangle_areas,
     parse_log_file,
+    load_curvature,
+    _get_view_angles,
 )
 
 
@@ -419,3 +421,89 @@ class TestComputeKringDistortion:
 
         assert vertex_dist.shape == (len(orig_indices),)
         assert isinstance(mean_dist, float)
+
+
+class TestLoadCurvature:
+    """Tests for load_curvature function."""
+
+    def test_load_curvature_returns_array(self):
+        """Test that load_curvature returns a numpy array."""
+        import nibabel
+        import struct
+
+        # Create a minimal curv file in FreeSurfer format
+        # FreeSurfer curv format: 3 bytes magic, 4 bytes n_vertices, 4 bytes n_faces,
+        # 4 bytes vals_per_vertex, then n_vertices floats
+        n_vertices = 10
+        curv_values = np.random.randn(n_vertices).astype(np.float32)
+
+        with tempfile.NamedTemporaryFile(suffix=".curv", delete=False) as f:
+            temp_path = f.name
+            # Write new-style curv file
+            # Magic number (3 bytes): 0xff 0xff 0xff
+            f.write(b"\xff\xff\xff")
+            # Number of vertices (4 bytes big-endian)
+            f.write(struct.pack(">i", n_vertices))
+            # Number of faces (4 bytes big-endian)
+            f.write(struct.pack(">i", 0))
+            # Values per vertex (4 bytes big-endian)
+            f.write(struct.pack(">i", 1))
+            # Curvature values (big-endian floats)
+            for v in curv_values:
+                f.write(struct.pack(">f", v))
+
+        try:
+            result = load_curvature(temp_path)
+            assert isinstance(result, np.ndarray)
+            assert result.shape == (n_vertices,)
+            assert np.allclose(result, curv_values, atol=1e-6)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+class TestGetViewAngles:
+    """Tests for _get_view_angles function."""
+
+    def test_medial_view_lh(self):
+        """Test medial view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "medial")
+        assert elev == 0
+        assert azim == 0
+
+    def test_medial_view_rh(self):
+        """Test medial view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "medial")
+        assert elev == 0
+        assert azim == 180
+
+    def test_ventral_view_lh(self):
+        """Test ventral view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "ventral")
+        assert elev == -90
+        assert azim == 180
+
+    def test_ventral_view_rh(self):
+        """Test ventral view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "ventral")
+        assert elev == -90
+        assert azim == 180
+
+    def test_frontal_view_lh(self):
+        """Test frontal view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "frontal")
+        assert elev == 0
+        assert azim == -90
+
+    def test_frontal_view_rh(self):
+        """Test frontal view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "frontal")
+        assert elev == 0
+        assert azim == -90
+
+    def test_invalid_view_raises(self):
+        """Test that invalid view type raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unknown view type"):
+            _get_view_angles("lh", "invalid")
