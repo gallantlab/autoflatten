@@ -2260,7 +2260,10 @@ class TestInvalidInputHandling:
         k_rings = []
         target_distances = []
 
-        with pytest.raises(ValueError, match="empty sequence"):
+        # Error message varies by Python version:
+        # - Python 3.10: "max() arg is an empty sequence"
+        # - Python 3.12: "max() iterable argument is empty"
+        with pytest.raises(ValueError, match="empty"):
             prepare_metric_data(k_rings, target_distances)
 
     def test_build_mesh_graph_single_triangle(self):
