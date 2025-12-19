@@ -411,11 +411,12 @@ def plot_flatmap(
     log_path = flat_patch_path + ".log"
     log_results = parse_log_file(log_path)
 
-    # Build title
+    # Build title: "{subject} {filename}"
     if title:
         main_title = title
-    elif log_results.get("subject") and log_results.get("hemisphere"):
-        main_title = f"{log_results['subject']} {log_results['hemisphere']} - flatmap"
+    elif log_results.get("subject"):
+        filename = Path(flat_patch_path).name
+        main_title = f"{log_results['subject']} {filename}"
     else:
         main_title = Path(flat_patch_path).name
 
@@ -654,8 +655,9 @@ def plot_patch(
     if not os.path.exists(base_surface_path):
         base_surface_path = os.path.join(subject_dir, surface)
 
-    # Generate title
-    title = f"{subject} {hemi} - flatmap"
+    # Generate title: "{subject} {filename}"
+    filename = os.path.basename(patch_file)
+    title = f"{subject} {filename}"
 
     # Use the new matplotlib-based plotting
     plot_flatmap(
@@ -787,11 +789,12 @@ def plot_projection(
     )
     n_cut_faces = face_is_cut.sum()
 
-    # Build title
+    # Build title: "{subject} {filename}\n{stats}"
     if title is None:
         subject_name = Path(subject_dir).name
+        filename = Path(patch_path).name
         title = (
-            f"{subject_name} {hemi} - projection\n"
+            f"{subject_name} {filename}\n"
             f"{n_vertices:,} vertices, {n_removed_vertices:,} removed | "
             f"{n_cut_faces:,} cut faces"
         )

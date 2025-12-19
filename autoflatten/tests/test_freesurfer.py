@@ -256,6 +256,59 @@ def test_write_patch_uint32_indices():
         np.testing.assert_allclose(read_vertices, vertices, rtol=1e-5)
 
 
+def test_patch_follows_freesurfer_convention():
+    """
+    Test that patch files follow FreeSurfer's border vertex convention.
+
+    FreeSurfer convention (from mrisurf.c):
+    - Border vertices: negative index -(vno+1)
+    - Interior vertices: positive index (vno+1)
+
+    This test ensures we don't regress to the inverted convention.
+    """
+    import struct
+    from autoflatten.freesurfer import write_patch
+
+    n_vertices = 10
+    vertices = np.random.rand(n_vertices, 3).astype(np.float32)
+    original_indices = np.arange(n_vertices, dtype=np.int32)
+    is_border = np.zeros(n_vertices, dtype=bool)
+    is_border[0] = True  # First vertex is border
+    is_border[5] = True  # Sixth vertex is border
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        patch_file = os.path.join(temp_dir, "test_convention.patch")
+        write_patch(patch_file, vertices, original_indices, is_border)
+
+        # Read raw bytes and verify FreeSurfer convention
+        with open(patch_file, "rb") as fp:
+            header = struct.unpack(">2i", fp.read(8))
+            assert header[0] == -1, "Invalid header"
+            assert header[1] == n_vertices, "Wrong vertex count"
+
+            for i in range(n_vertices):
+                raw_idx = struct.unpack(">i", fp.read(4))[0]
+                fp.read(12)  # skip xyz
+
+                expected_vno = original_indices[i]
+                if is_border[i]:
+                    # Border vertices should have NEGATIVE index -(vno+1)
+                    expected_raw = -(expected_vno + 1)
+                    assert raw_idx < 0, (
+                        f"Border vertex {i} should have negative index, got {raw_idx}"
+                    )
+                else:
+                    # Interior vertices should have POSITIVE index (vno+1)
+                    expected_raw = expected_vno + 1
+                    assert raw_idx > 0, (
+                        f"Interior vertex {i} should have positive index, got {raw_idx}"
+                    )
+
+                assert raw_idx == expected_raw, (
+                    f"Vertex {i}: expected raw index {expected_raw}, got {raw_idx}"
+                )
+
+
 def test_read_freesurfer_label():
     """
     Test reading a FreeSurfer label file.

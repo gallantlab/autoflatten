@@ -815,8 +815,8 @@ def read_patch(filepath):
     FreeSurfer patch binary format:
     - Header: 2 big-endian int32 [-1, n_vertices]
     - Per vertex: 1 int32 (signed index) + 3 float32 (x, y, z)
-    - Border vertices: positive index (idx + 1)
-    - Interior vertices: negative index (-(idx + 1))
+    - Border vertices: negative index (-(idx + 1))
+    - Interior vertices: positive index (idx + 1)
 
     The patch file does NOT contain face information. To get faces,
     use `extract_patch_faces` with the original surface.
@@ -844,12 +844,13 @@ def read_patch(filepath):
             data = struct.unpack(">i3f", fp.read(16))
             raw_idx = data[0]
 
-            # Decode index: positive = border, negative = interior
-            if raw_idx > 0:
-                original_indices[i] = raw_idx - 1  # Convert to 0-based
+            # Decode index: negative = border, positive = interior
+            # (FreeSurfer convention: border vertices use -(vno+1))
+            if raw_idx < 0:
+                original_indices[i] = -raw_idx - 1  # Convert to 0-based
                 is_border[i] = True
             else:
-                original_indices[i] = -raw_idx - 1  # Convert to 0-based
+                original_indices[i] = raw_idx - 1  # Convert to 0-based
                 is_border[i] = False
 
             vertices[i] = data[1:4]
@@ -877,8 +878,8 @@ def write_patch(filepath, vertices, original_indices, is_border=None):
     FreeSurfer patch binary format:
     - Header: 2 big-endian int32 [-1, n_vertices]
     - Per vertex: 1 int32 (signed index) + 3 float32 (x, y, z)
-    - Border vertices: positive index (idx + 1)
-    - Interior vertices: negative index (-(idx + 1))
+    - Border vertices: negative index (-(idx + 1))
+    - Interior vertices: positive index (idx + 1)
 
     Examples
     --------
@@ -907,10 +908,11 @@ def write_patch(filepath, vertices, original_indices, is_border=None):
             # Convert to Python int to avoid unsigned integer overflow
             # (numpy uint32 indices would wrap around when negated)
             idx = int(original_indices[i])
+            # FreeSurfer convention: negative = border, positive = interior
             if is_border[i]:
-                raw_idx = idx + 1  # Positive for border
+                raw_idx = -(idx + 1)  # Negative for border
             else:
-                raw_idx = -(idx + 1)  # Negative for interior
+                raw_idx = idx + 1  # Positive for interior
 
             fp.write(struct.pack(">i3f", raw_idx, *vertices[i]))
 
