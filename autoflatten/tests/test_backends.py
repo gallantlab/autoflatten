@@ -202,41 +202,21 @@ class TestCheckPyflattenAvailable:
         assert result is True
 
     def test_check_requires_jax_igl_numba(self):
-        """Test that the function checks for jax, igl, and numba."""
-        from unittest.mock import patch
+        """Test that the function checks for jax, igl, and numba.
 
-        from autoflatten.backends.pyflatten import _check_pyflatten_available
-
-        # Mock a missing import
-        original_import = __builtins__["__import__"]
-
-        def mock_import(name, *args, **kwargs):
-            if name == "jax":
-                raise ImportError("No module named 'jax'")
-            return original_import(name, *args, **kwargs)
-
-        with patch.dict("builtins.__dict__", {"__import__": mock_import}):
-            # This should return False when jax is missing
-            # Note: This test may be fragile due to caching
-            pass  # Skip actual test due to import caching
+        Note: This test cannot reliably verify import failure detection because
+        Python's import system caches modules. Once jax/igl/numba are imported,
+        they remain cached for the entire test session.
+        """
+        pytest.skip(
+            "Cannot test import failure detection due to Python import caching. "
+            "The _check_pyflatten_available function is validated by the "
+            "test_returns_true_when_deps_available test when deps are present."
+        )
 
 
 class TestHemisphereDetection:
     """Tests for hemisphere detection from patch file paths."""
-
-    def test_detect_lh_from_path(self):
-        """Test detecting left hemisphere from path."""
-        # The find_base_surface function already handles this
-        # Test the internal logic
-        patch_path = "/path/to/sub-01/surf/lh.autoflatten.patch.3d"
-        basename = os.path.basename(patch_path)
-        assert basename.startswith("lh.")
-
-    def test_detect_rh_from_path(self):
-        """Test detecting right hemisphere from path."""
-        patch_path = "/path/to/sub-01/surf/rh.autoflatten.patch.3d"
-        basename = os.path.basename(patch_path)
-        assert basename.startswith("rh.")
 
     def test_find_base_surface_extracts_correct_hemisphere(self):
         """Test that find_base_surface uses correct hemisphere prefix."""
@@ -267,7 +247,9 @@ class TestBackendBaseClass:
     def test_backend_is_abstract(self):
         """Test that FlattenBackend cannot be instantiated directly."""
         # FlattenBackend has abstract methods, so direct instantiation should fail
-        with pytest.raises(TypeError, match="Can't instantiate abstract class"):
+        with pytest.raises(
+            TypeError, match=r"Can't instantiate abstract class.*FlattenBackend"
+        ):
             FlattenBackend()
 
     def test_pyflatten_inherits_from_base(self):

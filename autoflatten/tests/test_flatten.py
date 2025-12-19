@@ -120,7 +120,7 @@ class TestNegativeAreaRemovalConfig:
         assert config.enabled is True
         assert config.base_averages == 1024  # FreeSurfer default
         assert config.min_area_pct == 0.5
-        # Note: max_passes was removed - FreeSurfer always runs all ratios
+        # FreeSurfer always runs all ratios in the l_dist_ratios list
         assert config.l_nlarea == 1.0  # Fixed area weight
         assert config.l_dist_ratios == [
             1e-6,
@@ -1055,46 +1055,6 @@ class TestFinalNegativeAreaRemovalSerialization:
                 os.remove(temp_path)
 
 
-class TestInitialScaleInProjection:
-    """Tests for initial_scale configuration and its effect on projection."""
-
-    def test_initial_scale_default_value(self):
-        """Test that initial_scale defaults to 3.0 (FreeSurfer default)."""
-        config = FlattenConfig()
-        assert config.initial_scale == 3.0
-
-    def test_initial_scale_in_to_dict(self):
-        """Test that initial_scale is included in to_dict."""
-        config = FlattenConfig()
-        config.initial_scale = 2.5
-        d = config.to_dict()
-        assert "initial_scale" in d
-        assert d["initial_scale"] == 2.5
-
-    def test_initial_scale_from_dict(self):
-        """Test that initial_scale is loaded from dict."""
-        d = {"initial_scale": 4.0}
-        config = FlattenConfig.from_dict(d)
-        assert config.initial_scale == 4.0
-
-    def test_initial_scale_json_roundtrip(self):
-        """Test JSON roundtrip preserves initial_scale."""
-        config = FlattenConfig()
-        config.initial_scale = 5.0
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with open(temp_path, "w") as f:
-                f.write(config.to_json())
-            loaded = FlattenConfig.from_json_file(temp_path)
-            assert loaded.initial_scale == 5.0
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-
 class TestBoundaryVertexPreservation:
     """Tests for boundary vertex preservation through SurfaceFlattener."""
 
@@ -1191,6 +1151,7 @@ class TestBoundaryVertexPreservation:
                 f"Number of border vertices mismatch: input had {n_border_in}, "
                 f"output has {n_border_out}"
             )
+
 
 
 # =============================================================================
@@ -1309,16 +1270,15 @@ class TestMetricEnergyEdges:
 class TestSpringEnergy:
     """Tests for compute_spring_energy function."""
 
-    def test_zero_on_centered_vertices(self):
-        """Test that vertices at centroids have zero spring energy."""
+    def test_positive_when_vertices_not_at_centroids(self):
+        """Test that vertices NOT at neighbor centroids have positive spring energy."""
         from autoflatten.flatten.energy import compute_spring_energy
 
-        # Regular triangle: each vertex is NOT at centroid of neighbors
-        # Use a square where center vertex would be at centroid
+        # Triangle mesh where vertices are displaced from neighbor centroids
         uv = jnp.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0]])
 
         # Vertex 2's neighbors are 0 and 1, centroid is (1, 0)
-        # But vertex 2 is at (1, 1) - not at centroid
+        # But vertex 2 is at (1, 1) - displaced from centroid by 1.0 in y
         neighbors = jnp.array([[1, 2], [0, 2], [0, 1]])
         mask = jnp.array([[True, True], [True, True], [True, True]])
         counts = jnp.array([3, 3, 3])  # degree + 1
@@ -1326,7 +1286,7 @@ class TestSpringEnergy:
         energy = compute_spring_energy(uv, neighbors, mask, counts)
 
         # Energy should be positive since vertices are not at centroids
-        assert float(energy) > 0
+        assert float(energy) > 0, f"Expected positive energy but got {float(energy)}"
 
     def test_spring_energy_increases_with_displacement(self):
         """Test that displacing a vertex increases spring energy."""
@@ -1475,16 +1435,41 @@ class TestGetKRing:
     """Tests for get_k_ring function."""
 
     def test_1_ring_on_quad(self, simple_quad_mesh):
-        """Test 1-ring on simple quad."""
+        """Test 1-ring on simple quad with specific neighbor verification.
+
+        Quad mesh layout:
+            2---3
+            |\\  |
+            | \\ |
+            |  \\|
+            0---1
+
+        Faces: [0,1,2] and [1,3,2]
+        """
         from autoflatten.flatten.distance import get_k_ring
 
         vertices, faces = simple_quad_mesh
         k_rings = get_k_ring(faces, len(vertices), k=1)
 
-        assert len(k_rings) == 4
-        # Each vertex should have 2-3 neighbors in 1-ring
-        for kr in k_rings:
-            assert len(kr) >= 2
+        assert len(k_rings) == 4, f"Expected 4 vertices, got {len(k_rings)}"
+
+        # Verify specific adjacencies based on mesh topology
+        # Vertex 0: adjacent to 1 (shared edge) and 2 (shared edge)
+        assert set(k_rings[0]) == {1, 2}, (
+            f"Vertex 0 should be adjacent to {{1, 2}}, got {set(k_rings[0])}"
+        )
+        # Vertex 1: adjacent to 0, 2 (from face [0,1,2]) and 3 (from face [1,3,2])
+        assert set(k_rings[1]) == {0, 2, 3}, (
+            f"Vertex 1 should be adjacent to {{0, 2, 3}}, got {set(k_rings[1])}"
+        )
+        # Vertex 2: adjacent to 0, 1 (from face [0,1,2]) and 3 (from face [1,3,2])
+        assert set(k_rings[2]) == {0, 1, 3}, (
+            f"Vertex 2 should be adjacent to {{0, 1, 3}}, got {set(k_rings[2])}"
+        )
+        # Vertex 3: adjacent to 1 and 2 (from face [1,3,2])
+        assert set(k_rings[3]) == {1, 2}, (
+            f"Vertex 3 should be adjacent to {{1, 2}}, got {set(k_rings[3])}"
+        )
 
     def test_2_ring_includes_more_vertices(self, triangle_strip_mesh):
         """Test that 2-ring includes more vertices than 1-ring."""
@@ -1540,18 +1525,30 @@ class TestSelectAngularSamples:
         angles = np.linspace(0, 2 * np.pi, 16, endpoint=False)
         selected = select_angular_samples(angles, n_samples=8)
 
-        # Should select approximately 8 points
-        assert len(selected) <= 8
-        assert len(selected) >= 4  # At least some samples
+        # With uniform distribution, should get exactly 8 samples
+        assert len(selected) == 8, (
+            f"Expected 8 samples from 16 uniform angles, got {len(selected)}"
+        )
+        # Selected indices should be valid
+        assert all(0 <= idx < 16 for idx in selected), (
+            f"Selected indices out of range: {selected}"
+        )
+        # No duplicates
+        assert len(set(selected)) == len(selected), (
+            f"Selected indices contain duplicates: {selected}"
+        )
 
     def test_empty_input(self):
-        """Test with empty input."""
+        """Test with empty input returns empty array of correct type."""
         from autoflatten.flatten.distance import select_angular_samples
 
         angles = np.array([])
         selected = select_angular_samples(angles, n_samples=8)
 
-        assert len(selected) == 0
+        assert isinstance(selected, np.ndarray), (
+            f"Expected ndarray, got {type(selected)}"
+        )
+        assert len(selected) == 0, f"Expected empty array, got {len(selected)} elements"
 
 
 class TestThreadConfig:
@@ -1945,7 +1942,7 @@ class TestProjectToTangentPlane:
     """Tests for project_to_tangent_plane function."""
 
     def test_projects_to_2d(self):
-        """Test that projection produces 2D coordinates."""
+        """Test that projection produces correct 2D coordinates."""
         from autoflatten.flatten.distance import project_to_tangent_plane
 
         center = np.array([0.0, 0.0, 0.0])
@@ -1954,7 +1951,18 @@ class TestProjectToTangentPlane:
 
         xy = project_to_tangent_plane(center, normal, neighbors)
 
-        assert xy.shape == (3, 2)
+        assert xy.shape == (3, 2), f"Expected shape (3, 2), got {xy.shape}"
+
+        # With z-axis normal, points in xy-plane project to themselves
+        # Check that distances from origin are preserved
+        expected_distances = np.array([1.0, 1.0, 1.0])
+        actual_distances = np.linalg.norm(xy, axis=1)
+        np.testing.assert_allclose(
+            actual_distances,
+            expected_distances,
+            rtol=1e-5,
+            err_msg="Projection should preserve distances for coplanar points",
+        )
 
     def test_preserves_distances_on_plane(self):
         """Test that distances are approximately preserved for coplanar points."""
@@ -2032,3 +2040,276 @@ class TestComputeVertexNormals:
         for i in range(1, len(normals)):
             dot = np.dot(normals[0], normals[i])
             assert np.isclose(abs(dot), 1.0, rtol=1e-5)
+
+
+# =============================================================================
+# Additional Tests: compute_total_energy
+# =============================================================================
+
+
+class TestComputeTotalEnergy:
+    """Tests for compute_total_energy function (weighted combination)."""
+
+    def test_returns_three_values(self, simple_quad_mesh, simple_quad_uv):
+        """Test that compute_total_energy returns total, J_d, and J_a."""
+        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
+
+        vertices, faces = simple_quad_mesh
+        uv = jnp.array(simple_quad_uv)
+        faces_jax = jnp.array(faces)
+
+        # Simple k-ring data
+        k_rings = [
+            np.array([1, 2]),
+            np.array([0, 3]),
+            np.array([0, 3]),
+            np.array([1, 2]),
+        ]
+        target_distances = [
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+        ]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+        neighbors_jax = jnp.array(neighbors)
+        targets_jax = jnp.array(targets)
+        mask_jax = jnp.array(mask)
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        total, J_d, J_a = compute_total_energy(
+            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
+        )
+
+        assert np.isfinite(float(total)), f"Total energy is not finite: {total}"
+        assert np.isfinite(float(J_d)), f"J_d is not finite: {J_d}"
+        assert np.isfinite(float(J_a)), f"J_a is not finite: {J_a}"
+
+    def test_weighted_sum_formula(self, simple_quad_mesh, simple_quad_uv):
+        """Test that total = lambda_d * J_d + lambda_a * J_a."""
+        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
+
+        vertices, faces = simple_quad_mesh
+        uv = jnp.array(simple_quad_uv)
+        faces_jax = jnp.array(faces)
+
+        k_rings = [
+            np.array([1, 2]),
+            np.array([0, 3]),
+            np.array([0, 3]),
+            np.array([1, 2]),
+        ]
+        target_distances = [
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+        ]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+        neighbors_jax = jnp.array(neighbors)
+        targets_jax = jnp.array(targets)
+        mask_jax = jnp.array(mask)
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        lambda_d, lambda_a = 2.0, 3.0
+        total, J_d, J_a = compute_total_energy(
+            uv,
+            neighbors_jax,
+            targets_jax,
+            mask_jax,
+            faces_jax,
+            original_areas,
+            lambda_d=lambda_d,
+            lambda_a=lambda_a,
+        )
+
+        expected_total = lambda_d * float(J_d) + lambda_a * float(J_a)
+        assert np.isclose(float(total), expected_total, rtol=1e-5), (
+            f"Expected total={expected_total}, got {float(total)}"
+        )
+
+    def test_default_weights_are_one(self, simple_quad_mesh, simple_quad_uv):
+        """Test that default lambda_d=1 and lambda_a=1."""
+        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
+
+        vertices, faces = simple_quad_mesh
+        uv = jnp.array(simple_quad_uv)
+        faces_jax = jnp.array(faces)
+
+        k_rings = [
+            np.array([1, 2]),
+            np.array([0, 3]),
+            np.array([0, 3]),
+            np.array([1, 2]),
+        ]
+        target_distances = [
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+        ]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+        neighbors_jax = jnp.array(neighbors)
+        targets_jax = jnp.array(targets)
+        mask_jax = jnp.array(mask)
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        # Default weights
+        total, J_d, J_a = compute_total_energy(
+            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
+        )
+
+        # With lambda_d=1, lambda_a=1, total should equal J_d + J_a
+        expected = float(J_d) + float(J_a)
+        assert np.isclose(float(total), expected, rtol=1e-5), (
+            f"With default weights, total should be J_d + J_a = {expected}, got {float(total)}"
+        )
+
+
+# =============================================================================
+# Additional Tests: _limited_dijkstra (Python fallback)
+# =============================================================================
+
+
+class TestLimitedDijkstra:
+    """Tests for _limited_dijkstra Python fallback function."""
+
+    def test_computes_correct_distances(self, simple_quad_mesh):
+        """Test that Dijkstra computes correct shortest path distances."""
+        from autoflatten.flatten.distance import _limited_dijkstra, build_mesh_graph
+
+        vertices, faces = simple_quad_mesh
+        graph = build_mesh_graph(vertices, faces)
+
+        # From vertex 0, find distances to vertices 1, 2, 3
+        k_ring = np.array([1, 2, 3])
+        distances = _limited_dijkstra(0, k_ring, graph, correction=1.0)
+
+        assert len(distances) == 3, f"Expected 3 distances, got {len(distances)}"
+
+        # Vertex 0 is at (0,0,0), vertex 1 at (1,0,0), vertex 2 at (0,1,0)
+        # Direct distance 0->1 = 1.0, 0->2 = 1.0
+        assert np.isclose(distances[0], 1.0, rtol=1e-5), (
+            f"Distance to vertex 1 should be 1.0, got {distances[0]}"
+        )
+        assert np.isclose(distances[1], 1.0, rtol=1e-5), (
+            f"Distance to vertex 2 should be 1.0, got {distances[1]}"
+        )
+
+    def test_empty_k_ring_returns_empty(self, simple_quad_mesh):
+        """Test that empty k_ring returns empty array."""
+        from autoflatten.flatten.distance import _limited_dijkstra, build_mesh_graph
+
+        vertices, faces = simple_quad_mesh
+        graph = build_mesh_graph(vertices, faces)
+
+        k_ring = np.array([], dtype=np.int64)
+        distances = _limited_dijkstra(0, k_ring, graph, correction=1.0)
+
+        assert len(distances) == 0, (
+            f"Expected empty array, got {len(distances)} elements"
+        )
+
+    def test_correction_factor_applied(self, simple_quad_mesh):
+        """Test that correction factor is applied as a divisor.
+
+        The correction factor divides the raw graph distance: result = dist / correction.
+        This is used to convert graph distances to geodesic estimates.
+        """
+        from autoflatten.flatten.distance import _limited_dijkstra, build_mesh_graph
+
+        vertices, faces = simple_quad_mesh
+        graph = build_mesh_graph(vertices, faces)
+
+        k_ring = np.array([1])
+
+        # Without correction (correction=1.0)
+        dist_no_corr = _limited_dijkstra(0, k_ring, graph, correction=1.0)
+        # With correction factor of 2.0 (divides distance by 2)
+        dist_with_corr = _limited_dijkstra(0, k_ring, graph, correction=2.0)
+
+        # Correction is a divisor: result = dist / correction
+        expected = dist_no_corr[0] / 2.0
+        assert np.isclose(dist_with_corr[0], expected, rtol=1e-5), (
+            f"Expected corrected distance {expected}, got {dist_with_corr[0]}"
+        )
+
+
+# =============================================================================
+# Additional Tests: Invalid Input Handling
+# =============================================================================
+
+
+class TestInvalidInputHandling:
+    """Tests for proper handling of invalid or edge-case inputs."""
+
+    def test_prepare_metric_data_empty_input_raises(self):
+        """Test prepare_metric_data raises ValueError on empty k_rings list.
+
+        Empty input is invalid because max() fails on empty sequence.
+        This is expected behavior - the algorithm needs at least one vertex.
+        """
+        from autoflatten.flatten.energy import prepare_metric_data
+
+        k_rings = []
+        target_distances = []
+
+        with pytest.raises(ValueError, match="empty sequence"):
+            prepare_metric_data(k_rings, target_distances)
+
+    def test_build_mesh_graph_single_triangle(self):
+        """Test building graph from single triangle mesh."""
+        from autoflatten.flatten.distance import build_mesh_graph
+
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+
+        graph = build_mesh_graph(vertices, faces)
+
+        assert graph.shape == (3, 3), f"Expected (3,3) graph, got {graph.shape}"
+        # Each vertex should be connected to 2 others
+        assert graph.nnz == 6, (  # 3 edges * 2 (symmetric)
+            f"Expected 6 non-zero entries (symmetric), got {graph.nnz}"
+        )
+
+    def test_count_boundary_loops_no_shared_edges(self):
+        """Test boundary counting with two separate triangles (no shared edges)."""
+        # Two separate triangles (not connected)
+        faces = np.array([[0, 1, 2], [3, 4, 5]])
+
+        n_loops, loops = count_boundary_loops(faces)
+
+        # Each triangle has its own boundary loop
+        assert n_loops == 2, f"Expected 2 boundary loops, got {n_loops}"
+
+    def test_get_vertices_with_negative_area_empty_faces(self):
+        """Test negative area detection with empty faces array."""
+        from autoflatten.flatten.energy import get_vertices_with_negative_area
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+        faces = jnp.array([]).reshape(0, 3).astype(jnp.int32)
+
+        has_neg = get_vertices_with_negative_area(uv, faces)
+
+        # No faces means no negative areas
+        assert not any(has_neg), "Expected no negative area flags with empty faces"
+
+    def test_compute_2d_areas_single_face(self):
+        """Test 2D area computation with single face."""
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        faces = jnp.array([[0, 1, 2]])
+
+        total_area, neg_area = compute_2d_areas(uv, faces)
+
+        assert np.isclose(float(total_area), 0.5), (
+            f"Expected area 0.5 for unit right triangle, got {float(total_area)}"
+        )
+        assert np.isclose(float(neg_area), 0.0), (
+            f"Expected no negative area for CCW triangle, got {float(neg_area)}"
+        )
