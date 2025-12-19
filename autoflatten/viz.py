@@ -768,24 +768,11 @@ def plot_projection(
         subject_name = Path(subject_dir).name
         title = f"{subject_name} {hemi} - autoflatten.patch.3d\n({n_removed_vertices:,} vertices, {n_cut_faces:,} faces removed)"
 
-    # Compute per-face colors:
+    # Compute base per-face colors (will be modulated by lighting per view):
     # - Normal faces: gray based on curvature (sulci=dark, gyri=light)
     # - Cut faces: RED
     face_curv = curv[faces].mean(axis=1)  # Average curvature per face
-    gray_colors = np.where(face_curv > 0, 0.7, 0.3)  # Light for gyri, dark for sulci
-
-    # Build RGBA colors array
-    face_rgba = np.zeros((len(faces), 4))
-    # Normal faces: gray
-    face_rgba[~face_is_cut, 0] = gray_colors[~face_is_cut]
-    face_rgba[~face_is_cut, 1] = gray_colors[~face_is_cut]
-    face_rgba[~face_is_cut, 2] = gray_colors[~face_is_cut]
-    face_rgba[~face_is_cut, 3] = 1.0
-    # Cut faces: red
-    face_rgba[face_is_cut, 0] = 1.0
-    face_rgba[face_is_cut, 1] = 0.0
-    face_rgba[face_is_cut, 2] = 0.0
-    face_rgba[face_is_cut, 3] = 1.0
+    base_gray = np.where(face_curv > 0, 0.7, 0.3)  # Light for gyri, dark for sulci
 
     # Get vertex coordinates for each face: shape (n_faces, 3, 3)
     verts_per_face = vertices[faces]
@@ -839,8 +826,44 @@ def plot_projection(
         # Back-face culling
         visible_mask = rotated_normals[:, 2] > 0
         visible_face_verts = rotated_face_verts[visible_mask]
-        visible_colors = face_rgba[visible_mask]
         visible_centroids = rotated_centroids[visible_mask]
+        visible_normals = rotated_normals[visible_mask]
+        visible_is_cut = face_is_cut[visible_mask]
+        visible_base_gray = base_gray[visible_mask]
+
+        # Lambertian shading: light from upper-left-front in view space
+        light_dir = np.array([0.3, 0.5, 0.8])  # (right, up, toward viewer)
+        light_dir = light_dir / np.linalg.norm(light_dir)
+
+        # Compute lighting intensity (dot product with light direction)
+        # Clamp to [0, 1] range for diffuse lighting
+        light_intensity = np.clip(visible_normals @ light_dir, 0, 1)
+
+        # Apply ambient + diffuse lighting model
+        ambient = 0.4
+        diffuse = 0.6
+        shading = ambient + diffuse * light_intensity
+
+        # Build RGBA colors with lighting applied
+        visible_colors = np.zeros((len(visible_face_verts), 4))
+        # Normal faces: gray modulated by shading
+        visible_colors[~visible_is_cut, 0] = (
+            visible_base_gray[~visible_is_cut] * shading[~visible_is_cut]
+        )
+        visible_colors[~visible_is_cut, 1] = (
+            visible_base_gray[~visible_is_cut] * shading[~visible_is_cut]
+        )
+        visible_colors[~visible_is_cut, 2] = (
+            visible_base_gray[~visible_is_cut] * shading[~visible_is_cut]
+        )
+        visible_colors[~visible_is_cut, 3] = 1.0
+        # Cut faces: red with shading
+        visible_colors[visible_is_cut, 0] = np.clip(
+            0.8 + 0.2 * shading[visible_is_cut], 0, 1
+        )
+        visible_colors[visible_is_cut, 1] = 0.0
+        visible_colors[visible_is_cut, 2] = 0.0
+        visible_colors[visible_is_cut, 3] = 1.0
 
         # Sort by depth
         depth_order = np.argsort(visible_centroids[:, 2])
