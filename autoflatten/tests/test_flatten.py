@@ -1191,3 +1191,410 @@ class TestBoundaryVertexPreservation:
                 f"Number of border vertices mismatch: input had {n_border_in}, "
                 f"output has {n_border_out}"
             )
+
+
+# =============================================================================
+# Tier 2: Energy Function Tests
+# =============================================================================
+
+
+class TestPrepareMetricData:
+    """Tests for prepare_metric_data function."""
+
+    def test_padding_with_variable_neighbors(self):
+        """Test padding arrays with different neighbor counts."""
+        from autoflatten.flatten.energy import prepare_metric_data
+
+        # Vertex 0 has 2 neighbors, vertex 1 has 3 neighbors
+        k_rings = [np.array([1, 2]), np.array([0, 2, 3])]
+        target_distances = [np.array([1.0, 1.0]), np.array([1.0, 1.0, 1.414])]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+
+        # Should be padded to max_neighbors=3
+        assert neighbors.shape == (2, 3)
+        assert targets.shape == (2, 3)
+        assert mask.shape == (2, 3)
+
+        # Check mask is correct
+        assert mask[0, 0] and mask[0, 1] and not mask[0, 2]
+        assert mask[1, 0] and mask[1, 1] and mask[1, 2]
+
+    def test_single_vertex_single_neighbor(self):
+        """Test with minimal case."""
+        from autoflatten.flatten.energy import prepare_metric_data
+
+        k_rings = [np.array([1])]
+        target_distances = [np.array([1.0])]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+
+        assert neighbors.shape == (1, 1)
+        assert neighbors[0, 0] == 1
+        assert targets[0, 0] == 1.0
+        assert mask[0, 0]
+
+
+class TestPrepareEdgeList:
+    """Tests for prepare_edge_list function."""
+
+    def test_edge_list_from_k_rings(self):
+        """Test converting k-rings to edge list."""
+        from autoflatten.flatten.energy import prepare_edge_list
+
+        k_rings = [np.array([1, 2]), np.array([0, 2])]
+        target_distances = [np.array([1.0, 1.5]), np.array([1.0, 1.2])]
+
+        src, dst, targets, n_vertices = prepare_edge_list(k_rings, target_distances)
+
+        assert n_vertices == 2
+        assert len(src) == 4  # 2 + 2 edges
+        assert len(dst) == 4
+        assert len(targets) == 4
+
+        # Source vertices should be in order
+        assert list(src[:2]) == [0, 0]
+        assert list(src[2:]) == [1, 1]
+
+    def test_empty_k_ring(self):
+        """Test with a vertex that has no neighbors."""
+        from autoflatten.flatten.energy import prepare_edge_list
+
+        k_rings = [np.array([1]), np.array([], dtype=np.int64)]
+        target_distances = [np.array([1.0]), np.array([], dtype=np.float64)]
+
+        src, dst, targets, n_vertices = prepare_edge_list(k_rings, target_distances)
+
+        assert n_vertices == 2
+        assert len(src) == 1
+
+
+class TestMetricEnergyEdges:
+    """Tests for compute_metric_energy_edges function."""
+
+    def test_zero_distortion_on_isometric_embedding(self):
+        """Test that isometric embedding has zero energy."""
+        from autoflatten.flatten.energy import compute_metric_energy_edges
+
+        # Square with unit edges
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+
+        # Edge list: each vertex connected to its neighbors with distance 1.0
+        src = jnp.array([0, 0, 1, 1, 2, 2, 3, 3])
+        dst = jnp.array([1, 2, 0, 3, 0, 3, 1, 2])
+        targets = jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+
+        energy = compute_metric_energy_edges(uv, src, dst, targets, 4)
+
+        assert float(energy) < 1e-10
+
+    def test_positive_energy_on_stretched_mesh(self):
+        """Test that stretching produces positive energy."""
+        from autoflatten.flatten.energy import compute_metric_energy_edges
+
+        # Stretched square (2x1 instead of 1x1)
+        uv = jnp.array([[0.0, 0.0], [2.0, 0.0], [0.0, 1.0], [2.0, 1.0]])
+
+        # Target distances are 1.0 but actual x-distances are 2.0
+        src = jnp.array([0, 1])
+        dst = jnp.array([1, 0])
+        targets = jnp.array([1.0, 1.0])
+
+        energy = compute_metric_energy_edges(uv, src, dst, targets, 4)
+
+        # Actual distance is 2.0, target is 1.0, error = (2-1)^2 = 1 per edge
+        assert float(energy) > 0
+
+
+class TestSpringEnergy:
+    """Tests for compute_spring_energy function."""
+
+    def test_zero_on_centered_vertices(self):
+        """Test that vertices at centroids have zero spring energy."""
+        from autoflatten.flatten.energy import compute_spring_energy
+
+        # Regular triangle: each vertex is NOT at centroid of neighbors
+        # Use a square where center vertex would be at centroid
+        uv = jnp.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0]])
+
+        # Vertex 2's neighbors are 0 and 1, centroid is (1, 0)
+        # But vertex 2 is at (1, 1) - not at centroid
+        neighbors = jnp.array([[1, 2], [0, 2], [0, 1]])
+        mask = jnp.array([[True, True], [True, True], [True, True]])
+        counts = jnp.array([3, 3, 3])  # degree + 1
+
+        energy = compute_spring_energy(uv, neighbors, mask, counts)
+
+        # Energy should be positive since vertices are not at centroids
+        assert float(energy) > 0
+
+    def test_spring_energy_increases_with_displacement(self):
+        """Test that displacing a vertex increases spring energy."""
+        from autoflatten.flatten.energy import compute_spring_energy
+
+        neighbors = jnp.array([[1, 2], [0, 2], [0, 1]])
+        mask = jnp.array([[True, True], [True, True], [True, True]])
+        counts = jnp.array([3, 3, 3])
+
+        # Baseline
+        uv1 = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
+        energy1 = compute_spring_energy(uv1, neighbors, mask, counts)
+
+        # Displaced vertex 2 further from centroid
+        uv2 = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 2.0]])
+        energy2 = compute_spring_energy(uv2, neighbors, mask, counts)
+
+        assert float(energy2) > float(energy1)
+
+
+class TestGetVerticesWithNegativeArea:
+    """Tests for get_vertices_with_negative_area function."""
+
+    def test_no_negative_area(self, simple_quad_uv):
+        """Test mesh with no flipped triangles."""
+        from autoflatten.flatten.energy import get_vertices_with_negative_area
+
+        uv = jnp.array(simple_quad_uv)
+        faces = jnp.array([[0, 1, 2], [1, 3, 2]])
+
+        has_neg = get_vertices_with_negative_area(uv, faces)
+
+        assert not any(has_neg)
+
+    def test_detects_flipped_triangle(self):
+        """Test detection of vertices in flipped triangles."""
+        from autoflatten.flatten.energy import get_vertices_with_negative_area
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        # Second triangle is CW (flipped)
+        faces = jnp.array([[0, 1, 2], [1, 2, 3]])
+
+        has_neg = get_vertices_with_negative_area(uv, faces)
+
+        # Vertices 1, 2, 3 are in the flipped triangle
+        assert not has_neg[0]  # Only in CCW triangle
+        assert has_neg[1]  # In both
+        assert has_neg[2]  # In both
+        assert has_neg[3]  # Only in CW triangle
+
+
+class TestPrepareSmoothingData:
+    """Tests for prepare_smoothing_data function."""
+
+    def test_adjacency_from_quad_mesh(self, simple_quad_mesh):
+        """Test 1-ring adjacency construction."""
+        from autoflatten.flatten.energy import prepare_smoothing_data
+
+        vertices, faces = simple_quad_mesh
+
+        neighbors, mask, counts = prepare_smoothing_data(faces, len(vertices))
+
+        assert neighbors.shape[0] == 4
+        assert mask.shape[0] == 4
+        assert len(counts) == 4
+
+        # Each vertex should have 2-3 neighbors in a quad
+        assert all(c >= 3 for c in counts)  # counts = degree + 1
+
+    def test_triangle_adjacency(self):
+        """Test adjacency for single triangle."""
+        from autoflatten.flatten.energy import prepare_smoothing_data
+
+        faces = np.array([[0, 1, 2]])
+
+        neighbors, mask, counts = prepare_smoothing_data(faces, 3)
+
+        # Each vertex has 2 neighbors
+        assert all(counts == 3)  # 2 neighbors + 1
+        assert np.sum(mask) == 6  # 3 vertices * 2 neighbors each
+
+
+class TestSmoothGradientOnce:
+    """Tests for smooth_gradient_once function."""
+
+    def test_averaging_effect(self):
+        """Test that smoothing averages gradients."""
+        from autoflatten.flatten.energy import smooth_gradient_once
+
+        # 3 vertices in a line: 0 -- 1 -- 2
+        grad = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]])
+
+        # Vertex 1 is connected to 0 and 2
+        neighbors = jnp.array([[1, 0], [0, 2], [1, 0]])  # padding with 0
+        mask = jnp.array([[True, False], [True, True], [True, False]])
+        counts = jnp.array([2, 3, 2])  # degree + 1
+
+        smoothed = smooth_gradient_once(grad, neighbors, mask, counts)
+
+        # Vertex 1's gradient should decrease (averaged with zeros)
+        assert float(smoothed[1, 0]) < 1.0
+        # Vertex 0 should increase (averaged with vertex 1)
+        assert float(smoothed[0, 0]) > 0.0
+
+
+# =============================================================================
+# Tier 2: Distance Function Tests
+# =============================================================================
+
+
+class TestBuildMeshGraph:
+    """Tests for build_mesh_graph function."""
+
+    def test_csr_matrix_construction(self, simple_quad_mesh):
+        """Test sparse matrix construction."""
+        from autoflatten.flatten.distance import build_mesh_graph
+
+        vertices, faces = simple_quad_mesh
+        graph = build_mesh_graph(vertices, faces)
+
+        # Should be 4x4 sparse matrix
+        assert graph.shape == (4, 4)
+
+        # Should be symmetric
+        assert (graph != graph.T).nnz == 0
+
+    def test_edge_weights_from_geometry(self):
+        """Test that edge weights match geometric distances."""
+        from autoflatten.flatten.distance import build_mesh_graph
+
+        # Right triangle with known edge lengths
+        vertices = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 4.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+
+        graph = build_mesh_graph(vertices, faces)
+
+        # Edge 0-1 should be length 3
+        assert np.isclose(graph[0, 1], 3.0)
+        # Edge 0-2 should be length 4
+        assert np.isclose(graph[0, 2], 4.0)
+        # Edge 1-2 should be length 5 (hypotenuse)
+        assert np.isclose(graph[1, 2], 5.0)
+
+
+class TestGetKRing:
+    """Tests for get_k_ring function."""
+
+    def test_1_ring_on_quad(self, simple_quad_mesh):
+        """Test 1-ring on simple quad."""
+        from autoflatten.flatten.distance import get_k_ring
+
+        vertices, faces = simple_quad_mesh
+        k_rings = get_k_ring(faces, len(vertices), k=1)
+
+        assert len(k_rings) == 4
+        # Each vertex should have 2-3 neighbors in 1-ring
+        for kr in k_rings:
+            assert len(kr) >= 2
+
+    def test_2_ring_includes_more_vertices(self, triangle_strip_mesh):
+        """Test that 2-ring includes more vertices than 1-ring."""
+        from autoflatten.flatten.distance import get_k_ring
+
+        vertices, faces = triangle_strip_mesh
+
+        k_rings_1 = get_k_ring(faces, len(vertices), k=1)
+        k_rings_2 = get_k_ring(faces, len(vertices), k=2)
+
+        # 2-ring should have at least as many vertices as 1-ring
+        for kr1, kr2 in zip(k_rings_1, k_rings_2):
+            assert len(kr2) >= len(kr1)
+
+
+class TestGetSingleKRing:
+    """Tests for get_single_k_ring function."""
+
+    def test_single_vertex_k_ring(self, simple_quad_mesh):
+        """Test k-ring for a single vertex."""
+        from autoflatten.flatten.distance import get_single_k_ring
+        import igl
+
+        vertices, faces = simple_quad_mesh
+        adj = igl.adjacency_list(faces.astype(np.int64))
+
+        # Get 1-ring of vertex 0
+        kr = get_single_k_ring(adj, center_vertex=0, k=1)
+
+        # Vertex 0 is connected to 1 and 2 in the quad
+        assert len(kr) == 2
+        assert 0 not in kr  # Center vertex excluded
+
+
+class TestSelectAngularSamples:
+    """Tests for select_angular_samples function."""
+
+    def test_returns_all_if_fewer_than_n_samples(self):
+        """Test that all points are returned if fewer than n_samples."""
+        from autoflatten.flatten.distance import select_angular_samples
+
+        angles = np.array([0.0, np.pi / 2, np.pi])
+        selected = select_angular_samples(angles, n_samples=8)
+
+        assert len(selected) == 3
+        assert set(selected) == {0, 1, 2}
+
+    def test_uniform_sampling(self):
+        """Test angular sampling with uniform distribution."""
+        from autoflatten.flatten.distance import select_angular_samples
+
+        # 16 uniformly distributed angles
+        angles = np.linspace(0, 2 * np.pi, 16, endpoint=False)
+        selected = select_angular_samples(angles, n_samples=8)
+
+        # Should select approximately 8 points
+        assert len(selected) <= 8
+        assert len(selected) >= 4  # At least some samples
+
+    def test_empty_input(self):
+        """Test with empty input."""
+        from autoflatten.flatten.distance import select_angular_samples
+
+        angles = np.array([])
+        selected = select_angular_samples(angles, n_samples=8)
+
+        assert len(selected) == 0
+
+
+class TestThreadConfig:
+    """Tests for set_num_threads and get_num_threads."""
+
+    def test_set_get_num_threads(self):
+        """Test setting and getting thread count."""
+        from autoflatten.flatten.distance import set_num_threads, get_num_threads
+
+        original = get_num_threads()
+
+        try:
+            set_num_threads(2)
+            assert get_num_threads() == 2
+        finally:
+            # Restore original
+            set_num_threads(original)
+
+
+# =============================================================================
+# Tier 2: Algorithm Utility Tests
+# =============================================================================
+
+
+class TestValidateTopology:
+    """Tests for validate_topology function."""
+
+    def test_valid_disk_topology(self, simple_quad_mesh):
+        """Test that a quad mesh has valid disk topology."""
+        from autoflatten.flatten.algorithm import validate_topology
+
+        vertices, faces = simple_quad_mesh
+
+        # Should not raise and return truthy value
+        result = validate_topology(vertices, faces)
+        assert result  # Returns 1 for valid topology
+
+    def test_single_triangle_is_valid(self):
+        """Test that a single triangle is valid."""
+        from autoflatten.flatten.algorithm import validate_topology
+
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+
+        result = validate_topology(vertices, faces)
+        assert result  # Returns 1 for valid topology

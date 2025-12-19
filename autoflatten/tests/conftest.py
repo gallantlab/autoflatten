@@ -3,6 +3,7 @@
 import os
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 
@@ -61,3 +62,94 @@ def no_freesurfer_env():
 
     with patch.dict(os.environ, env_without_fs, clear=True):
         yield
+
+
+# =============================================================================
+# Synthetic Mesh Fixtures for Flatten Module Tests
+# =============================================================================
+
+
+@pytest.fixture
+def simple_quad_mesh():
+    """4-vertex quad mesh (2 triangles) for basic tests.
+
+    Layout:
+        2---3
+        |\\  |
+        | \\ |
+        |  \\|
+        0---1
+
+    Both triangles are CCW when viewed from +Z.
+    """
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.int32)
+    return vertices, faces
+
+
+@pytest.fixture
+def simple_quad_uv():
+    """2D UV coordinates for the simple quad mesh."""
+    return np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+
+
+@pytest.fixture
+def triangle_strip_mesh():
+    """6-vertex triangle strip for boundary/topology tests.
+
+    Layout:
+            4---5
+           /\\ /
+          /  \\/
+         2---3
+        /\\ /
+       /  \\/
+      0---1
+    """
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [1.0, 2.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]], dtype=np.int32)
+    return vertices, faces
+
+
+@pytest.fixture
+def mesh_with_flipped_triangle():
+    """Quad mesh where one triangle is flipped (CW instead of CCW).
+
+    Same layout as simple_quad_mesh but second triangle has flipped winding.
+    """
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    # First triangle CCW, second triangle CW (flipped)
+    faces = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.int32)
+    return vertices, faces
+
+
+@pytest.fixture
+def mesh_with_isolated_vertex():
+    """Mesh with one vertex not connected to any face."""
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [5.0, 5.0, 0.0],  # Isolated vertex
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    return vertices, faces
