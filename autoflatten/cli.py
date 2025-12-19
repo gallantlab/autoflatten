@@ -298,6 +298,7 @@ def run_projection(
                 patch_path=patch_file,
                 subject_dir=subject_dir,
                 output_path=plot_output,
+                overwrite=overwrite,
             )
         except Exception as e:
             print(f"Warning: Failed to generate projection plot: {e}")
@@ -499,9 +500,6 @@ def process_hemisphere(
                         "(use --overwrite to force)"
                     )
             else:
-                # Remove existing plot file if overwrite is enabled
-                if os.path.exists(plot_file) and overwrite:
-                    os.remove(plot_file)
                 surf_dir = os.path.join(subject_dir, "surf")
                 try:
                     plot_file = plot_patch(
@@ -510,6 +508,7 @@ def process_hemisphere(
                         surf_dir,
                         output_dir=output_dir,
                         surface=f"{hemi}.inflated",
+                        overwrite=overwrite,
                     )
                     if verbose:
                         print(f"Generated plot: {plot_file}")
