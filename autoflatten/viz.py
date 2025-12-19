@@ -275,7 +275,11 @@ def parse_log_file(log_path):
         input_match = re.search(r"Input patch:\s*(.+)", content)
         if input_match:
             input_path = Path(input_match.group(1).strip())
-            result["subject"] = input_path.parent.name
+            # If parent is "surf", use grandparent as subject name
+            if input_path.parent.name == "surf":
+                result["subject"] = input_path.parent.parent.name
+            else:
+                result["subject"] = input_path.parent.name
             filename = input_path.name
             if filename.startswith("lh."):
                 result["hemisphere"] = "lh"
@@ -411,7 +415,7 @@ def plot_flatmap(
     if title:
         main_title = title
     elif log_results.get("subject") and log_results.get("hemisphere"):
-        main_title = f"{log_results['subject']} {log_results['hemisphere']}"
+        main_title = f"{log_results['subject']} {log_results['hemisphere']} - flatmap"
     else:
         main_title = Path(flat_patch_path).name
 
@@ -421,11 +425,12 @@ def plot_flatmap(
         error_str = f"{log_error:.2f}% error"
     else:
         error_str = f"{mean_dist:.2f}% error"
-    subtitle_parts = [
-        f"{len(flat_vertices):,} vertices, {len(faces):,} faces",
-        f"{error_str}, {n_flipped} flipped",
-    ]
-    subtitle = ", ".join(subtitle_parts)
+    n_faces = len(faces)
+    flipped_pct = (n_flipped / n_faces * 100) if n_faces > 0 else 0
+    subtitle = (
+        f"{len(flat_vertices):,} vertices, {n_faces:,} faces | "
+        f"{error_str}, {n_flipped} flipped ({flipped_pct:.2f}%)"
+    )
 
     # Create figure with 3 panels
     fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True)
@@ -580,6 +585,7 @@ def plot_patch(
     output_dir=None,
     surface="lh.inflated",
     trim=True,
+    overwrite=False,
 ):
     """
     Generate a PNG image of a FreeSurfer patch file.
@@ -603,6 +609,8 @@ def plot_patch(
         This should be relative to `subject_dir`.
     trim : bool, optional
         Ignored (kept for backward compatibility).
+    overwrite : bool
+        Whether to overwrite existing output file (default False).
 
     Returns
     -------
@@ -626,11 +634,8 @@ def plot_patch(
         output_dir, os.path.basename(patch_file).replace(".3d", ".png")
     )
 
-    if os.path.exists(final_img_name):
-        print(
-            f"Image already exists: {final_img_name}. "
-            "Deleting it if you want to re-run."
-        )
+    if os.path.exists(final_img_name) and not overwrite:
+        print(f"Image already exists: {final_img_name}. Use --overwrite to regenerate.")
         return final_img_name
 
     # Determine hemisphere from filename
@@ -650,7 +655,7 @@ def plot_patch(
         base_surface_path = os.path.join(subject_dir, surface)
 
     # Generate title
-    title = f"{subject} {hemi}"
+    title = f"{subject} {hemi} - flatmap"
 
     # Use the new matplotlib-based plotting
     plot_flatmap(
@@ -670,6 +675,7 @@ def plot_projection(
     figsize=(12, 4),
     dpi=150,
     title=None,
+    overwrite=False,
 ):
     """Plot projection result on 3D inflated surface.
 
@@ -692,6 +698,8 @@ def plot_projection(
         Resolution for saved figure (default: 150)
     title : str, optional
         Custom title for the figure
+    overwrite : bool
+        Whether to overwrite existing output file (default False)
 
     Returns
     -------
@@ -710,6 +718,11 @@ def plot_projection(
             f"Cannot determine hemisphere from patch filename: {basename}. "
             "Expected filename starting with 'lh.' or 'rh.'"
         )
+
+    # Check if output file already exists
+    if output_path is not None and os.path.exists(output_path) and not overwrite:
+        print(f"Image already exists: {output_path}. Use --overwrite to regenerate.")
+        return output_path
 
     # Resolve subject_dir
     if subject_dir is None:
@@ -777,7 +790,11 @@ def plot_projection(
     # Build title
     if title is None:
         subject_name = Path(subject_dir).name
-        title = f"{subject_name} {hemi} - autoflatten.patch.3d\n({n_removed_vertices:,} vertices, {n_cut_faces:,} faces removed)"
+        title = (
+            f"{subject_name} {hemi} - projection\n"
+            f"{n_vertices:,} vertices, {n_removed_vertices:,} removed | "
+            f"{n_cut_faces:,} cut faces"
+        )
 
     # Validate data consistency before array indexing
     max_vertex_idx = faces.max()

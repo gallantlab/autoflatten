@@ -894,6 +894,8 @@ def cmd_plot_flatmap(args):
     print(f"Flat patch file: {flat_patch_file}")
     print(f"Subject: {subject}")
 
+    overwrite = getattr(args, "overwrite", False)
+
     try:
         result = plot_patch(
             flat_patch_file,
@@ -901,6 +903,7 @@ def cmd_plot_flatmap(args):
             subject_dir,
             output_dir=output_dir,
             surface=f"{hemi}.inflated",
+            overwrite=overwrite,
         )
         if args.output:
             final_output = os.path.abspath(args.output)
@@ -940,11 +943,14 @@ def cmd_plot_projection(args):
         print(f"Subject directory: {subject_dir}")
     print(f"Output: {output_path}")
 
+    overwrite = getattr(args, "overwrite", False)
+
     try:
         result = plot_projection(
             patch_path=patch_file,
             subject_dir=subject_dir,
             output_path=output_path,
+            overwrite=overwrite,
         )
         print(f"Successfully saved projection plot: {result}")
         return 0
@@ -1224,6 +1230,11 @@ Examples:
         "--output",
         help="Output path for the PNG image",
     )
+    parser_plot_flatmap.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output file",
+    )
     parser_plot_flatmap.set_defaults(func=cmd_plot_flatmap)
 
     # 'plot-projection' subcommand
@@ -1243,6 +1254,11 @@ Examples:
         "-o",
         "--output",
         help="Output path for the PNG image",
+    )
+    parser_plot_projection.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output file",
     )
     parser_plot_projection.set_defaults(func=cmd_plot_projection)
 
