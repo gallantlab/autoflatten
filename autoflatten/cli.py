@@ -300,6 +300,8 @@ def run_projection(
             )
         except Exception as e:
             print(f"Warning: Failed to generate projection plot: {e}")
+            traceback.print_exc()
+            print("Continuing without projection plot...")
 
         print("\nRESULT")
         print("-" * 6)

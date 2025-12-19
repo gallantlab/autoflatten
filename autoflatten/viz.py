@@ -33,7 +33,7 @@ def load_curvature(curv_path):
     Returns
     -------
     curv : ndarray of shape (N,)
-        Per-vertex curvature values (positive = gyri, negative = sulci)
+        Per-vertex curvature values (positive = sulci, negative = gyri)
     """
     return nibabel.freesurfer.read_morph_data(curv_path)
 
@@ -51,27 +51,32 @@ def _get_view_angles(hemi, view):
     Returns
     -------
     elev, azim : tuple of float
-        Elevation and azimuth angles for ax.view_init()
+        Elevation and azimuth angles (conceptually similar to matplotlib view_init)
 
     Notes
     -----
-    FreeSurfer coordinate system: X=right, Y=anterior, Z=superior.
-    Matplotlib view_init: azim rotates around Z axis, elev rotates around X axis.
+    FreeSurfer coordinate system (RAS): X=right, Y=anterior, Z=superior.
+
+    View angles follow matplotlib view_init convention conceptually:
+    - elev: rotation around horizontal axis (pitch)
+    - azim: rotation around vertical axis (yaw)
+
+    Note: plot_projection() uses manual rotation matrices for 2D projection,
+    not matplotlib's 3D axis, but the angle semantics are preserved.
     """
     if view == "medial":
-        # Medial view: looking AT the medial wall
-        # LH medial wall is at +X, so camera at +X looking toward -X (azim=0)
-        # RH medial wall is at -X, so camera at -X looking toward +X (azim=180)
+        # Medial view: looking AT the medial (interhemispheric) surface
+        # LH medial surface faces +X (toward midline), camera looks from +X toward -X
+        # RH medial surface faces -X (toward midline), camera looks from -X toward +X
         if hemi == "lh":
             return (0, 0)
         else:
             return (0, 180)
     elif view == "ventral":
-        # Ventral view: looking from below
+        # Ventral view: looking from below (inferior)
         return (-90, 180)
     elif view == "frontal":
         # Frontal view: looking from anterior (front of brain)
-        # azim=-90 rotates so we look at the anterior surface
         return (0, -90)
     else:
         raise ValueError(
@@ -740,13 +745,19 @@ def plot_projection(
     vertices, faces = read_surface(inflated_path)
     n_vertices = len(vertices)
 
-    # Load curvature
+    # Load curvature (with fallback to uniform coloring)
     curv_path = os.path.join(surf_dir, f"{hemi}.curv")
+    curv = None
     if os.path.exists(curv_path):
-        curv = load_curvature(curv_path)
+        try:
+            curv = load_curvature(curv_path)
+        except Exception as e:
+            print(f"Warning: Failed to read curvature file {curv_path}: {e}")
     else:
-        # Fall back to uniform coloring if curvature not available
         print(f"Warning: Curvature file not found: {curv_path}")
+
+    if curv is None:
+        print("Using uniform gray coloring (no sulcal/gyral shading)")
         curv = np.zeros(n_vertices)
 
     # Mark faces that contain ANY removed vertex (these are cut/medial wall faces)
@@ -768,11 +779,23 @@ def plot_projection(
         subject_name = Path(subject_dir).name
         title = f"{subject_name} {hemi} - autoflatten.patch.3d\n({n_removed_vertices:,} vertices, {n_cut_faces:,} faces removed)"
 
+    # Validate data consistency before array indexing
+    max_vertex_idx = faces.max()
+    if max_vertex_idx >= n_vertices:
+        raise ValueError(
+            f"Surface file is inconsistent: faces reference vertex index {max_vertex_idx}, "
+            f"but surface only has {n_vertices} vertices. "
+            "This may indicate corrupted surface files or mismatched data."
+        )
+
     # Compute base per-face colors (will be modulated by lighting per view):
     # - Normal faces: gray based on curvature (sulci=dark, gyri=light)
     # - Cut faces: RED
+    # FreeSurfer convention: positive curvature = sulci, negative = gyri
     face_curv = curv[faces].mean(axis=1)  # Average curvature per face
-    base_gray = np.where(face_curv > 0, 0.7, 0.3)  # Light for gyri, dark for sulci
+    base_gray = np.where(
+        face_curv > 0, 0.3, 0.7
+    )  # Dark for sulci (>0), light for gyri (<0)
 
     # Get vertex coordinates for each face: shape (n_faces, 3, 3)
     verts_per_face = vertices[faces]
@@ -811,8 +834,8 @@ def plot_projection(
         cos_a, sin_a = np.cos(azim_rad), np.sin(azim_rad)
         cos_e, sin_e = np.cos(elev_rad), np.sin(elev_rad)
 
-        # Base rotation for azim=0: look from +X
-        # x' = y, y' = z, z' = x (depth)
+        # Base rotation for azim=0: camera looks from +X axis toward origin
+        # Maps FreeSurfer RAS to screen: x'=Y (horizontal), y'=Z (vertical), z'=X (depth)
         R_base = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
         Rz = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]])
         Rx = np.array([[1, 0, 0], [0, cos_e, -sin_e], [0, sin_e, cos_e]])
