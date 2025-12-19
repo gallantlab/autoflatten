@@ -37,7 +37,7 @@ def load_surface(subject, type, hemi, subjects_dir=None):
     Parameters
     ----------
     subject : str
-        PyCortex or FreeSurfer subject identifier
+        FreeSurfer subject identifier
     type : str
         Type of surface ('white', 'pial', 'inflated', etc.)
     hemi : str
@@ -53,26 +53,17 @@ def load_surface(subject, type, hemi, subjects_dir=None):
     faces : ndarray
         Array of face indices with shape (n_faces, 3)
     """
-    try:
-        # Try to load from PyCortex database first for backward compatibility
-        import cortex
-
-        coords, faces = cortex.db.get_surf(subject, type, hemi)
-    except KeyError:
-        # We don't have the subject in the database,
-        # so we need to load it from FreeSurfer
-        # Get the subject's surf directory from SUBJECTS_DIR
-        subjects_dir = os.environ.get("SUBJECTS_DIR", subjects_dir)
-        if subjects_dir is None:
-            raise ValueError("SUBJECTS_DIR environment variable not set")
-        subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
-        # Construct the file path
-        surf_file = os.path.join(subject_surf_dir, f"{hemi}.{type}")
-        if not os.path.exists(surf_file):
-            raise FileNotFoundError(f"Surface file {surf_file} not found")
-        # Load the surface using nibabel
-        surf_data = nib.freesurfer.read_geometry(surf_file)
-        coords, faces = surf_data
+    subjects_dir = os.environ.get("SUBJECTS_DIR", subjects_dir)
+    if subjects_dir is None:
+        raise ValueError("SUBJECTS_DIR environment variable not set")
+    subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
+    # Construct the file path
+    surf_file = os.path.join(subject_surf_dir, f"{hemi}.{type}")
+    if not os.path.exists(surf_file):
+        raise FileNotFoundError(f"Surface file {surf_file} not found")
+    # Load the surface using nibabel
+    surf_data = nib.freesurfer.read_geometry(surf_file)
+    coords, faces = surf_data
     return coords, faces
 
 

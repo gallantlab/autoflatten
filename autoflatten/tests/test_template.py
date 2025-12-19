@@ -22,57 +22,6 @@ from autoflatten.template import (
 )
 
 
-def test_pycortex_available():
-    """
-    Test if pycortex is available for other tests.
-    This is used to conditionally skip tests that require pycortex.
-    """
-    try:
-        import cortex
-
-        assert cortex is not None  # Using assert instead of return
-    except ImportError:
-        pytest.skip("Pycortex not available")
-
-
-def has_subject_s1():
-    """
-    Check if subject S1 exists in pycortex database.
-    """
-    try:
-        import cortex
-
-        return "S1" in cortex.db.subjects
-    except (ImportError, Exception):
-        return False
-
-
-@pytest.mark.skipif(not has_subject_s1(), reason="Subject S1 not available in pycortex")
-def test_get_surface_data():
-    """
-    Test loading surface data from pycortex.
-    """
-    # This test only runs if pycortex is available and S1 exists
-    surface_data = get_surface_data("S1", "lh")
-
-    # Check that the surface data contains the expected keys
-    expected_keys = [
-        "fiducial_points",
-        "flat_points",
-        "inflated_points",
-        "polys_full",
-        "polys_flat",
-    ]
-    for key in expected_keys:
-        assert key in surface_data
-
-    # Check that the arrays have the expected shape
-    assert len(surface_data["fiducial_points"].shape) == 2
-    assert surface_data["fiducial_points"].shape[1] == 3
-    assert len(surface_data["polys_full"].shape) == 2
-    assert surface_data["polys_full"].shape[1] == 3
-
-
 def test_find_removed_vertices():
     """
     Test identifying vertices that were removed in the flat surface.
@@ -370,71 +319,6 @@ def test_classify_cuts_anatomically():
     assert result["medial3"] == 4
 
 
-@pytest.mark.skipif(not has_subject_s1(), reason="Subject S1 not available in pycortex")
-def test_identify_surface_components_integration_and_validation():
-    """
-    Test the main function that identifies all surface components.
-    This is an integration test that runs the whole pipeline for both hemispheres.
-
-    This test also validates:
-    1. That all components are disjoint (no vertex in multiple components)
-    2. That the union of all components equals the removed vertices
-    """
-    # This test only runs if pycortex is available and S1 exists
-    for hemi in ["lh", "rh"]:
-        try:
-            # Get surface data to identify the removed vertices directly
-            surface_data = get_surface_data("S1", hemi)
-            removed_vertices = find_removed_vertices(surface_data)
-
-            # Get the components from the identification function
-            result = identify_surface_components("S1", hemi)
-
-            # Check that the result has the expected keys
-            expected_keys = [
-                "mwall",
-                "calcarine",
-                "medial1",
-                "medial2",
-                "medial3",
-                "temporal",
-            ]
-            for key in expected_keys:
-                assert key in result
-
-            # Check that each key maps to a numpy array
-            for key in expected_keys:
-                assert isinstance(result[key], np.ndarray)
-                assert result[key].ndim == 1  # Should be a 1D array
-
-            # Check that components are disjoint
-            all_vertices = []
-            for key in expected_keys:
-                # Convert to list for easier manipulation
-                component_vertices = result[key].tolist()
-                # Check that none of these vertices are in any other component
-                for vertex in component_vertices:
-                    assert vertex not in all_vertices, (
-                        f"Vertex {vertex} appears in multiple components"
-                    )
-                all_vertices.extend(component_vertices)
-
-            # Check that the union of all components equals the removed vertices
-            # Convert to sets for comparison
-            all_vertices_set = set(all_vertices)
-            removed_vertices_set = set(removed_vertices)
-
-            # The sets should be equal
-            assert all_vertices_set == removed_vertices_set, (
-                f"Components don't match removed vertices. "
-                f"Missing: {removed_vertices_set - all_vertices_set}, "
-                f"Extra: {all_vertices_set - removed_vertices_set}"
-            )
-
-        except Exception as e:
-            pytest.fail(f"identify_surface_components failed for {hemi}: {str(e)}")
-
-
 @patch("autoflatten.template.get_surface_data")
 @patch("autoflatten.template.find_removed_vertices")
 @patch("autoflatten.template.create_surface_graphs")
@@ -455,7 +339,7 @@ def test_identify_surface_components_mocked(
 ):
     """
     Test the identify_surface_components function using mocks.
-    This tests the flow of the function without requiring pycortex or real data.
+    This tests the flow of the function without requiring real data.
     """
     # Set up all the mocks
     mock_surface_data = {"inflated_points": np.zeros((10, 3))}
