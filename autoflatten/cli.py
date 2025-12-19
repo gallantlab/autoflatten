@@ -9,7 +9,8 @@ CLI Structure:
     autoflatten /path/to/subject     - Full pipeline: project + flatten (default)
     autoflatten project /path/to/subject  - Projection only: creates patch file
     autoflatten flatten PATCH_FILE   - Flattening only: flattens existing patch
-    autoflatten plot FLAT_PATCH      - Visualization
+    autoflatten plot-projection PATCH     - Visualize projection (3D surface with cuts)
+    autoflatten plot-flatmap FLAT_PATCH   - Visualize flattened surface
 """
 
 import argparse
@@ -832,15 +833,9 @@ def cmd_flatten(args):
         return 1
 
 
-def cmd_plot(args):
+def cmd_plot_flatmap(args):
     """Plot a flat patch file."""
-    print("Starting Autoflatten Plotting...")
-
-    # Check FreeSurfer environment
-    fs_check, env_vars = check_freesurfer_environment()
-    if not fs_check:
-        print("FreeSurfer environment is not properly set up. Exiting.")
-        return 1
+    print("Starting Autoflatten Flatmap Plotting...")
 
     flat_patch_file = args.flat_patch
     if not os.path.exists(flat_patch_file):
@@ -857,27 +852,30 @@ def cmd_plot(args):
         print(f"Error: Could not determine hemisphere from filename: {basename}")
         return 1
 
-    # Determine subject directory
+    # Determine subject directory with auto-detection
     if args.subject_dir:
         subject_dir = args.subject_dir
-        if args.subject:
-            subject = args.subject
-        else:
-            subject = os.path.basename(
-                os.path.dirname(os.path.normpath(subject_dir.rstrip(os.sep)))
-            )
     else:
-        if args.subject:
-            subject = args.subject
-            subjects_dir = env_vars.get("SUBJECTS_DIR")
-            if subjects_dir:
-                subject_dir = os.path.join(subjects_dir, args.subject, "surf")
-            else:
-                print("Error: SUBJECTS_DIR not set and --subject-dir not specified.")
-                return 1
+        # Auto-detect: if patch is in surf/ directory, use parent as subject_dir
+        patch_dir = Path(flat_patch_file).resolve().parent
+        if patch_dir.name == "surf":
+            subject_dir = str(patch_dir)
+        elif os.path.isfile(os.path.join(patch_dir, f"{hemi}.inflated")):
+            # patch_dir itself contains the surface files
+            subject_dir = str(patch_dir)
         else:
-            print("Error: Must specify either --subject or --subject-dir.")
+            print(
+                f"Error: Cannot auto-detect subject directory from {flat_patch_file}. "
+                "Please provide --subject-dir argument."
+            )
             return 1
+
+    # Derive subject name from directory path
+    subject_dir_path = Path(subject_dir).resolve()
+    if subject_dir_path.name == "surf":
+        subject = subject_dir_path.parent.name
+    else:
+        subject = subject_dir_path.name
 
     # Verify surface exists
     surface_file = os.path.join(subject_dir, f"{hemi}.inflated")
@@ -1208,29 +1206,25 @@ Examples:
     add_freesurfer_args(parser_flatten)
     parser_flatten.set_defaults(func=cmd_flatten)
 
-    # 'plot' subcommand
-    parser_plot = subparsers.add_parser(
-        "plot",
+    # 'plot-flatmap' subcommand
+    parser_plot_flatmap = subparsers.add_parser(
+        "plot-flatmap",
         help="Plot a flat patch file",
     )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "flat_patch",
         help="Path to the flat patch file",
     )
-    parser_plot.add_argument(
-        "--subject",
-        help="FreeSurfer subject identifier",
-    )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "--subject-dir",
-        help="Path to subject's surf directory",
+        help="Path to subject's surf directory (auto-detected if patch is in surf/)",
     )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "-o",
         "--output",
         help="Output path for the PNG image",
     )
-    parser_plot.set_defaults(func=cmd_plot)
+    parser_plot_flatmap.set_defaults(func=cmd_plot_flatmap)
 
     # 'plot-projection' subcommand
     parser_plot_projection = subparsers.add_parser(
@@ -1254,7 +1248,7 @@ Examples:
 
     # Handle default case: autoflatten /path/to/subject [options]
     # Insert 'run' subcommand when first arg looks like a path
-    known_commands = {"project", "flatten", "plot", "plot-projection", "run"}
+    known_commands = {"project", "flatten", "plot-flatmap", "plot-projection", "run"}
     if (
         len(sys.argv) > 1
         and sys.argv[1] not in known_commands
@@ -1269,8 +1263,8 @@ Examples:
         return cmd_project(args)
     elif args.command == "flatten":
         return cmd_flatten(args)
-    elif args.command == "plot":
-        return cmd_plot(args)
+    elif args.command == "plot-flatmap":
+        return cmd_plot_flatmap(args)
     elif args.command == "plot-projection":
         return cmd_plot_projection(args)
     elif args.command == "run":

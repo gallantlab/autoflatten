@@ -372,9 +372,9 @@ class TestMainFunction:
                 main()
             assert exc_info.value.code == 2
 
-    def test_plot_subcommand_requires_flat_patch(self):
-        """plot subcommand should require flat_patch argument."""
-        with patch.object(sys, "argv", ["autoflatten", "plot"]):
+    def test_plot_flatmap_subcommand_requires_flat_patch(self):
+        """plot-flatmap subcommand should require flat_patch argument."""
+        with patch.object(sys, "argv", ["autoflatten", "plot-flatmap"]):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 2
@@ -421,8 +421,8 @@ class TestMainFunction:
                 assert args.backend == "pyflatten"
                 assert args.k_ring == 5
 
-    def test_plot_subcommand_parsing(self, tmp_path):
-        """plot subcommand should parse all its arguments."""
+    def test_plot_flatmap_subcommand_parsing(self, tmp_path):
+        """plot-flatmap subcommand should parse all its arguments."""
         flat_patch = tmp_path / "lh.flat.patch.3d"
         flat_patch.touch()
 
@@ -431,23 +431,25 @@ class TestMainFunction:
             "argv",
             [
                 "autoflatten",
-                "plot",
+                "plot-flatmap",
                 str(flat_patch),
-                "--subject",
-                "sub-01",
+                "--subject-dir",
+                "/path/to/subject/surf",
                 "--output",
                 "/tmp/output.png",
             ],
         ):
             # Mock the plot command to avoid running it
-            with patch("autoflatten.cli.cmd_plot", return_value=0) as mock_plot:
+            with patch(
+                "autoflatten.cli.cmd_plot_flatmap", return_value=0
+            ) as mock_plot_flatmap:
                 result = main()
 
                 assert result == 0
-                mock_plot.assert_called_once()
-                args = mock_plot.call_args[0][0]
+                mock_plot_flatmap.assert_called_once()
+                args = mock_plot_flatmap.call_args[0][0]
                 assert args.flat_patch == str(flat_patch)
-                assert args.subject == "sub-01"
+                assert args.subject_dir == "/path/to/subject/surf"
                 assert args.output == "/tmp/output.png"
 
     def test_project_subcommand_parsing(self, tmp_path):
