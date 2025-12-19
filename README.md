@@ -1,11 +1,13 @@
 ![autoflatten logo](https://raw.githubusercontent.com/gallantlab/autoflatten/main/docs/autoflatten-logo.png)
 
-[![Tests](https://github.com/gallantlab/autoflatten/actions/workflows/run_tests.yml/badge.svg)](https://github.com/gallantlab/autoflatten/actions/workflows/run_tests.yml)
-[![codecov](https://codecov.io/gh/gallantlab/autoflatten/graph/badge.svg)](https://codecov.io/gh/gallantlab/autoflatten)
-[![PyPI version](https://img.shields.io/pypi/v/autoflatten.svg)](https://pypi.org/project/autoflatten/)
-[![Python versions](https://img.shields.io/pypi/pyversions/autoflatten.svg)](https://pypi.org/project/autoflatten/)
-[![License](https://img.shields.io/pypi/l/autoflatten.svg)](https://github.com/gallantlab/autoflatten/blob/main/LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17933205.svg)](https://doi.org/10.5281/zenodo.17933205)
+<p align="center">
+<a href="https://github.com/gallantlab/autoflatten/actions/workflows/run_tests.yml"><img src="https://github.com/gallantlab/autoflatten/actions/workflows/run_tests.yml/badge.svg" alt="Tests"></a>
+<a href="https://codecov.io/gh/gallantlab/autoflatten"><img src="https://codecov.io/gh/gallantlab/autoflatten/graph/badge.svg" alt="codecov"></a>
+<a href="https://pypi.org/project/autoflatten/"><img src="https://img.shields.io/pypi/v/autoflatten.svg" alt="PyPI version"></a>
+<a href="https://pypi.org/project/autoflatten/"><img src="https://img.shields.io/pypi/pyversions/autoflatten.svg" alt="Python versions"></a>
+<a href="https://github.com/gallantlab/autoflatten/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/autoflatten.svg" alt="License"></a>
+<a href="https://doi.org/10.5281/zenodo.17933205"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17933205.svg" alt="DOI"></a>
+</p>
 
 # autoflatten: automatically create cortical flatmaps from FreeSurfer surfaces
 
