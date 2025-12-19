@@ -15,6 +15,8 @@ from autoflatten.cli import (
     add_projection_args,
     add_pyflatten_args,
     check_freesurfer_environment,
+    cmd_plot_flatmap,
+    cmd_plot_projection,
     main,
 )
 
@@ -451,6 +453,102 @@ class TestMainFunction:
                 assert args.flat_patch == str(flat_patch)
                 assert args.subject_dir == "/path/to/subject/surf"
                 assert args.output == "/tmp/output.png"
+
+    def test_plot_projection_subcommand_requires_patch(self):
+        """plot-projection subcommand should require patch argument."""
+        with patch.object(sys, "argv", ["autoflatten", "plot-projection"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2
+
+    def test_plot_projection_subcommand_parsing(self, tmp_path):
+        """plot-projection subcommand should parse all its arguments."""
+        patch_file = tmp_path / "lh.autoflatten.patch.3d"
+        patch_file.touch()
+
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "autoflatten",
+                "plot-projection",
+                str(patch_file),
+                "--subject-dir",
+                "/path/to/subject",
+                "--output",
+                "/tmp/output.png",
+            ],
+        ):
+            with patch(
+                "autoflatten.cli.cmd_plot_projection", return_value=0
+            ) as mock_cmd:
+                result = main()
+                assert result == 0
+                mock_cmd.assert_called_once()
+                args = mock_cmd.call_args[0][0]
+                assert args.patch == str(patch_file)
+                assert args.subject_dir == "/path/to/subject"
+                assert args.output == "/tmp/output.png"
+
+    def test_cmd_plot_flatmap_auto_detects_subject_dir_from_surf(self, tmp_path):
+        """cmd_plot_flatmap should auto-detect subject_dir when patch is in surf/."""
+        # Create subject structure: tmp_path/sub-01/surf/
+        subject_dir = tmp_path / "sub-01"
+        surf_dir = subject_dir / "surf"
+        surf_dir.mkdir(parents=True)
+
+        # Create patch file in surf/
+        patch_file = surf_dir / "lh.flat.patch.3d"
+        patch_file.touch()
+
+        # Create required surface file
+        (surf_dir / "lh.inflated").touch()
+
+        # Create mock args
+        args = argparse.Namespace(
+            flat_patch=str(patch_file),
+            subject_dir=None,  # Not provided - should auto-detect
+            output=None,
+        )
+
+        with patch(
+            "autoflatten.cli.plot_patch", return_value=str(tmp_path / "out.png")
+        ):
+            result = cmd_plot_flatmap(args)
+            assert result == 0
+
+    def test_cmd_plot_flatmap_fails_without_subject_dir(self, tmp_path):
+        """cmd_plot_flatmap should fail when patch not in surf/ and no --subject-dir."""
+        # Create patch file NOT in surf/ directory
+        patch_file = tmp_path / "lh.flat.patch.3d"
+        patch_file.touch()
+
+        args = argparse.Namespace(
+            flat_patch=str(patch_file),
+            subject_dir=None,
+            output=None,
+        )
+
+        result = cmd_plot_flatmap(args)
+        assert result == 1  # Should fail
+
+    def test_cmd_plot_projection_with_valid_args(self, tmp_path):
+        """cmd_plot_projection should call plot_projection with correct args."""
+        patch_file = tmp_path / "lh.autoflatten.patch.3d"
+        patch_file.touch()
+
+        args = argparse.Namespace(
+            patch=str(patch_file),
+            subject_dir="/path/to/subject",
+            output=str(tmp_path / "output.png"),
+        )
+
+        with patch(
+            "autoflatten.cli.plot_projection",
+            return_value=str(tmp_path / "output.png"),
+        ):
+            result = cmd_plot_projection(args)
+            assert result == 0
 
     def test_project_subcommand_parsing(self, tmp_path):
         """project subcommand should parse all its arguments."""
