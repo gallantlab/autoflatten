@@ -43,11 +43,11 @@ The project uses pre-commit hooks for:
 
 ### Git Workflow
 
-**IMPORTANT**: If pre-commit hooks fail and modify files (e.g., ruff formatting, trailing whitespace fixes):
+**Pre-commit hooks**: If pre-commit hooks modify files (e.g., ruff formatting, trailing whitespace fixes), the commit will fail. Simply re-add the modified files and run the commit again:
 
-- **NEVER amend the commit** - this can cause issues with git history
-- Instead, create a new commit with the pre-commit fixes
-- This ensures clean, traceable git history
+```bash
+git add -u && git commit -m "Your message"
+```
 
 ### Running the CLI
 ```bash
