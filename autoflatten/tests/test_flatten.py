@@ -1598,3 +1598,437 @@ class TestValidateTopology:
 
         result = validate_topology(vertices, faces)
         assert result  # Returns 1 for valid topology
+
+
+# =============================================================================
+# Tier 3: Area Energy Function Tests
+# =============================================================================
+
+
+class TestComputeAreaEnergy:
+    """Tests for compute_area_energy (sigmoid-weighted area energy)."""
+
+    def test_zero_energy_on_matching_areas(self):
+        """Test that matching 2D and 3D areas give low energy."""
+        from autoflatten.flatten.energy import compute_area_energy
+
+        # Unit square with matching areas
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
+
+        # Original areas match 2D areas (each triangle is 0.5)
+        original_areas = jnp.array([0.5, 0.5])
+
+        energy = compute_area_energy(uv, faces, original_areas)
+
+        # Energy should be low (sigmoid weights are low for positive ratios)
+        assert float(energy) < 0.1
+
+    def test_high_energy_on_flipped_triangles(self):
+        """Test that flipped triangles produce high energy."""
+        from autoflatten.flatten.energy import compute_area_energy
+
+        # Square with one triangle flipped (CW winding)
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        faces = jnp.array([[0, 1, 2], [0, 3, 2]])  # Second triangle is CW
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        energy = compute_area_energy(uv, faces, original_areas)
+
+        # Energy should be higher than for correctly oriented mesh
+        assert float(energy) > 0.1
+
+    def test_energy_increases_with_more_flips(self):
+        """Test that more flipped triangles increase energy."""
+        from autoflatten.flatten.energy import compute_area_energy
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        original_areas = jnp.array([0.5, 0.5])
+
+        # Zero flipped triangles
+        faces_good = jnp.array([[0, 1, 2], [0, 2, 3]])
+        energy_good = compute_area_energy(uv, faces_good, original_areas)
+
+        # One flipped triangle
+        faces_one_flip = jnp.array([[0, 1, 2], [0, 3, 2]])
+        energy_one = compute_area_energy(uv, faces_one_flip, original_areas)
+
+        # Two flipped triangles
+        faces_two_flips = jnp.array([[0, 2, 1], [0, 3, 2]])
+        energy_two = compute_area_energy(uv, faces_two_flips, original_areas)
+
+        assert float(energy_one) > float(energy_good)
+        assert float(energy_two) > float(energy_one)
+
+    def test_neg_area_k_parameter(self):
+        """Test that neg_area_k affects sigmoid steepness."""
+        from autoflatten.flatten.energy import compute_area_energy
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
+        faces = jnp.array([[0, 2, 1]])  # Flipped
+        original_areas = jnp.array([0.25])
+
+        # Lower k = gentler sigmoid
+        energy_low_k = compute_area_energy(uv, faces, original_areas, neg_area_k=1.0)
+        # Higher k = steeper sigmoid
+        energy_high_k = compute_area_energy(uv, faces, original_areas, neg_area_k=20.0)
+
+        # Both should be positive (flipped triangle)
+        assert float(energy_low_k) > 0
+        assert float(energy_high_k) > 0
+
+
+class TestComputeAreaEnergyFsV6:
+    """Tests for compute_area_energy_fs_v6 (log-softplus area energy)."""
+
+    def test_low_energy_on_positive_areas(self):
+        """Test that positive areas give low energy."""
+        from autoflatten.flatten.energy import compute_area_energy_fs_v6
+
+        # CCW triangles (positive areas)
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
+
+        energy = compute_area_energy_fs_v6(uv, faces)
+
+        # Energy should be low for positive areas
+        assert float(energy) < 1.0
+
+    def test_high_energy_on_negative_areas(self):
+        """Test that negative (flipped) areas give high energy."""
+        from autoflatten.flatten.energy import compute_area_energy_fs_v6
+
+        # CW triangle (negative area)
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+        faces_good = jnp.array([[0, 1, 2]])  # CCW
+        faces_bad = jnp.array([[0, 2, 1]])  # CW
+
+        energy_good = compute_area_energy_fs_v6(uv, faces_good)
+        energy_bad = compute_area_energy_fs_v6(uv, faces_bad)
+
+        assert float(energy_bad) > float(energy_good)
+
+    def test_linear_penalty_for_very_negative_areas(self):
+        """Test that log-softplus gives linear penalty for large negative areas."""
+        from autoflatten.flatten.energy import compute_area_energy_fs_v6
+
+        # Large negative area (scaled up triangle, flipped)
+        uv_small = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+        uv_large = jnp.array([[0.0, 0.0], [10.0, 0.0], [5.0, 10.0]])
+        faces = jnp.array([[0, 2, 1]])  # CW (flipped)
+
+        energy_small = compute_area_energy_fs_v6(uv_small, faces)
+        energy_large = compute_area_energy_fs_v6(uv_large, faces)
+
+        # Larger negative area should have higher energy
+        assert float(energy_large) > float(energy_small)
+
+
+class TestComputeLogBarrierAreaEnergy:
+    """Tests for compute_log_barrier_area_energy (hybrid barrier energy)."""
+
+    def test_low_energy_at_original_size(self):
+        """Test that triangles at original proportions have low energy."""
+        from autoflatten.flatten.energy import compute_log_barrier_area_energy
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
+
+        # Equal fractions (each triangle is 50% of total)
+        original_fracs = jnp.array([0.5, 0.5])
+
+        energy = compute_log_barrier_area_energy(uv, faces, original_fracs)
+
+        # Energy should be low at original proportions
+        assert float(energy) < 1.0
+
+    def test_high_energy_when_shrunk(self):
+        """Test that shrunk triangles produce higher energy."""
+        from autoflatten.flatten.energy import compute_log_barrier_area_energy
+
+        # One triangle is much smaller relative to original
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.01]])
+        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
+
+        # Original had equal fractions
+        original_fracs = jnp.array([0.5, 0.5])
+
+        energy = compute_log_barrier_area_energy(uv, faces, original_fracs)
+
+        # Energy should be higher due to shrinkage
+        assert float(energy) > 0.5
+
+    def test_barrier_weight_affects_energy(self):
+        """Test that barrier_weight parameter affects energy."""
+        from autoflatten.flatten.energy import compute_log_barrier_area_energy
+
+        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.1]])
+        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
+        original_fracs = jnp.array([0.5, 0.5])
+
+        energy_low = compute_log_barrier_area_energy(
+            uv, faces, original_fracs, barrier_weight=0.01
+        )
+        energy_high = compute_log_barrier_area_energy(
+            uv, faces, original_fracs, barrier_weight=1.0
+        )
+
+        # Higher barrier weight should increase energy for shrunk triangles
+        assert float(energy_high) > float(energy_low)
+
+
+class TestComputeBothEnergies:
+    """Tests for compute_both_energies (combined metric + area energy)."""
+
+    def test_returns_two_values(self, simple_quad_mesh, simple_quad_uv):
+        """Test that both energy values are returned."""
+        from autoflatten.flatten.energy import (
+            compute_both_energies,
+            prepare_metric_data,
+        )
+
+        vertices, faces = simple_quad_mesh
+        uv = jnp.array(simple_quad_uv)
+        faces_jax = jnp.array(faces)
+
+        # Create k-ring data (simple 1-ring)
+        k_rings = [
+            np.array([1, 2]),
+            np.array([0, 3]),
+            np.array([0, 3]),
+            np.array([1, 2]),
+        ]
+        target_distances = [
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+        ]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+        neighbors_jax = jnp.array(neighbors)
+        targets_jax = jnp.array(targets)
+        mask_jax = jnp.array(mask)
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        J_d, J_a = compute_both_energies(
+            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
+        )
+
+        assert np.isfinite(float(J_d))
+        assert np.isfinite(float(J_a))
+
+    def test_matches_individual_calls(self, simple_quad_mesh, simple_quad_uv):
+        """Test that combined call matches individual energy functions."""
+        from autoflatten.flatten.energy import (
+            compute_both_energies,
+            compute_metric_energy,
+            compute_area_energy,
+            prepare_metric_data,
+        )
+
+        vertices, faces = simple_quad_mesh
+        uv = jnp.array(simple_quad_uv)
+        faces_jax = jnp.array(faces)
+
+        k_rings = [
+            np.array([1, 2]),
+            np.array([0, 3]),
+            np.array([0, 3]),
+            np.array([1, 2]),
+        ]
+        target_distances = [
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+            np.array([1.0, 1.0]),
+        ]
+
+        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
+        neighbors_jax = jnp.array(neighbors)
+        targets_jax = jnp.array(targets)
+        mask_jax = jnp.array(mask)
+
+        original_areas = jnp.array([0.5, 0.5])
+
+        # Combined call
+        J_d_combined, J_a_combined = compute_both_energies(
+            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
+        )
+
+        # Individual calls
+        J_d_single = compute_metric_energy(uv, neighbors_jax, targets_jax, mask_jax)
+        J_a_single = compute_area_energy(uv, faces_jax, original_areas)
+
+        assert np.isclose(float(J_d_combined), float(J_d_single))
+        assert np.isclose(float(J_a_combined), float(J_a_single))
+
+
+# =============================================================================
+# Tier 3: Distance Function Tests
+# =============================================================================
+
+
+class TestGetRingsByLevel:
+    """Tests for get_rings_by_level and get_rings_by_level_fast functions."""
+
+    def test_rings_separated_by_level(self, simple_quad_mesh):
+        """Test that rings are correctly separated by level."""
+        from autoflatten.flatten.distance import get_rings_by_level
+
+        vertices, faces = simple_quad_mesh
+        n_vertices = len(vertices)
+
+        rings = get_rings_by_level(faces, n_vertices, k=2)
+
+        # Each vertex should have k=2 levels
+        assert len(rings) == n_vertices
+        for v_rings in rings:
+            assert len(v_rings) == 2
+
+    def test_1_ring_contains_direct_neighbors(self, simple_quad_mesh):
+        """Test that level 0 (1-ring) contains only direct neighbors."""
+        from autoflatten.flatten.distance import get_rings_by_level
+        import igl
+
+        vertices, faces = simple_quad_mesh
+        n_vertices = len(vertices)
+
+        rings = get_rings_by_level(faces, n_vertices, k=1)
+
+        # Compare with igl adjacency list
+        adj = igl.adjacency_list(faces.astype(np.int64))
+
+        for v in range(n_vertices):
+            ring_0 = set(rings[v][0])
+            adj_set = set(adj[v])
+            assert ring_0 == adj_set
+
+    def test_2_ring_excludes_1_ring_vertices(self, triangle_strip_mesh):
+        """Test that level 1 (2-ring) doesn't include 1-ring vertices."""
+        from autoflatten.flatten.distance import get_rings_by_level
+
+        vertices, faces = triangle_strip_mesh
+        n_vertices = len(vertices)
+
+        rings = get_rings_by_level(faces, n_vertices, k=2)
+
+        for v in range(n_vertices):
+            ring_0 = set(rings[v][0])
+            ring_1 = set(rings[v][1])
+            # No overlap between levels
+            assert ring_0.isdisjoint(ring_1)
+
+    def test_fast_version_matches_slow(self, simple_quad_mesh):
+        """Test that Numba-accelerated version matches pure Python."""
+        from autoflatten.flatten.distance import (
+            get_rings_by_level,
+            get_rings_by_level_fast,
+        )
+
+        vertices, faces = simple_quad_mesh
+        n_vertices = len(vertices)
+
+        rings_slow = get_rings_by_level(faces, n_vertices, k=2)
+        rings_fast = get_rings_by_level_fast(faces, n_vertices, k=2)
+
+        for v in range(n_vertices):
+            for level in range(2):
+                slow_set = set(rings_slow[v][level])
+                fast_set = set(rings_fast[v][level])
+                assert slow_set == fast_set
+
+
+class TestProjectToTangentPlane:
+    """Tests for project_to_tangent_plane function."""
+
+    def test_projects_to_2d(self):
+        """Test that projection produces 2D coordinates."""
+        from autoflatten.flatten.distance import project_to_tangent_plane
+
+        center = np.array([0.0, 0.0, 0.0])
+        normal = np.array([0.0, 0.0, 1.0])  # z-axis normal
+        neighbors = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+
+        xy = project_to_tangent_plane(center, normal, neighbors)
+
+        assert xy.shape == (3, 2)
+
+    def test_preserves_distances_on_plane(self):
+        """Test that distances are approximately preserved for coplanar points."""
+        from autoflatten.flatten.distance import project_to_tangent_plane
+
+        center = np.array([0.0, 0.0, 0.0])
+        normal = np.array([0.0, 0.0, 1.0])
+
+        # Points on the xy-plane
+        neighbors = np.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 1.0, 0.0]])
+
+        xy = project_to_tangent_plane(center, normal, neighbors)
+
+        # Check distances from origin
+        dist_3d = np.linalg.norm(neighbors, axis=1)
+        dist_2d = np.linalg.norm(xy, axis=1)
+
+        np.testing.assert_allclose(dist_2d, dist_3d, rtol=1e-5)
+
+    def test_handles_different_normal_orientations(self):
+        """Test projection with normals in different directions."""
+        from autoflatten.flatten.distance import project_to_tangent_plane
+
+        center = np.array([0.0, 0.0, 0.0])
+        neighbors = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+        # X-axis normal
+        normal_x = np.array([1.0, 0.0, 0.0])
+        xy_x = project_to_tangent_plane(center, normal_x, neighbors)
+        assert xy_x.shape == (2, 2)
+
+        # Y-axis normal
+        normal_y = np.array([0.0, 1.0, 0.0])
+        xy_y = project_to_tangent_plane(center, normal_y, neighbors)
+        assert xy_y.shape == (2, 2)
+
+    def test_single_neighbor(self):
+        """Test with a single neighbor."""
+        from autoflatten.flatten.distance import project_to_tangent_plane
+
+        center = np.array([0.0, 0.0, 0.0])
+        normal = np.array([0.0, 0.0, 1.0])
+        neighbors = np.array([[1.0, 0.0, 0.0]])
+
+        xy = project_to_tangent_plane(center, normal, neighbors)
+
+        assert xy.shape == (1, 2)
+        assert np.isclose(np.linalg.norm(xy[0]), 1.0)
+
+
+class TestComputeVertexNormals:
+    """Tests for compute_vertex_normals function."""
+
+    def test_unit_normals(self, simple_quad_mesh):
+        """Test that vertex normals are unit vectors."""
+        from autoflatten.flatten.distance import compute_vertex_normals
+
+        vertices, faces = simple_quad_mesh
+
+        normals = compute_vertex_normals(vertices.astype(np.float64), faces)
+
+        norms = np.linalg.norm(normals, axis=1)
+        np.testing.assert_allclose(norms, 1.0, rtol=1e-5)
+
+    def test_flat_surface_has_uniform_normals(self, simple_quad_mesh):
+        """Test that a flat surface has uniform normals."""
+        from autoflatten.flatten.distance import compute_vertex_normals
+
+        vertices, faces = simple_quad_mesh
+
+        normals = compute_vertex_normals(vertices.astype(np.float64), faces)
+
+        # All normals should be parallel (same direction)
+        # Check that all normals are close to the first one
+        for i in range(1, len(normals)):
+            dot = np.dot(normals[0], normals[i])
+            assert np.isclose(abs(dot), 1.0, rtol=1e-5)
