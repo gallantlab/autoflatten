@@ -499,7 +499,12 @@ def plot_flatmap(
     ax.set_ylabel("Y (mm)")
     ax.set_title("Flatmap")
     if (show_flipped and n_flipped > 0) or (show_boundary and np.sum(is_border) > 0):
-        ax.legend(loc="upper right", fontsize=8)
+        # Set legend location based on hemisphere (lh=lower right, rh=upper right)
+        patch_filename = Path(flat_patch_path).name
+        legend_loc = (
+            "upper right" if patch_filename.startswith("rh.") else "lower right"
+        )
+        ax.legend(loc=legend_loc, fontsize=8)
 
     # Center plot: Per-vertex metric distortion (percentage)
     ax = axes[1]
@@ -790,8 +795,13 @@ def plot_projection(
     n_cut_faces = face_is_cut.sum()
 
     # Build title: "{subject} {filename}\n{stats}"
+    # Extract subject name (handle case where subject_dir is the surf/ directory)
     if title is None:
-        subject_name = Path(subject_dir).name
+        subject_dir_path = Path(subject_dir)
+        if subject_dir_path.name == "surf":
+            subject_name = subject_dir_path.parent.name
+        else:
+            subject_name = subject_dir_path.name
         filename = Path(patch_path).name
         title = (
             f"{subject_name} {filename}\n"
