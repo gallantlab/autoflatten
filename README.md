@@ -18,220 +18,24 @@
 ## Features
 
 - **Automatic cut mapping** from a template to individual subjects
-- **Two backends for the flattening process**:
-  - **pyflatten** (default): our own JAX-accelerated Python implementation of FreeSurfer's `mris_flatten` algorithm. Provides similar results as FreeSurfer's `mris_flatten`, but it is much faster.
-  - **freesurfer**: FreeSurfer `mris_flatten` wrapper
+- **Two flattening backends**: JAX-accelerated pyflatten (default) or FreeSurfer's `mris_flatten`
 - **Visualization** with area distortion metrics
 
-## Requirements
-
-- Python 3.10+
-- FreeSurfer 6.0+ (for projection phase only)
-  - `FREESURFER_HOME` and `SUBJECTS_DIR` environment variables must be set
-  - FreeSurfer binaries must be in PATH
-
-## Installation
-
-### From PyPI
+## Quick Start
 
 ```bash
+# Install
 pip install autoflatten
+
+# Run on a FreeSurfer subject (requires FreeSurfer 6.0+ for projection)
+autoflatten /path/to/subjects/sub-01
 ```
 
-### From source (for development)
+## Documentation
 
-```bash
-git clone https://github.com/gallantlab/autoflatten.git
-cd autoflatten
+For full documentation, usage examples, and configuration options, visit the **[autoflatten website](https://gallantlab.org/autoflatten)**.
 
-# Using uv (recommended)
-uv pip install -e ".[test]"
-
-# Using pip
-pip install -e ".[test]"
-```
-
-## Usage
-
-AutoFlatten provides a CLI with five commands:
-
-| Command | Description |
-|---------|-------------|
-| `autoflatten /path/to/subject` | Full pipeline: projection + flattening |
-| `autoflatten project /path/to/subject` | Projection only: create patch file |
-| `autoflatten flatten PATCH_FILE` | Flattening only: flatten existing patch |
-| `autoflatten plot-projection PATCH` | Plot a 3D projection surface with cuts highlighted |
-| `autoflatten plot-flatmap FLAT_PATCH` | Plot a flattened surface with quality metrics |
-
-### Full Pipeline
-
-Process a subject through the complete pipeline (projection + flattening):
-
-```bash
-# Using the default pyflatten backend
-autoflatten /path/to/subjects/sub-01 --output-dir /path/to/output
-
-# Use FreeSurfer backend instead
-autoflatten /path/to/subjects/sub-01 --backend freesurfer
-
-# Process both hemispheres in parallel
-autoflatten /path/to/subjects/sub-01 --parallel
-
-# Process only left hemisphere
-autoflatten /path/to/subjects/sub-01 --hemispheres lh
-```
-
-### Projection Only
-
-Create patch files without running flattening:
-
-```bash
-autoflatten project /path/to/subjects/sub-01 --output-dir /path/to/output
-```
-
-### Flattening Only
-
-Flatten an existing patch file:
-
-```bash
-autoflatten flatten lh.autoflatten.patch.3d
-
-# Specify base surface explicitly (default: auto-detects {hemi}.fiducial or {hemi}.smoothwm)
-autoflatten flatten lh.autoflatten.patch.3d --base-surface /path/to/lh.smoothwm
-
-# Customize pyflatten parameters
-autoflatten flatten lh.autoflatten.patch.3d --k-ring 25 --n-neighbors 40
-```
-
-### Visualization
-
-Plot a 3D projection surface showing cuts:
-
-```bash
-# Auto-detects subject directory if patch is in surf/ directory
-autoflatten plot-projection /path/to/subject/surf/lh.autoflatten.patch.3d
-
-# Explicit subject directory
-autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subject/surf
-```
-
-Plot a flattened surface with quality metrics:
-
-```bash
-# Auto-detects subject directory if patch is in surf/ directory
-autoflatten plot-flatmap /path/to/subject/surf/lh.autoflatten.flat.patch.3d
-
-# Explicit subject directory
-autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
-```
-
-## Output Files
-
-For each processed hemisphere, the pipeline creates:
-
-| File | Description |
-|------|-------------|
-| `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts |
-| `{hemi}.autoflatten.patch.png` | 3D projection visualization (cuts highlighted) |
-| `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
-| `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log (pyflatten) |
-| `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
-| `{hemi}.autoflatten.projection.log` | Projection phase log |
-
-## How It Works
-
-### Projection Phase
-
-1. **Template Loading**: Load cut definitions from fsaverage template (medial wall + 5 anatomical cuts: calcarine, medial1-3, temporal)
-
-2. **Cut Mapping**: Use FreeSurfer's `mri_label2label` to map template cuts to the target subject via surface-based registration
-
-3. **Continuity Fixing**: Ensure mapped cuts form continuous lines using graph-based algorithms (NetworkX)
-
-4. **Geodesic Refinement** (default): Replace mapped cuts with geodesic shortest paths between endpoints for anatomically accurate boundaries
-
-5. **Patch Creation**: Generate FreeSurfer-compatible binary patch file
-
-### Flattening Phase (pyflatten backend)
-
-The pyflatten backend implements a JAX-accelerated version of FreeSurfer's `mris_flatten` algorithm:
-
-1. **K-ring Distance Computation**: Compute geodesic distances to k-hop neighbors using Numba-accelerated Dijkstra's algorithm with optional angular sampling
-
-2. **Initial Projection**: Project 3D patch onto 2D plane perpendicular to the average surface normal, with FreeSurfer-style scaling (default 3×)
-
-3. **Negative Area Removal (NAR)**: Fix flipped triangles from initial projection using gradient descent with `l_nlarea=1.0` and progressively increasing `l_dist` weights `[1e-6, 1e-5, 1e-3, 1e-2, 1e-1]`
-
-4. **3-Epoch Optimization** (matches FreeSurfer's `mrisIntegrationEpoch` schedule):
-   - **Epoch 1** (area-dominant): `l_nlarea=1.0`, `l_dist=0.1` — prioritizes preventing triangle flips
-   - **Epoch 2** (balanced): `l_nlarea=1.0`, `l_dist=1.0` — equal weight to area and distance preservation
-   - **Epoch 3** (distance-dominant): `l_nlarea=0.1`, `l_dist=1.0` — prioritizes geodesic distance preservation
-
-   Each epoch uses a gradient smoothing schedule `[1024, 256, 64, 16, 4, 1, 0]` with FreeSurfer-style convergence criteria
-
-5. **Final Negative Area Removal**: Clean up any remaining flipped triangles with tighter tolerance
-
-6. **Spring Smoothing**: Laplacian smoothing that pulls vertices toward their neighbor centroids for visually smoother flatmaps
-
-## Configuration
-
-### Common Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--output-dir` | subject's surf/ | Directory to save output files |
-| `--hemispheres` | both | Hemispheres to process (lh, rh, or both) |
-| `--parallel` | False | Process hemispheres in parallel |
-| `--overwrite` | False | Overwrite existing files |
-
-### pyflatten Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--k-ring` | 7 | K-ring neighborhood size |
-| `--n-neighbors` | 12 | Neighbors per ring (angular sampling) |
-| `--n-cores` | -1 | CPU cores (-1 = all) |
-| `--skip-phase` | - | Skip specific optimization phases |
-| `--skip-spring-smoothing` | False | Skip final smoothing |
-
-### FreeSurfer Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--seed` | random | Random seed for mris_flatten |
-| `--nthreads` | 1 | Number of threads |
-| `--distances` | 15 80 | Distance parameters |
-| `--n-iterations` | 200 | Maximum iterations |
-| `--tol` | 0.005 | Flatness tolerance |
-| `--dilate` | 1 | Number of dilations |
-| `--passes` | 1 | Number of passes |
-
-## Templates
-
-The package includes a built-in template in `autoflatten/default_templates/`:
-
-- **fsaverage_cuts_template.json** (default): Standard template based on fsaverage, created by Mark Lescroart and Natalia Bilenko
-
-Use a custom template with `--template-file /path/to/template.json`.
-
-## Development
-
-```bash
-# Install with test dependencies
-pip install -e ".[test]"
-
-# Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov=autoflatten
-
-# Install pre-commit hooks
-pre-commit install
-
-# Run code formatting
-ruff format .
-```
+See **[example outputs](https://gallantlab.org/autoflatten/example-output)** to preview what autoflatten produces.
 
 ## Citation
 
