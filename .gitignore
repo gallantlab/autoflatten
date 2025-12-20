@@ -179,3 +179,4 @@ output_tests
 
 # setuptools-scm generated version file
 autoflatten/_version.py
+uv.lock

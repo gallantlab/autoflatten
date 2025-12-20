@@ -1620,7 +1620,7 @@ class SurfaceFlattener:
             print("Loading cortical surface patch...")
 
         orig_vertices, orig_faces = read_surface(surface_path)
-        patch_vertices, orig_idx, _ = read_patch(patch_path)
+        patch_vertices, orig_idx, is_border = read_patch(patch_path)
         patch_faces = extract_patch_faces(orig_faces, orig_idx)
 
         # Remove small disconnected components (e.g., isolated triangles)
@@ -1633,8 +1633,9 @@ class SurfaceFlattener:
                 warn_medium_threshold=100,
             )
         )
-        # Update orig_idx to reflect removed vertices
+        # Update orig_idx and is_border to reflect removed vertices
         orig_idx = orig_idx[used_after_clean]
+        is_border = is_border[used_after_clean]
 
         # Use patch vertices for mesh, fiducial for distances
         self.vertices, self.faces, used = remove_isolated_vertices(
@@ -1647,6 +1648,7 @@ class SurfaceFlattener:
         )
 
         self.orig_indices = orig_idx[used]
+        self.is_border = is_border[used]
 
         if self.config.verbose:
             print(f"Mesh: {len(self.vertices):,} vertices, {len(self.faces):,} faces")
@@ -2104,8 +2106,8 @@ class SurfaceFlattener:
         # Create 3D vertices with UV as XY and Z=0
         flat_vertices = np.column_stack([uv, np.zeros(len(uv))])
 
-        # Write patch
-        write_patch(output_path, flat_vertices, self.orig_indices)
+        # Write patch (preserve border vertex flags from input)
+        write_patch(output_path, flat_vertices, self.orig_indices, self.is_border)
 
         if self.config.verbose:
             print(f"Saved flattened patch to {output_path}")

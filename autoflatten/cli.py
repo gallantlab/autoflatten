@@ -9,7 +9,8 @@ CLI Structure:
     autoflatten /path/to/subject     - Full pipeline: project + flatten (default)
     autoflatten project /path/to/subject  - Projection only: creates patch file
     autoflatten flatten PATCH_FILE   - Flattening only: flattens existing patch
-    autoflatten plot FLAT_PATCH      - Visualization
+    autoflatten plot-projection PATCH     - Visualize projection (3D surface with cuts)
+    autoflatten plot-flatmap FLAT_PATCH   - Visualize flattened surface
 """
 
 import argparse
@@ -37,7 +38,7 @@ from autoflatten.freesurfer import create_patch_file, load_surface
 from autoflatten.logging import restore_logging, setup_logging
 from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
-from autoflatten.viz import plot_patch
+from autoflatten.viz import plot_patch, plot_projection
 
 
 def check_freesurfer_environment():
@@ -288,9 +289,31 @@ def run_projection(
         print(f"  Patch vertices: {n_patch_vertices}")
         print(f"  Output file: {patch_file}")
 
+        # Generate projection plot
+        print("\nGenerating Projection Plot")
+        print("-" * 26)
+        plot_output = os.path.join(output_dir, f"{hemi}.autoflatten.patch.png")
+        try:
+            plot_projection(
+                patch_path=patch_file,
+                subject_dir=subject_dir,
+                output_path=plot_output,
+                overwrite=overwrite,
+            )
+        except (ValueError, FileNotFoundError, OSError) as e:
+            print(f"Warning: Failed to generate projection plot: {e}")
+            traceback.print_exc()
+            print("Continuing without projection plot...")
+        except Exception:
+            print("Unexpected error while generating projection plot:")
+            traceback.print_exc()
+            raise
+
         print("\nRESULT")
         print("-" * 6)
         print(f"Patch file created: {patch_file}")
+        if os.path.exists(plot_output):
+            print(f"Projection plot: {plot_output}")
         print(f"Log file: {log_base}.log")
 
         # Footer
@@ -481,9 +504,6 @@ def process_hemisphere(
                         "(use --overwrite to force)"
                     )
             else:
-                # Remove existing plot file if overwrite is enabled
-                if os.path.exists(plot_file) and overwrite:
-                    os.remove(plot_file)
                 surf_dir = os.path.join(subject_dir, "surf")
                 try:
                     plot_file = plot_patch(
@@ -492,12 +512,12 @@ def process_hemisphere(
                         surf_dir,
                         output_dir=output_dir,
                         surface=f"{hemi}.inflated",
+                        overwrite=overwrite,
                     )
                     if verbose:
                         print(f"Generated plot: {plot_file}")
                 except Exception as e:
-                    if verbose:
-                        print(f"Warning: Failed to generate plot: {e}")
+                    print(f"Warning: Failed to generate plot: {e}")
                     plot_file = None
             result["plot_file"] = plot_file
 
@@ -815,15 +835,9 @@ def cmd_flatten(args):
         return 1
 
 
-def cmd_plot(args):
+def cmd_plot_flatmap(args):
     """Plot a flat patch file."""
-    print("Starting Autoflatten Plotting...")
-
-    # Check FreeSurfer environment
-    fs_check, env_vars = check_freesurfer_environment()
-    if not fs_check:
-        print("FreeSurfer environment is not properly set up. Exiting.")
-        return 1
+    print("Starting Autoflatten Flatmap Plotting...")
 
     flat_patch_file = args.flat_patch
     if not os.path.exists(flat_patch_file):
@@ -840,27 +854,30 @@ def cmd_plot(args):
         print(f"Error: Could not determine hemisphere from filename: {basename}")
         return 1
 
-    # Determine subject directory
+    # Determine subject directory with auto-detection
     if args.subject_dir:
         subject_dir = args.subject_dir
-        if args.subject:
-            subject = args.subject
-        else:
-            subject = os.path.basename(
-                os.path.dirname(os.path.normpath(subject_dir.rstrip(os.sep)))
-            )
     else:
-        if args.subject:
-            subject = args.subject
-            subjects_dir = env_vars.get("SUBJECTS_DIR")
-            if subjects_dir:
-                subject_dir = os.path.join(subjects_dir, args.subject, "surf")
-            else:
-                print("Error: SUBJECTS_DIR not set and --subject-dir not specified.")
-                return 1
+        # Auto-detect: if patch is in surf/ directory, use parent as subject_dir
+        patch_dir = Path(flat_patch_file).resolve().parent
+        if patch_dir.name == "surf":
+            subject_dir = str(patch_dir)
+        elif os.path.isfile(os.path.join(patch_dir, f"{hemi}.inflated")):
+            # patch_dir itself contains the surface files
+            subject_dir = str(patch_dir)
         else:
-            print("Error: Must specify either --subject or --subject-dir.")
+            print(
+                f"Error: Cannot auto-detect subject directory from {flat_patch_file}. "
+                "Please provide --subject-dir argument."
+            )
             return 1
+
+    # Derive subject name from directory path
+    subject_dir_path = Path(subject_dir).resolve()
+    if subject_dir_path.name == "surf":
+        subject = subject_dir_path.parent.name
+    else:
+        subject = subject_dir_path.name
 
     # Verify surface exists
     surface_file = os.path.join(subject_dir, f"{hemi}.inflated")
@@ -879,6 +896,8 @@ def cmd_plot(args):
     print(f"Flat patch file: {flat_patch_file}")
     print(f"Subject: {subject}")
 
+    overwrite = getattr(args, "overwrite", False)
+
     try:
         result = plot_patch(
             flat_patch_file,
@@ -886,6 +905,7 @@ def cmd_plot(args):
             subject_dir,
             output_dir=output_dir,
             surface=f"{hemi}.inflated",
+            overwrite=overwrite,
         )
         if args.output:
             final_output = os.path.abspath(args.output)
@@ -897,6 +917,51 @@ def cmd_plot(args):
         return 0
     except Exception as e:
         print(f"Failed to generate plot: {e}")
+        traceback.print_exc()
+        return 1
+
+
+def cmd_plot_projection(args):
+    """Plot a projection patch file showing the surface with cuts highlighted."""
+    print("Starting Autoflatten Projection Plotting...")
+
+    patch_file = args.patch
+    if not os.path.exists(patch_file):
+        print(f"Error: Patch file not found: {patch_file}")
+        return 1
+
+    # Determine subject directory
+    subject_dir = args.subject_dir if args.subject_dir else None
+
+    # Determine output path
+    if args.output:
+        output_path = os.path.abspath(args.output)
+    else:
+        # Default: same directory as patch, with .png extension
+        output_path = patch_file.replace(".3d", ".png")
+
+    print(f"Patch file: {patch_file}")
+    if subject_dir:
+        print(f"Subject directory: {subject_dir}")
+    print(f"Output: {output_path}")
+
+    overwrite = getattr(args, "overwrite", False)
+
+    try:
+        result = plot_projection(
+            patch_path=patch_file,
+            subject_dir=subject_dir,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+        print(f"Successfully saved projection plot: {result}")
+        return 0
+    except FileNotFoundError as e:
+        print(f"Failed to generate projection plot (file not found): {e}")
+        traceback.print_exc()
+        return 1
+    except (ValueError, OSError) as e:
+        print(f"Failed to generate projection plot: {e}")
         traceback.print_exc()
         return 1
 
@@ -1087,7 +1152,7 @@ Examples:
   autoflatten /path/to/subjects/sub-01 --backend freesurfer
 
   # Plot a flattened surface:
-  autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+  autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
 """,
     )
 
@@ -1153,33 +1218,59 @@ Examples:
     add_freesurfer_args(parser_flatten)
     parser_flatten.set_defaults(func=cmd_flatten)
 
-    # 'plot' subcommand
-    parser_plot = subparsers.add_parser(
-        "plot",
+    # 'plot-flatmap' subcommand
+    parser_plot_flatmap = subparsers.add_parser(
+        "plot-flatmap",
         help="Plot a flat patch file",
     )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "flat_patch",
         help="Path to the flat patch file",
     )
-    parser_plot.add_argument(
-        "--subject",
-        help="FreeSurfer subject identifier",
-    )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "--subject-dir",
-        help="Path to subject's surf directory",
+        help="Path to subject's surf directory (auto-detected if patch is in surf/)",
     )
-    parser_plot.add_argument(
+    parser_plot_flatmap.add_argument(
         "-o",
         "--output",
         help="Output path for the PNG image",
     )
-    parser_plot.set_defaults(func=cmd_plot)
+    parser_plot_flatmap.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output file",
+    )
+    parser_plot_flatmap.set_defaults(func=cmd_plot_flatmap)
+
+    # 'plot-projection' subcommand
+    parser_plot_projection = subparsers.add_parser(
+        "plot-projection",
+        help="Plot a projection patch file (3D surface with cuts)",
+    )
+    parser_plot_projection.add_argument(
+        "patch",
+        help="Path to the projection patch file (e.g., lh.autoflatten.patch.3d)",
+    )
+    parser_plot_projection.add_argument(
+        "--subject-dir",
+        help="Path to FreeSurfer subject directory (auto-detected if patch is in surf/)",
+    )
+    parser_plot_projection.add_argument(
+        "-o",
+        "--output",
+        help="Output path for the PNG image",
+    )
+    parser_plot_projection.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing output file",
+    )
+    parser_plot_projection.set_defaults(func=cmd_plot_projection)
 
     # Handle default case: autoflatten /path/to/subject [options]
     # Insert 'run' subcommand when first arg looks like a path
-    known_commands = {"project", "flatten", "plot", "run"}
+    known_commands = {"project", "flatten", "plot-flatmap", "plot-projection", "run"}
     if (
         len(sys.argv) > 1
         and sys.argv[1] not in known_commands
@@ -1194,8 +1285,10 @@ Examples:
         return cmd_project(args)
     elif args.command == "flatten":
         return cmd_flatten(args)
-    elif args.command == "plot":
-        return cmd_plot(args)
+    elif args.command == "plot-flatmap":
+        return cmd_plot_flatmap(args)
+    elif args.command == "plot-projection":
+        return cmd_plot_projection(args)
     elif args.command == "run":
         return cmd_run_full_pipeline(args)
     else:

@@ -11,6 +11,9 @@ from autoflatten.viz import (
     compute_kring_distortion,
     compute_triangle_areas,
     parse_log_file,
+    load_curvature,
+    _get_view_angles,
+    plot_projection,
 )
 
 
@@ -419,3 +422,353 @@ class TestComputeKringDistortion:
 
         assert vertex_dist.shape == (len(orig_indices),)
         assert isinstance(mean_dist, float)
+
+
+class TestLoadCurvature:
+    """Tests for load_curvature function."""
+
+    def test_load_curvature_returns_array(self):
+        """Test that load_curvature returns a numpy array."""
+        import nibabel
+        import struct
+
+        # Create a minimal curv file in FreeSurfer format
+        # FreeSurfer curv format: 3 bytes magic, 4 bytes n_vertices, 4 bytes n_faces,
+        # 4 bytes vals_per_vertex, then n_vertices floats
+        n_vertices = 10
+        curv_values = np.random.randn(n_vertices).astype(np.float32)
+
+        with tempfile.NamedTemporaryFile(suffix=".curv", delete=False) as f:
+            temp_path = f.name
+            # Write new-style curv file
+            # Magic number (3 bytes): 0xff 0xff 0xff
+            f.write(b"\xff\xff\xff")
+            # Number of vertices (4 bytes big-endian)
+            f.write(struct.pack(">i", n_vertices))
+            # Number of faces (4 bytes big-endian)
+            f.write(struct.pack(">i", 0))
+            # Values per vertex (4 bytes big-endian)
+            f.write(struct.pack(">i", 1))
+            # Curvature values (big-endian floats)
+            for v in curv_values:
+                f.write(struct.pack(">f", v))
+
+        try:
+            result = load_curvature(temp_path)
+            assert isinstance(result, np.ndarray)
+            assert result.shape == (n_vertices,)
+            assert np.allclose(result, curv_values, atol=1e-6)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+class TestGetViewAngles:
+    """Tests for _get_view_angles function."""
+
+    def test_medial_view_lh(self):
+        """Test medial view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "medial")
+        assert elev == 0
+        assert azim == 0
+
+    def test_medial_view_rh(self):
+        """Test medial view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "medial")
+        assert elev == 0
+        assert azim == 180
+
+    def test_ventral_view_lh(self):
+        """Test ventral view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "ventral")
+        assert elev == -90
+        assert azim == 180
+
+    def test_ventral_view_rh(self):
+        """Test ventral view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "ventral")
+        assert elev == -90
+        assert azim == 180
+
+    def test_frontal_view_lh(self):
+        """Test frontal view angles for left hemisphere."""
+        elev, azim = _get_view_angles("lh", "frontal")
+        assert elev == 0
+        assert azim == -90
+
+    def test_frontal_view_rh(self):
+        """Test frontal view angles for right hemisphere."""
+        elev, azim = _get_view_angles("rh", "frontal")
+        assert elev == 0
+        assert azim == -90
+
+    def test_invalid_view_raises(self):
+        """Test that invalid view type raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unknown view type"):
+            _get_view_angles("lh", "invalid")
+
+
+class TestPlotProjection:
+    """Tests for plot_projection function."""
+
+    @staticmethod
+    def _create_mock_subject_dir(tmp_path, hemi="lh"):
+        """Create a mock subject directory with minimal surface data.
+
+        Creates a simple triangular mesh with 4 vertices and 2 faces.
+        """
+        import struct
+        import nibabel.freesurfer.io as fsio
+
+        from autoflatten.freesurfer import write_patch
+
+        subject_dir = tmp_path / "test_subject"
+        surf_dir = subject_dir / "surf"
+        surf_dir.mkdir(parents=True)
+
+        # Create a simple mesh: 4 vertices forming a square, split into 2 triangles
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+
+        # Write inflated surface using nibabel
+        inflated_path = surf_dir / f"{hemi}.inflated"
+        fsio.write_geometry(str(inflated_path), vertices, faces)
+
+        # Write curvature file (binary format)
+        curv_path = surf_dir / f"{hemi}.curv"
+        n_vertices = len(vertices)
+        curv_values = np.array([0.1, -0.1, 0.2, -0.2], dtype=np.float32)
+        with open(curv_path, "wb") as f:
+            # Magic number (3 bytes)
+            f.write(b"\xff\xff\xff")
+            # Number of vertices (4 bytes big-endian)
+            f.write(struct.pack(">i", n_vertices))
+            # Number of faces (4 bytes big-endian)
+            f.write(struct.pack(">i", 0))
+            # Values per vertex (4 bytes big-endian)
+            f.write(struct.pack(">i", 1))
+            # Curvature values (big-endian floats)
+            for v in curv_values:
+                f.write(struct.pack(">f", v))
+
+        # Create a patch file with only 3 of the 4 vertices (simulating a cut)
+        patch_path = surf_dir / f"{hemi}.autoflatten.patch.3d"
+        patch_vertices = vertices[:3]  # First 3 vertices
+        patch_indices = np.array([0, 1, 2], dtype=np.int32)
+        write_patch(str(patch_path), patch_vertices, patch_indices)
+
+        return subject_dir, patch_path
+
+    def test_plot_projection_returns_figure(self, tmp_path):
+        """Test that plot_projection returns a matplotlib figure when no output path."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+            output_path=None,
+        )
+
+        assert hasattr(fig, "savefig")  # It's a matplotlib figure
+        plt.close(fig)
+
+    def test_plot_projection_saves_file(self, tmp_path):
+        """Test that plot_projection saves file when output_path is given."""
+        import matplotlib
+
+        matplotlib.use("Agg")  # Use non-interactive backend
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+        output_path = tmp_path / "test_output.png"
+
+        result = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+            output_path=str(output_path),
+        )
+
+        assert result == str(output_path)
+        assert output_path.exists()
+
+    def test_plot_projection_detects_hemisphere_lh(self, tmp_path):
+        """Test that left hemisphere is correctly detected from filename."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Should not raise - hemisphere detected from "lh." prefix
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+        )
+        plt.close(fig)
+
+    def test_plot_projection_detects_hemisphere_rh(self, tmp_path):
+        """Test that right hemisphere is correctly detected from filename."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="rh")
+
+        # Should not raise - hemisphere detected from "rh." prefix
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+        )
+        plt.close(fig)
+
+    def test_plot_projection_invalid_hemisphere_raises(self, tmp_path):
+        """Test that invalid hemisphere prefix raises ValueError."""
+        import pytest
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Rename patch to have invalid prefix
+        invalid_patch = tmp_path / "invalid.patch.3d"
+        patch_path.rename(invalid_patch)
+
+        with pytest.raises(ValueError, match="Cannot determine hemisphere"):
+            plot_projection(
+                patch_path=str(invalid_patch),
+                subject_dir=str(subject_dir),
+            )
+
+    def test_plot_projection_missing_inflated_raises(self, tmp_path):
+        """Test that missing inflated surface raises FileNotFoundError."""
+        import pytest
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Remove the inflated surface
+        inflated_path = subject_dir / "surf" / "lh.inflated"
+        inflated_path.unlink()
+
+        with pytest.raises(FileNotFoundError, match="Inflated surface not found"):
+            plot_projection(
+                patch_path=str(patch_path),
+                subject_dir=str(subject_dir),
+            )
+
+    def test_plot_projection_auto_detect_subject_dir(self, tmp_path):
+        """Test that subject_dir is auto-detected when patch is in surf/ directory."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Don't pass subject_dir - should auto-detect from patch location
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=None,  # Should auto-detect
+        )
+        plt.close(fig)
+
+    def test_plot_projection_auto_detect_fails_for_non_surf_path(self, tmp_path):
+        """Test that auto-detect fails when patch is not in surf/ directory."""
+        import pytest
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Move patch to a non-surf location
+        new_patch_path = tmp_path / "lh.autoflatten.patch.3d"
+        patch_path.rename(new_patch_path)
+
+        with pytest.raises(ValueError, match="Cannot auto-detect subject directory"):
+            plot_projection(
+                patch_path=str(new_patch_path),
+                subject_dir=None,
+            )
+
+    def test_plot_projection_overwrite_false_skips(self, tmp_path, capsys):
+        """Test that existing output is skipped when overwrite=False."""
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+        output_path = tmp_path / "existing_output.png"
+
+        # Create an existing file
+        output_path.write_text("existing content")
+
+        result = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+            output_path=str(output_path),
+            overwrite=False,
+        )
+
+        assert result == str(output_path)
+        # Check that file was not modified
+        assert output_path.read_text() == "existing content"
+        # Check that message was printed
+        captured = capsys.readouterr()
+        assert "already exists" in captured.out
+
+    def test_plot_projection_overwrite_true_regenerates(self, tmp_path):
+        """Test that existing output is regenerated when overwrite=True."""
+        import matplotlib
+
+        matplotlib.use("Agg")
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+        output_path = tmp_path / "existing_output.png"
+
+        # Create an existing file
+        output_path.write_text("existing content")
+        original_size = output_path.stat().st_size
+
+        result = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+            output_path=str(output_path),
+            overwrite=True,
+        )
+
+        assert result == str(output_path)
+        # Check that file was modified (should be a real PNG now)
+        assert output_path.stat().st_size != original_size
+
+    def test_plot_projection_custom_title(self, tmp_path):
+        """Test that custom title is used."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+            title="Custom Title",
+        )
+
+        # Check that the figure has our custom title
+        assert fig._suptitle.get_text() == "Custom Title"
+        plt.close(fig)
+
+    def test_plot_projection_missing_curvature_uses_fallback(self, tmp_path, capsys):
+        """Test that missing curvature file uses uniform gray fallback."""
+        import matplotlib.pyplot as plt
+
+        subject_dir, patch_path = self._create_mock_subject_dir(tmp_path, hemi="lh")
+
+        # Remove curvature file
+        curv_path = subject_dir / "surf" / "lh.curv"
+        curv_path.unlink()
+
+        fig = plot_projection(
+            patch_path=str(patch_path),
+            subject_dir=str(subject_dir),
+        )
+
+        plt.close(fig)
+
+        # Check warning was printed
+        captured = capsys.readouterr()
+        assert "Curvature file not found" in captured.out
+        assert "uniform gray" in captured.out

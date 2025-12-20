@@ -53,14 +53,15 @@ pip install -e ".[test]"
 
 ## Usage
 
-AutoFlatten provides a CLI with four commands:
+AutoFlatten provides a CLI with five commands:
 
 | Command | Description |
 |---------|-------------|
 | `autoflatten /path/to/subject` | Full pipeline: projection + flattening |
 | `autoflatten project /path/to/subject` | Projection only: create patch file |
 | `autoflatten flatten PATCH_FILE` | Flattening only: flatten existing patch |
-| `autoflatten plot FLAT_PATCH` | Plot a flattened surface with useful statistics (mean % distance error and number of negative triangles) |
+| `autoflatten plot-projection PATCH` | Plot a 3D projection surface with cuts highlighted |
+| `autoflatten plot-flatmap FLAT_PATCH` | Plot a flattened surface with quality metrics |
 
 ### Full Pipeline
 
@@ -104,10 +105,24 @@ autoflatten flatten lh.autoflatten.patch.3d --k-ring 25 --n-neighbors 40
 
 ### Visualization
 
+Plot a 3D projection surface showing cuts:
+
+```bash
+# Auto-detects subject directory if patch is in surf/ directory
+autoflatten plot-projection /path/to/subject/surf/lh.autoflatten.patch.3d
+
+# Explicit subject directory
+autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subject/surf
+```
+
 Plot a flattened surface with quality metrics:
 
 ```bash
-autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+# Auto-detects subject directory if patch is in surf/ directory
+autoflatten plot-flatmap /path/to/subject/surf/lh.autoflatten.flat.patch.3d
+
+# Explicit subject directory
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
 ```
 
 ## Output Files
@@ -117,9 +132,10 @@ For each processed hemisphere, the pipeline creates:
 | File | Description |
 |------|-------------|
 | `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts |
+| `{hemi}.autoflatten.patch.png` | 3D projection visualization (cuts highlighted) |
 | `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
 | `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log (pyflatten) |
-| `{hemi}.autoflatten.flat.patch.png` | Visualization plot |
+| `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
 
 ## How It Works

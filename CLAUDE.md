@@ -63,8 +63,11 @@ autoflatten flatten lh.autoflatten.patch.3d
 # Use FreeSurfer backend instead of pyflatten:
 autoflatten /path/to/subjects/sub-01 --backend freesurfer
 
+# Plot a 3D projection surface with cuts:
+autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subject/surf
+
 # Plot a flattened surface:
-autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
 ```
 
 ## Code Style
@@ -79,7 +82,7 @@ autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
 
 ```
 autoflatten/
-  cli.py                # CLI with project/flatten/plot subcommands
+  cli.py                # CLI with project/flatten/plot-projection/plot-flatmap subcommands
   config.py             # Configuration and template paths
   core.py               # Graph algorithms for cut processing
   freesurfer.py         # FreeSurfer I/O and command wrappers
@@ -151,7 +154,8 @@ The CLI supports three modes:
   - `cmd_run_full_pipeline()`: Full pipeline
   - `cmd_project()`: Projection only
   - `cmd_flatten()`: Flattening only
-  - `cmd_plot()`: Visualization
+  - `cmd_plot_projection()`: 3D surface visualization with cuts
+  - `cmd_plot_flatmap()`: 2D flatmap visualization
   - Supports parallel hemisphere processing with `--parallel`
 
 - **[flatten/](autoflatten/flatten/)**: JAX-accelerated flattening
@@ -167,6 +171,7 @@ The CLI supports three modes:
   - `get_backend()`, `available_backends()`: Registry functions
 
 - **[viz.py](autoflatten/viz.py)**: Matplotlib-based visualization
+  - `plot_projection()`: 3D surface with cuts highlighted (medial, ventral, frontal views)
   - `plot_flatmap()`: Two-panel plot (mesh + area distribution)
   - Shows flipped triangles in red, boundary vertices
   - Parses log file for optimization results
