@@ -7,8 +7,10 @@ This page shows the output of a basic autoflatten run and explains how to interp
 A minimal run with default parameters:
 
 ```bash
-autoflatten /path/to/subjects/sub-01 --output-dir /path/to/output
+autoflatten /path/to/subjects/sub-01
 ```
+
+By default, output files are saved in the subject's `surf/` directory.
 
 ## Output Files
 
