@@ -1153,7 +1153,6 @@ class TestBoundaryVertexPreservation:
             )
 
 
-
 # =============================================================================
 # Tier 2: Energy Function Tests
 # =============================================================================
@@ -1577,24 +1576,25 @@ class TestValidateTopology:
     """Tests for validate_topology function."""
 
     def test_valid_disk_topology(self, simple_quad_mesh):
-        """Test that a quad mesh has valid disk topology."""
+        """Test that a quad mesh has valid disk topology (Euler characteristic 1)."""
         from autoflatten.flatten.algorithm import validate_topology
 
         vertices, faces = simple_quad_mesh
 
-        # Should not raise and return truthy value
+        # Should return 1 (Euler characteristic for disk topology)
         result = validate_topology(vertices, faces)
-        assert result  # Returns 1 for valid topology
+        assert result == 1
 
     def test_single_triangle_is_valid(self):
-        """Test that a single triangle is valid."""
+        """Test that a single triangle is valid (Euler characteristic 1)."""
         from autoflatten.flatten.algorithm import validate_topology
 
         vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0]])
         faces = np.array([[0, 1, 2]])
 
+        # Should return 1 (Euler characteristic for disk topology)
         result = validate_topology(vertices, faces)
-        assert result  # Returns 1 for valid topology
+        assert result == 1
 
 
 # =============================================================================

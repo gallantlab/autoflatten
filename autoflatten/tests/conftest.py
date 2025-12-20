@@ -75,11 +75,12 @@ def simple_quad_mesh():
 
     Layout:
         2---3
-        |\\  |
-        | \\ |
-        |  \\|
+        |\  |
+        | \ |
+        |  \|
         0---1
 
+    Diagonal runs from vertex 1 to vertex 2 (bottom-right to top-left).
     Both triangles are CCW when viewed from +Z.
     """
     vertices = np.array(
