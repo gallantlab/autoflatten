@@ -239,11 +239,9 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
         for i in range(3):
             adjacency[face[i]].update([face[j] for j in range(3) if j != i])
 
-    # Find vertices adjacent to excluded vertices (cuts + holes) but not excluded themselves
-    # Skip mwall as it doesn't define border vertices (it's interior boundary)
+    # Find vertices adjacent to excluded vertices (cuts, holes, medial wall)
+    # These form the border of the patch
     for key, verts in vertex_dict.items():
-        if key == "mwall":
-            continue
         for v in verts:
             v_int = int(v)
             if v_int < len(adjacency):
