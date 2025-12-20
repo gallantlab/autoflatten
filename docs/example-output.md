@@ -18,12 +18,12 @@ For each hemisphere, autoflatten generates the following files:
 
 | File | Description |
 |------|-------------|
-| `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts applied |
-| `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
-| `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log with metrics |
-| `{hemi}.autoflatten.patch.png` | 3D projection visualization |
-| `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
+| `{hemi}.autoflatten.patch.3d` | Patch file with cuts and medial wall removed |
+| `{hemi}.autoflatten.patch.png` | QC plot showing the projected cuts on the participant's surface |
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
+| `{hemi}.autoflatten.flat.patch.3d` | Patch file with flattened surface |
+| `{hemi}.autoflatten.flat.patch.png` | QC plot showing generated flatmap and final distance error |
+| `{hemi}.autoflatten.flat.patch.3d.log` | Detailed flattening log with metrics |
 
 ## Projection Visualization
 
