@@ -785,14 +785,8 @@ def plot_projection(
     patch_vertex_set = set(orig_indices)
     removed_set = set(range(n_vertices)) - patch_vertex_set
     n_removed_vertices = len(removed_set)
-    face_is_cut = np.array(
-        [
-            faces[i, 0] in removed_set
-            or faces[i, 1] in removed_set
-            or faces[i, 2] in removed_set
-            for i in range(len(faces))
-        ]
-    )
+    # Vectorized: for each face, check if any of its vertices is in removed_set
+    face_is_cut = np.isin(faces, list(removed_set)).any(axis=1)
     n_cut_faces = face_is_cut.sum()
 
     # Build title: "{subject} {filename}\n{stats}"

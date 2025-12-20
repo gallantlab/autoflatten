@@ -300,10 +300,14 @@ def run_projection(
                 output_path=plot_output,
                 overwrite=overwrite,
             )
-        except Exception as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"Warning: Failed to generate projection plot: {e}")
             traceback.print_exc()
             print("Continuing without projection plot...")
+        except Exception:
+            print("Unexpected error while generating projection plot:")
+            traceback.print_exc()
+            raise
 
         print("\nRESULT")
         print("-" * 6)
@@ -952,7 +956,11 @@ def cmd_plot_projection(args):
         )
         print(f"Successfully saved projection plot: {result}")
         return 0
-    except Exception as e:
+    except FileNotFoundError as e:
+        print(f"Failed to generate projection plot (file not found): {e}")
+        traceback.print_exc()
+        return 1
+    except (ValueError, OSError) as e:
         print(f"Failed to generate projection plot: {e}")
         traceback.print_exc()
         return 1
