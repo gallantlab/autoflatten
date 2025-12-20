@@ -71,9 +71,10 @@ def no_freesurfer_env():
 
 @pytest.fixture
 def simple_quad_mesh():
-    """4-vertex quad mesh (2 triangles) for basic tests.
+    r"""4-vertex quad mesh (2 triangles) for basic tests.
 
-    Layout:
+    Layout::
+
         2---3
         |\  |
         | \ |
@@ -99,16 +100,21 @@ def simple_quad_uv():
 
 @pytest.fixture
 def triangle_strip_mesh():
-    """6-vertex triangle strip for boundary/topology tests.
+    r"""6-vertex triangle strip for boundary/topology tests.
 
-    Layout:
-            4---5
-           /\\ /
-          /  \\/
-         2---3
-        /\\ /
-       /  \\/
-      0---1
+    Layout (rectangular grid with diagonal edges)::
+
+        4---5
+        |\  |
+        | \ |
+        2---3
+        |\  |
+        | \ |
+        0---1
+
+    Vertices form a 2x3 rectangular grid. Diagonal edges run from
+    bottom-right to top-left within each cell (1->2, 3->4).
+    All triangles are CCW when viewed from +Z.
     """
     vertices = np.array(
         [

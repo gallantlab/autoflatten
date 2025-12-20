@@ -2316,3 +2316,194 @@ class TestInvalidInputHandling:
         assert np.isclose(float(neg_area), 0.0), (
             f"Expected no negative area for CCW triangle, got {float(neg_area)}"
         )
+
+
+# =============================================================================
+# Tests Using mesh_with_flipped_triangle Fixture
+# =============================================================================
+
+
+class TestFlippedTriangleMesh:
+    """Tests using the mesh_with_flipped_triangle fixture.
+
+    These tests verify behavior when a mesh contains triangles with
+    incorrect winding order (CW instead of CCW), which results in
+    negative signed area in 2D projections.
+    """
+
+    def test_negative_area_detection(self, mesh_with_flipped_triangle):
+        """Test that get_vertices_with_negative_area detects flipped triangle."""
+        from autoflatten.flatten.energy import get_vertices_with_negative_area
+
+        vertices, faces = mesh_with_flipped_triangle
+        # Use XY coordinates as UV
+        uv = jnp.array(vertices[:, :2])
+        faces_jax = jnp.array(faces)
+
+        has_neg = get_vertices_with_negative_area(uv, faces_jax)
+
+        # Vertices 1, 2, 3 are in the flipped triangle [1, 2, 3]
+        # Vertex 0 is only in the CCW triangle [0, 1, 2]
+        assert not has_neg[0], "Vertex 0 should not be flagged (only in CCW triangle)"
+        assert has_neg[1], "Vertex 1 should be flagged (in flipped triangle)"
+        assert has_neg[2], "Vertex 2 should be flagged (in flipped triangle)"
+        assert has_neg[3], "Vertex 3 should be flagged (in flipped triangle)"
+
+    def test_compute_2d_areas_with_flip(self, mesh_with_flipped_triangle):
+        """Test that compute_2d_areas reports negative area for flipped triangle."""
+        vertices, faces = mesh_with_flipped_triangle
+        uv = jnp.array(vertices[:, :2])
+        faces_jax = jnp.array(faces)
+
+        total_area, neg_area = compute_2d_areas(uv, faces_jax)
+
+        # One triangle has positive area (~0.5), one has negative (~0.5)
+        # Total absolute area should be ~1.0, negative area should be ~0.5
+        assert float(neg_area) > 0.4, (
+            f"Expected significant negative area from flipped triangle, got {float(neg_area)}"
+        )
+
+    def test_area_energy_higher_with_flip(
+        self, mesh_with_flipped_triangle, simple_quad_mesh
+    ):
+        """Test that area energy is higher for mesh with flipped triangle."""
+        from autoflatten.flatten.energy import compute_area_energy
+
+        # Good mesh (no flips)
+        vertices_good, faces_good = simple_quad_mesh
+        uv_good = jnp.array(vertices_good[:, :2])
+        faces_good_jax = jnp.array(faces_good)
+        # Compute original 3D areas (both triangles have area 0.5)
+        original_areas_good = jnp.array([0.5, 0.5])
+
+        # Bad mesh (one flip)
+        vertices_bad, faces_bad = mesh_with_flipped_triangle
+        uv_bad = jnp.array(vertices_bad[:, :2])
+        faces_bad_jax = jnp.array(faces_bad)
+        original_areas_bad = jnp.array([0.5, 0.5])
+
+        energy_good = compute_area_energy(uv_good, faces_good_jax, original_areas_good)
+        energy_bad = compute_area_energy(uv_bad, faces_bad_jax, original_areas_bad)
+
+        assert float(energy_bad) > float(energy_good), (
+            f"Flipped mesh should have higher area energy: "
+            f"good={float(energy_good):.4f}, bad={float(energy_bad):.4f}"
+        )
+
+    def test_build_mesh_graph_with_flip(self, mesh_with_flipped_triangle):
+        """Test that build_mesh_graph works correctly regardless of winding."""
+        from autoflatten.flatten.distance import build_mesh_graph
+
+        vertices, faces = mesh_with_flipped_triangle
+        graph = build_mesh_graph(vertices, faces)
+
+        # Graph should be 4x4 symmetric matrix
+        assert graph.shape == (4, 4)
+        assert (graph != graph.T).nnz == 0, "Graph should be symmetric"
+
+        # All edges should have positive weights (distances)
+        assert (graph.data > 0).all(), "All edge weights should be positive"
+
+
+# =============================================================================
+# Tests Using mesh_with_isolated_vertex Fixture
+# =============================================================================
+
+
+class TestIsolatedVertexMesh:
+    """Tests using the mesh_with_isolated_vertex fixture.
+
+    These tests verify behavior when a mesh contains vertices that are
+    not connected to any faces, which can occur in real data after
+    certain mesh operations.
+    """
+
+    def test_k_ring_connected_vertices(self, mesh_with_isolated_vertex):
+        """Test k-ring for connected vertices in mesh with isolated vertex.
+
+        Note: get_k_ring uses igl.adjacency_list which only includes vertices
+        that appear in faces. For meshes with isolated vertices, only query
+        k-rings for connected vertices (indices 0 to n_faces_vertices-1).
+        """
+        from autoflatten.flatten.distance import get_k_ring
+
+        vertices, faces = mesh_with_isolated_vertex
+        # Only get k-rings for vertices that appear in faces (0, 1, 2)
+        n_connected = 3  # Vertices 0, 1, 2 are in the single triangle
+        k_rings = get_k_ring(faces, n_connected, k=1)
+
+        # Each vertex in the triangle has 2 neighbors
+        assert len(k_rings[0]) == 2, "Vertex 0 should have 2 neighbors"
+        assert len(k_rings[1]) == 2, "Vertex 1 should have 2 neighbors"
+        assert len(k_rings[2]) == 2, "Vertex 2 should have 2 neighbors"
+
+    def test_build_mesh_graph_isolated_vertex(self, mesh_with_isolated_vertex):
+        """Test that build_mesh_graph handles isolated vertices correctly."""
+        from autoflatten.flatten.distance import build_mesh_graph
+
+        vertices, faces = mesh_with_isolated_vertex
+        graph = build_mesh_graph(vertices, faces)
+
+        # Graph should be 4x4 (includes isolated vertex)
+        assert graph.shape == (4, 4)
+
+        # Isolated vertex (index 3) should have no edges
+        assert graph[3, :].nnz == 0, "Isolated vertex should have no outgoing edges"
+        assert graph[:, 3].nnz == 0, "Isolated vertex should have no incoming edges"
+
+        # Connected vertices should have edges
+        assert graph[0, 1] > 0, "Edge 0-1 should exist"
+        assert graph[0, 2] > 0, "Edge 0-2 should exist"
+        assert graph[1, 2] > 0, "Edge 1-2 should exist"
+
+    def test_prepare_smoothing_data_isolated_vertex(self, mesh_with_isolated_vertex):
+        """Test that prepare_smoothing_data handles isolated vertices."""
+        from autoflatten.flatten.energy import prepare_smoothing_data
+
+        vertices, faces = mesh_with_isolated_vertex
+
+        neighbors, mask, counts = prepare_smoothing_data(faces, len(vertices))
+
+        # Isolated vertex should have count=1 (degree 0 + 1)
+        assert counts[3] == 1, (
+            f"Isolated vertex should have count=1 (degree+1), got {counts[3]}"
+        )
+
+        # Isolated vertex should have all-False mask (no valid neighbors)
+        assert not mask[3].any(), (
+            "Isolated vertex should have no valid neighbors in mask"
+        )
+
+    def test_get_vertices_with_negative_area_ignores_isolated(
+        self, mesh_with_isolated_vertex
+    ):
+        """Test that negative area detection ignores isolated vertices."""
+        from autoflatten.flatten.energy import get_vertices_with_negative_area
+
+        vertices, faces = mesh_with_isolated_vertex
+        uv = jnp.array(vertices[:, :2])
+        faces_jax = jnp.array(faces)
+
+        has_neg = get_vertices_with_negative_area(uv, faces_jax)
+
+        # No triangles are flipped, so no vertices should be flagged
+        assert not any(has_neg[:3]), "Connected vertices should not be flagged"
+        # Isolated vertex is not in any face, so should not be flagged
+        assert not has_neg[3], "Isolated vertex should not be flagged"
+
+    def test_compute_2d_areas_ignores_isolated(self, mesh_with_isolated_vertex):
+        """Test that 2D area computation ignores isolated vertices."""
+        vertices, faces = mesh_with_isolated_vertex
+        uv = jnp.array(vertices[:, :2])
+        faces_jax = jnp.array(faces)
+
+        total_area, neg_area = compute_2d_areas(uv, faces_jax)
+
+        # Single CCW triangle with vertices at (0,0), (1,0), (0.5, 1)
+        # Area = 0.5 * |1 * 1 - 0 * 0.5| = 0.5
+        assert np.isclose(float(total_area), 0.5, atol=0.01), (
+            f"Expected area ~0.5 for single triangle, got {float(total_area)}"
+        )
+        assert np.isclose(float(neg_area), 0.0), (
+            f"Expected no negative area, got {float(neg_area)}"
+        )
