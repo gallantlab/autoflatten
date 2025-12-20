@@ -318,7 +318,8 @@ def plot_flatmap(
     Plot a flattened cortical surface using matplotlib.
 
     Creates a three-panel figure showing:
-    - Left: Mesh with flipped triangles highlighted in red
+    - Left: Flatmap mesh with flipped triangles (red), boundary vertices (blue dots),
+      and flipped triangle centroids (yellow markers)
     - Center: Per-vertex metric distortion (percentage error between 2D and 3D distances)
     - Right: Histogram of distortion distribution
 

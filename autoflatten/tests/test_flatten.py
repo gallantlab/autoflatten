@@ -1093,3 +1093,101 @@ class TestInitialScaleInProjection:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+
+class TestBoundaryVertexPreservation:
+    """Tests for boundary vertex preservation through SurfaceFlattener."""
+
+    def test_is_border_preserved_through_save_result(self):
+        """
+        Test that border vertex flags are preserved from input patch to output.
+
+        This is a regression test for the bug where is_border was discarded
+        during SurfaceFlattener.load_data() and not passed to write_patch().
+        """
+        import nibabel.freesurfer.io as fsio
+        from autoflatten.freesurfer import write_patch, read_patch
+        from autoflatten.flatten import SurfaceFlattener, FlattenConfig
+
+        # Create a simple mesh: a strip of triangles
+        # Vertices form a grid:
+        #   0---2---4---6
+        #   |\ | \ | \ |
+        #   | \|  \|  \|
+        #   1---3---5---7
+        n_cols = 4
+        vertices = []
+        for i in range(n_cols):
+            vertices.append([float(i), 0.0, 0.0])  # Top row
+            vertices.append([float(i), 1.0, 0.0])  # Bottom row
+        vertices = np.array(vertices, dtype=np.float32)
+
+        # Create faces (counter-clockwise winding)
+        faces = []
+        for i in range(n_cols - 1):
+            top_left = 2 * i
+            top_right = 2 * i + 2
+            bot_left = 2 * i + 1
+            bot_right = 2 * i + 3
+            faces.append([top_left, bot_left, top_right])
+            faces.append([bot_left, bot_right, top_right])
+        faces = np.array(faces, dtype=np.int32)
+
+        n_vertices = len(vertices)
+        original_indices = np.arange(n_vertices, dtype=np.int32)
+
+        # Mark boundary vertices (outer edges of the strip)
+        is_border = np.zeros(n_vertices, dtype=bool)
+        is_border[0] = True  # First vertex
+        is_border[1] = True  # Second vertex
+        is_border[-2] = True  # Second-to-last vertex
+        is_border[-1] = True  # Last vertex
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Write surface file using nibabel
+            surface_path = os.path.join(temp_dir, "test.smoothwm")
+            fsio.write_geometry(surface_path, vertices, faces)
+
+            # Write patch file with border vertices
+            patch_path = os.path.join(temp_dir, "test.patch.3d")
+            write_patch(patch_path, vertices, original_indices, is_border)
+
+            # Load through SurfaceFlattener
+            config = FlattenConfig(verbose=False)
+            flattener = SurfaceFlattener(config)
+            flattener.load_data(patch_path, surface_path)
+
+            # Verify is_border was stored
+            assert hasattr(flattener, "is_border"), (
+                "SurfaceFlattener should have is_border attribute"
+            )
+            assert flattener.is_border is not None, "is_border should not be None"
+
+            # Create output UV (just use XY coordinates as simple "flat" result)
+            uv = flattener.vertices[:, :2]
+
+            # Save result
+            output_path = os.path.join(temp_dir, "test.flat.patch.3d")
+            flattener.save_result(uv, output_path)
+
+            # Read back the output patch
+            _, read_indices, read_is_border = read_patch(output_path)
+
+            # Verify border vertices are preserved
+            # Note: vertices may be reordered/filtered, so we need to check
+            # that the border status matches for corresponding original indices
+            for i, orig_idx in enumerate(flattener.orig_indices):
+                expected_border = is_border[orig_idx]
+                actual_border = read_is_border[i]
+                assert actual_border == expected_border, (
+                    f"Border status mismatch for original vertex {orig_idx}: "
+                    f"expected {expected_border}, got {actual_border}"
+                )
+
+            # Also verify at least some border vertices exist in output
+            n_border_out = np.sum(read_is_border)
+            n_border_in = np.sum(flattener.is_border)
+            assert n_border_out == n_border_in, (
+                f"Number of border vertices mismatch: input had {n_border_in}, "
+                f"output has {n_border_out}"
+            )

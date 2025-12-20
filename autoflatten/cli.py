@@ -513,8 +513,7 @@ def process_hemisphere(
                     if verbose:
                         print(f"Generated plot: {plot_file}")
                 except Exception as e:
-                    if verbose:
-                        print(f"Warning: Failed to generate plot: {e}")
+                    print(f"Warning: Failed to generate plot: {e}")
                     plot_file = None
             result["plot_file"] = plot_file
 
@@ -1145,7 +1144,7 @@ Examples:
   autoflatten /path/to/subjects/sub-01 --backend freesurfer
 
   # Plot a flattened surface:
-  autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+  autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
 """,
     )
 

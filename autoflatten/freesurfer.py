@@ -271,12 +271,13 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
             # Convert to Python int to avoid unsigned integer overflow
             # (numpy uint32 indices would wrap around when negated)
             idx_int = int(idx)
+            # FreeSurfer convention: negative = border, positive = interior
             if idx in border_vertices:
-                # Border vertices get positive indices
-                fp.write(struct.pack(">i3f", idx_int + 1, *coord))
-            else:
-                # Interior vertices get negative indices
+                # Border vertices get negative indices -(idx + 1)
                 fp.write(struct.pack(">i3f", -(idx_int + 1), *coord))
+            else:
+                # Interior vertices get positive indices (idx + 1)
+                fp.write(struct.pack(">i3f", idx_int + 1, *coord))
 
     print(f"Created patch file {filename} with {len(patch_vertices)} vertices")
     print(f"Excluded {len(excluded_vertices)} vertices (medial wall and cuts)")
