@@ -46,6 +46,9 @@ test = [
     "pytest-cov",
     "codecov",
 ]
+docs = [
+    "mkdocs-material",
+]
 
 [project.scripts]
 autoflatten = "autoflatten.cli:main"
