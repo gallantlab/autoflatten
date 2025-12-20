@@ -183,3 +183,79 @@ class TestFindBaseSurface:
 
             result = find_base_surface(patch_path)
             assert result is None
+
+
+# =============================================================================
+# Tier 2: Additional Backend Tests
+# =============================================================================
+
+
+class TestCheckPyflattenAvailable:
+    """Tests for _check_pyflatten_available function."""
+
+    def test_returns_true_when_deps_available(self):
+        """Test that function returns True when all deps are installed."""
+        from autoflatten.backends.pyflatten import _check_pyflatten_available
+
+        # These are core dependencies now, should always be available
+        result = _check_pyflatten_available()
+        assert result is True
+
+    def test_check_requires_jax_igl_numba(self):
+        """Test that the function checks for jax, igl, and numba.
+
+        Note: This test cannot reliably verify import failure detection because
+        Python's import system caches modules. Once jax/igl/numba are imported,
+        they remain cached for the entire test session.
+        """
+        pytest.skip(
+            "Cannot test import failure detection due to Python import caching. "
+            "The _check_pyflatten_available function is validated by the "
+            "test_returns_true_when_deps_available test when deps are present."
+        )
+
+
+class TestHemisphereDetection:
+    """Tests for hemisphere detection from patch file paths."""
+
+    def test_find_base_surface_extracts_correct_hemisphere(self):
+        """Test that find_base_surface uses correct hemisphere prefix."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            surf_dir = os.path.join(tmpdir, "sub-01", "surf")
+            os.makedirs(surf_dir)
+
+            # Create lh and rh fiducial files
+            lh_fiducial = os.path.join(surf_dir, "lh.fiducial")
+            rh_fiducial = os.path.join(surf_dir, "rh.fiducial")
+            for f in [lh_fiducial, rh_fiducial]:
+                with open(f, "wb") as fh:
+                    fh.write(b"\x00" * 10)
+
+            # Create lh patch
+            lh_patch = os.path.join(surf_dir, "lh.patch.3d")
+            with open(lh_patch, "wb") as f:
+                f.write(b"\x00" * 10)
+
+            # Should find lh.fiducial, not rh.fiducial
+            result = find_base_surface(lh_patch)
+            assert result == lh_fiducial
+
+
+class TestBackendBaseClass:
+    """Tests for the FlattenBackend abstract base class."""
+
+    def test_backend_is_abstract(self):
+        """Test that FlattenBackend cannot be instantiated directly."""
+        # FlattenBackend has abstract methods, so direct instantiation should fail
+        with pytest.raises(
+            TypeError, match=r"Can't instantiate abstract class.*FlattenBackend"
+        ):
+            FlattenBackend()
+
+    def test_pyflatten_inherits_from_base(self):
+        """Test that PyflattenBackend inherits from FlattenBackend."""
+        assert issubclass(PyflattenBackend, FlattenBackend)
+
+    def test_freesurfer_inherits_from_base(self):
+        """Test that FreeSurferBackend inherits from FlattenBackend."""
+        assert issubclass(FreeSurferBackend, FlattenBackend)
