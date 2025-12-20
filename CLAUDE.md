@@ -172,8 +172,9 @@ The CLI supports three modes:
 
 - **[viz.py](autoflatten/viz.py)**: Matplotlib-based visualization
   - `plot_projection()`: 3D surface with cuts highlighted (medial, ventral, frontal views)
-  - `plot_flatmap()`: Two-panel plot (mesh + area distribution)
-  - Shows flipped triangles in red, boundary vertices
+  - `plot_flatmap()`: Three-panel plot (flatmap + metric distortion + histogram)
+  - Shows flipped triangles in red, boundary vertices in blue
+  - Computes per-vertex metric distortion (% error between 2D and 3D distances)
   - Parses log file for optimization results
 
 - **[freesurfer.py](autoflatten/freesurfer.py)**: FreeSurfer interface

@@ -1,0 +1,41 @@
+site_name: autoflatten
+site_description: Automatically create cortical flatmaps from FreeSurfer surfaces
+site_url: https://gallantlab.github.io/autoflatten
+repo_url: https://github.com/gallantlab/autoflatten
+repo_name: gallantlab/autoflatten
+
+theme:
+  name: material
+  favicon: favicon.png
+  palette:
+    - scheme: default
+      primary: blue grey
+      accent: blue grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: blue grey
+      accent: blue grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.instant
+    - navigation.tracking
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Example Output: example-output.md
+  - Detailed Options: detailed-options.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - tables
+  - attr_list
