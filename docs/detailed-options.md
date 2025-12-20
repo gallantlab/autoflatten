@@ -2,14 +2,15 @@
 
 This page describes all available CLI commands and options.
 
-autoflatten provides a CLI with four commands:
+autoflatten provides a CLI with five commands:
 
 | Command | Description |
 |---------|-------------|
 | `autoflatten /path/to/subject` | Full pipeline: projection + flattening |
 | `autoflatten project /path/to/subject` | Projection only: create patch file |
 | `autoflatten flatten PATCH_FILE` | Flattening only: flatten existing patch |
-| `autoflatten plot FLAT_PATCH` | Plot a flattened surface |
+| `autoflatten plot-projection PATCH` | Plot 3D surface with cuts highlighted |
+| `autoflatten plot-flatmap FLAT_PATCH` | Plot 2D flatmap with distortion metrics |
 
 ## Full Pipeline
 
@@ -56,18 +57,43 @@ autoflatten flatten lh.autoflatten.patch.3d --k-ring 25 --n-neighbors 40
 
 ## Visualization
 
+### Plot 3D Projection
+
+Plot the 3D surface with cuts highlighted from multiple views:
+
+```bash
+# Basic usage (auto-detects subject directory from patch location)
+autoflatten plot-projection lh.autoflatten.patch.3d
+
+# Specify subject directory explicitly
+autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subject/surf
+
+# Custom output path
+autoflatten plot-projection lh.autoflatten.patch.3d --output /path/to/output.png
+```
+
+This generates a three-panel view (medial, ventral, frontal) showing the surface with cut vertices highlighted in red.
+
+### Plot 2D Flatmap
+
 Plot a flattened surface with quality metrics:
 
 ```bash
-autoflatten plot lh.autoflatten.flat.patch.3d --subject sub-01
+# Basic usage (auto-detects base surface)
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d
+
+# Specify subject directory for base surface lookup
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
+
+# Custom output path
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --output /path/to/output.png
 ```
 
-This generates a visualization showing:
+This generates a three-panel visualization showing:
 
-- The flattened mesh
-- Area distortion distribution
-- Mean % distance error
-- Number of negative (flipped) triangles
+- The flattened mesh with flipped triangles highlighted
+- Per-vertex metric distortion map
+- Distortion distribution histogram
 
 ## Output Files
 
@@ -78,7 +104,8 @@ For each processed hemisphere, the pipeline creates:
 | `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts |
 | `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
 | `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log (pyflatten) |
-| `{hemi}.autoflatten.flat.patch.png` | Visualization plot |
+| `{hemi}.autoflatten.patch.png` | 3D projection visualization |
+| `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
 
 ## Common Options

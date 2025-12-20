@@ -16,7 +16,7 @@
 - **Two backends for the flattening process**:
     - **pyflatten** (default): JAX-accelerated Python implementation - fast and reliable
     - **freesurfer**: FreeSurfer `mris_flatten` wrapper
-- **Visualization** with area distortion metrics
+- **Visualization** of 3D projections and 2D flatmaps with distortion metrics
 
 ## Quick Install
 
@@ -35,6 +35,12 @@ autoflatten /path/to/subjects/sub-01 --output-dir /path/to/output
 
 # Process both hemispheres in parallel
 autoflatten /path/to/subjects/sub-01 --parallel
+
+# Visualize the 3D surface with cuts
+autoflatten plot-projection lh.autoflatten.patch.3d
+
+# Visualize the 2D flatmap with distortion metrics
+autoflatten plot-flatmap lh.autoflatten.flat.patch.3d
 ```
 
 ## Requirements

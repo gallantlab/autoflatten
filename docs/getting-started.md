@@ -65,4 +65,4 @@ autoflatten --version
 
 ## Next Steps
 
-See the [Examples](examples.md) page for detailed usage examples.
+See the [Example Output](example-output.md) page to understand the output files, or the [Detailed Options](detailed-options.md) page for all CLI options.

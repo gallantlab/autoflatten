@@ -19,78 +19,144 @@ For each hemisphere, autoflatten generates the following files:
 | `{hemi}.autoflatten.patch.3d` | 3D patch file with cuts applied |
 | `{hemi}.autoflatten.flat.patch.3d` | 2D flattened surface |
 | `{hemi}.autoflatten.flat.patch.3d.log` | Optimization log with metrics |
-| `{hemi}.autoflatten.flat.patch.png` | Visualization plot |
+| `{hemi}.autoflatten.patch.png` | 3D projection visualization |
+| `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
 
-## Visualization Output
+## Projection Visualization
 
-The visualization plot (`{hemi}.autoflatten.flat.patch.png`) shows a three-panel figure:
+The projection plot (`{hemi}.autoflatten.patch.png`) shows the 3D surface with cuts highlighted in red from three views (medial, ventral, frontal):
 
-<!-- TODO: Add example image here -->
-<!-- ![Example flatmap](example-lh-flatmap.png) -->
+![Example projection](lh.autoflatten.patch.png)
+
+The title shows the number of vertices, removed vertices (cuts), and cut faces.
+
+## Flatmap Visualization
+
+The flatmap plot (`{hemi}.autoflatten.flat.patch.png`) shows a three-panel figure:
+
+![Example flatmap](lh.autoflatten.flat.patch.png)
 
 **Left panel: Flatmap**
 
-- The flattened cortical surface mesh
-- Red triangles indicate flipped (negative area) triangles — ideally there should be none
-- Yellow dots mark the centroids of flipped triangles for visibility when zoomed out
+- Gray mesh shows the flattened cortical surface
+- Yellow/orange dots mark flipped triangles (ideally < 0.05% of faces)
 - Blue dots show boundary vertices
 
 **Center panel: Metric Distortion**
 
-- Per-vertex distortion map showing the percentage error between 2D and 3D geodesic distances
-- Uses a viridis colormap (0-100% range)
-- Lower values (darker colors) indicate better preservation of distances
-- This metric matches the approach in Fischl et al., 1999
+- Per-vertex distortion showing % error between 2D and 3D geodesic distances
+- Lower values (darker) = better distance preservation
 
 **Right panel: Distortion Distribution**
 
-- Histogram of per-vertex distortion values
-- Bars colored by distortion value using the same colormap
-- Black dashed line shows the mean distortion
-- Gray dotted line shows the median distortion
+- Histogram with mean (black dashed) and median (gray dotted) lines
 
-**Title metrics:**
+**Title metrics:** vertex/face count, mean % error, flipped count and percentage.
 
-- **Vertex and face count**: Size of the flattened mesh
-- **% error**: Mean percentage distance error (lower is better)
-- **Flipped count**: Number of flipped triangles (0 is ideal)
+!!! note "Two different error metrics"
+    The **title** shows the mean % error computed using the same neighborhood structure as the flattening algorithm (7-ring with angular sampling of 12 vertices, by default). The **histogram** shows distortion computed with a simpler, faster 2-ring neighborhood for visualization purposes.
 
 ## Log File Contents
 
-The log file (`{hemi}.autoflatten.flat.patch.3d.log`) contains detailed optimization progress:
+The log file (`{hemi}.autoflatten.flat.patch.3d.log`) contains detailed optimization progress. Here's an annotated example:
+
+### Header
 
 ```
-=== pyflatten v1.0.0 ===
-Input patch: lh.autoflatten.patch.3d
-Base surface: lh.fiducial
-Vertices: 120000, Faces: 240000
-
---- K-ring distance computation ---
-k_ring: 7, n_neighbors_per_ring: 12
-Computing distances... done (15.2s)
-
---- Optimization ---
-Phase: initial_nar
-  Step 0: E=1.234e+05, |grad|=5.67e+02, dt=0.001
-  ...
-  Converged after 50 steps
-
-Phase: epoch_1 (l_nlarea=1.0, l_dist=0.1)
-  ...
-
---- Final metrics ---
-Mean distance error: 2.34%
-Negative triangles: 0
-Total time: 45.6s
+Running pyflatten backend
+  Input patch: .../surf/lh.autoflatten.patch.3d
+  Base surface: .../surf/lh.fiducial
+  Output: .../surf/lh.autoflatten.flat.patch.3d
+  K-ring: 7, neighbors/ring: 12
 ```
 
-### Key sections:
+Shows input/output files and k-ring parameters used for geodesic distance computation.
 
-1. **Header**: Version, input files, mesh statistics
-2. **K-ring computation**: Neighborhood size and timing
-3. **Optimization phases**:
-   - `initial_nar`: Initial negative area removal
-   - `epoch_1`, `epoch_2`, `epoch_3`: Main optimization epochs
-   - `final_nar`: Final cleanup
-4. **Final metrics**: Summary of flattening quality
+### Mesh Statistics
+
+```
+Loading cortical surface patch...
+Mesh: 153,855 vertices, 306,641 faces
+Euler characteristic: 1, Boundary vertices: 1067
+Original 3D patch surface area: 85792.87
+```
+
+Basic mesh information. Euler characteristic of 1 confirms a disk topology (required for flattening).
+
+### K-ring Distance Computation
+
+```
+Computing 7-ring geodesic distances with angular sampling (12/ring)...
+Computing 7-ring neighbors by level...
+Computing vertex normals...
+Angular sampling (12 per ring)...
+Average neighbors per vertex: 75.3 (max possible: 84)
+Distance constraints: 11,583,235 edges, avg 75.3 neighbors/vertex
+```
+
+Shows the geodesic distance computation progress. These distances are used as constraints during optimization.
+
+### Optimization Progress
+
+```
+=====================================================================================
+FREESURFER-STYLE OPTIMIZATION (Vectorized Quadratic Line Search)
+=====================================================================================
+Initial projection: 114607 flipped triangles
+Initial energies: J_d=620597888.0000, J_a=207523.7344
+```
+
+The optimization starts with many flipped triangles from the initial 2D projection.
+
+```
+=====================================================================================
+NEGATIVE AREA REMOVAL (Vectorized Quadratic Line Search, FreeSurfer v6.0.0 convergence)
+=====================================================================================
+
+--- Pass 1/5: l_nlarea=1.0, l_dist=1e-06, flipped=114607 (37.37%) ---
+  J_d=620597888.0000, J_a=207523.734375, schedule=[1024, 256, 64, 16, 4, 1, 0]
+   Iter  n_avg        J_d        J_a    relΔSSE      alpha  Flipped    %err
+  ----------------------------------------------------------------------------------------
+      1   1024 465559392.0000 40410.1289   0.00e+00   1.63e+04    71135  142.0%
+      2   1024 417951104.0000 17910.5137   5.52e-01   4.21e+03    28550  132.3%
+      ...
+```
+
+Multiple passes with increasing `l_dist` weight progressively reduce flipped triangles while preserving geodesic distances:
+
+- **J_d**: Distance energy (preserving geodesic distances)
+- **J_a**: Area energy (preventing flipped triangles)
+- **n_avg**: Gradient smoothing window size
+- **relΔSSE**: Relative change in energy (convergence criterion)
+- **alpha**: Step size from line search
+- **Flipped**: Number of flipped triangles
+- **%err**: Mean percentage distance error
+
+### Spring Smoothing
+
+```
+=====================================================================================
+FINAL SPRING SMOOTHING (FreeSurfer-style)
+=====================================================================================
+  n_iterations=5, dt=0.5, max_step=1.0
+  Before: 22 flipped, 14.69% distance error
+  Iter 1: 8 flipped, 14.48% err
+  ...
+  After: 15 flipped, 14.47% distance error
+```
+
+Final Laplacian smoothing pass for visual quality.
+
+### Final Result
+
+```
+=====================================================================================
+FINAL RESULT
+=====================================================================================
+Flipped triangles: 114607 -> 15
+Mean % distance error: 14.47%
+Total elapsed time: 11m 38.3s
+```
+
+Summary showing the reduction in flipped triangles and final distance error.
