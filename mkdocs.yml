@@ -6,7 +6,7 @@ repo_name: gallantlab/autoflatten
 
 theme:
   name: material
-  favicon: autoflatten-logo.png
+  favicon: favicon.png
   palette:
     - scheme: default
       primary: blue grey
