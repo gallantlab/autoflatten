@@ -163,13 +163,15 @@ def main():
         frame_images = [iio.imread(fp)[:, :, :3] for fp in frames]
 
         # Try MP4 first, fall back to GIF
+        fps = 15
         try:
-            iio.imwrite(
-                mp4_path, frame_images, fps=30, codec="libx264", plugin="pyav"
-            )
+            iio.imwrite(mp4_path, frame_images, fps=fps, codec="libx264", plugin="pyav")
             print(f"Video saved to: {mp4_path}")
         except Exception:
-            iio.imwrite(gif_path, frame_images, duration=33, loop=0, plugin="pillow")
+            duration_ms = int(1000 / fps)
+            iio.imwrite(
+                gif_path, frame_images, duration=duration_ms, loop=0, plugin="pillow"
+            )
             print(f"GIF saved to: {gif_path}")
     except Exception as e:
         print(f"Could not create video ({e}), frames are in: {frames_dir}")

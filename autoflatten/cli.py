@@ -984,11 +984,7 @@ def cmd_render_snapshots(args):
             figsize=args.figsize,
             dpi=args.dpi,
             overwrite=args.overwrite,
-        )
-        print(
-            f"\nTo create video:\n"
-            f"  ffmpeg -r 30 -i {output_dir}/frame_%04d.png "
-            f"-c:v libx264 -pix_fmt yuv420p flatten.mp4"
+            fps=args.fps,
         )
         return 0
     except Exception as e:
@@ -1355,6 +1351,12 @@ Examples:
         "--overwrite",
         action="store_true",
         help="Overwrite existing frame files",
+    )
+    parser_render.add_argument(
+        "--fps",
+        type=float,
+        default=15.0,
+        help="Frames per second for video assembly (default: 15)",
     )
     parser_render.set_defaults(func=cmd_render_snapshots)
 
