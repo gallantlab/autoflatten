@@ -458,7 +458,7 @@ class TestRunMrisFlatten:
                 f.write("log")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
+        monkeypatch.setattr(fs, "_run_command", fake_run_command)
 
         result = run_mris_flatten(
             subject,
@@ -494,7 +494,7 @@ class TestRunMrisFlatten:
                 f.write("error")
             return 1
 
-        monkeypatch.setattr(fs, "_run_command_with_env", fake_fail)
+        monkeypatch.setattr(fs, "_run_command", fake_fail)
 
         with pytest.raises(RuntimeError):
             run_mris_flatten(
@@ -524,7 +524,7 @@ class TestRunMrisFlatten:
                 f.write("log")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command_with_env", fake_run)
+        monkeypatch.setattr(fs, "_run_command", fake_run)
         result = run_mris_flatten(subject, hemi, str(patch_file), str(output_dir))
         fname = os.path.basename(result)
         assert fname.startswith("rh.autoflatten") and fname.endswith(".flat.patch.3d")
@@ -616,7 +616,7 @@ class TestRunMrisFlatten:
         # Mock _resolve_subject_dir to return our test surf_dir
         monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        # Mock _run_command_with_env to simulate successful mris_flatten
+        # Mock _run_command to simulate successful mris_flatten
         def fake_run_command(cmd, cwd, log_path, env=None):
             # Verify it's running in a temp directory, not original
             assert str(surf_dir) not in cwd, "Running in original surf directory!"
@@ -637,7 +637,7 @@ class TestRunMrisFlatten:
                 f.write("mris_flatten out file")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
+        monkeypatch.setattr(fs, "_run_command", fake_run_command)
 
         # Run mris_flatten
         result = run_mris_flatten(
@@ -701,7 +701,7 @@ class TestRunMrisFlatten:
         # Mock _resolve_subject_dir
         monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
 
-        # Mock _run_command_with_env and capture temp directory
+        # Mock _run_command and capture temp directory
         def fake_run_command(cmd, cwd, log_path, env=None):
             # Track the working directory (which is in the temp directory)
             temp_dirs.append(cwd)
@@ -712,7 +712,7 @@ class TestRunMrisFlatten:
                 f.write("log")
             return 0
 
-        monkeypatch.setattr(fs, "_run_command_with_env", fake_run_command)
+        monkeypatch.setattr(fs, "_run_command", fake_run_command)
 
         # Run with debug=True
         result = run_mris_flatten(

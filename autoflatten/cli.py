@@ -41,6 +41,61 @@ from autoflatten.utils import load_json
 from autoflatten.viz import plot_patch, plot_projection
 
 
+def _build_backend_kwargs(args, n_jobs=None, subject=None):
+    """Build kwargs dict for the selected flattening backend.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed CLI arguments.
+    n_jobs : int, optional
+        Number of parallel jobs (pyflatten). Defaults to args.n_cores.
+    subject : str, optional
+        Subject name (freesurfer backend only).
+
+    Returns
+    -------
+    dict
+        Keyword arguments for the backend.
+    """
+    if n_jobs is None:
+        n_jobs = args.n_cores
+
+    backend_kwargs = {}
+    if args.backend == "pyflatten":
+        backend_kwargs.update(
+            {
+                "k_ring": args.k_ring,
+                "n_neighbors_per_ring": args.n_neighbors,
+                "skip_phases": args.skip_phase,
+                "skip_spring_smoothing": args.skip_spring_smoothing,
+                "skip_neg_area": args.skip_neg_area,
+                "config_path": args.pyflatten_config,
+                "n_jobs": n_jobs,
+                "cache_distances": args.debug_save_distances,
+                "print_every": args.print_every,
+            }
+        )
+    elif args.backend == "freesurfer":
+        backend_kwargs.update(
+            {
+                "seed": args.seed
+                if args.seed is not None
+                else random.randint(0, 99999),
+                "threads": args.nthreads,
+                "distances": tuple(args.distances) if args.distances else (15, 80),
+                "n": args.n_iterations,
+                "dilate": args.dilate,
+                "passes": args.passes,
+                "tol": args.tol,
+                "debug": args.debug,
+            }
+        )
+        if subject is not None:
+            backend_kwargs["subject"] = subject
+    return backend_kwargs
+
+
 def check_freesurfer_environment():
     """
     Check if FreeSurfer environment is properly set up.
@@ -587,37 +642,7 @@ def cmd_run_full_pipeline(args):
     else:
         n_cores_per_hemi = n_cores
 
-    # Collect backend kwargs
-    backend_kwargs = {}
-    if args.backend == "pyflatten":
-        backend_kwargs.update(
-            {
-                "k_ring": args.k_ring,
-                "n_neighbors_per_ring": args.n_neighbors,
-                "skip_phases": args.skip_phase,
-                "skip_spring_smoothing": args.skip_spring_smoothing,
-                "skip_neg_area": args.skip_neg_area,
-                "config_path": args.pyflatten_config,
-                "n_jobs": n_cores_per_hemi,
-                "cache_distances": args.debug_save_distances,
-                "print_every": args.print_every,
-            }
-        )
-    elif args.backend == "freesurfer":
-        backend_kwargs.update(
-            {
-                "seed": args.seed
-                if args.seed is not None
-                else random.randint(0, 99999),
-                "threads": args.nthreads,
-                "distances": tuple(args.distances) if args.distances else (15, 80),
-                "n": args.n_iterations,
-                "dilate": args.dilate,
-                "passes": args.passes,
-                "tol": args.tol,
-                "debug": args.debug,
-            }
-        )
+    backend_kwargs = _build_backend_kwargs(args, n_jobs=n_cores_per_hemi)
 
     results = {}
 
@@ -784,39 +809,7 @@ def cmd_flatten(args):
     print(f"Base surface: {surface_path}")
     print(f"Output: {output_path}")
 
-    # Collect backend kwargs
-    backend_kwargs = {}
-    if args.backend == "pyflatten":
-        backend_kwargs.update(
-            {
-                "k_ring": args.k_ring,
-                "n_neighbors_per_ring": args.n_neighbors,
-                "skip_phases": args.skip_phase,
-                "skip_spring_smoothing": args.skip_spring_smoothing,
-                "skip_neg_area": args.skip_neg_area,
-                "config_path": args.pyflatten_config,
-                "n_jobs": args.n_cores,
-                "cache_distances": args.debug_save_distances,
-                "print_every": args.print_every,
-            }
-        )
-    elif args.backend == "freesurfer":
-        # For FreeSurfer backend, we need subject info
-        backend_kwargs.update(
-            {
-                "subject": args.subject,
-                "seed": args.seed
-                if args.seed is not None
-                else random.randint(0, 99999),
-                "threads": args.nthreads,
-                "distances": tuple(args.distances) if args.distances else (15, 80),
-                "n": args.n_iterations,
-                "dilate": args.dilate,
-                "passes": args.passes,
-                "tol": args.tol,
-                "debug": args.debug,
-            }
-        )
+    backend_kwargs = _build_backend_kwargs(args, subject=getattr(args, "subject", None))
 
     try:
         result = run_flatten_backend(
