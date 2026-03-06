@@ -74,6 +74,8 @@ def _build_backend_kwargs(args, n_jobs=None, subject=None):
                 "n_jobs": n_jobs,
                 "cache_distances": args.debug_save_distances,
                 "print_every": args.print_every,
+                "snapshot_path": args.save_snapshots,
+                "snapshot_every": args.snapshot_every,
             }
         )
     elif args.backend == "freesurfer":
@@ -959,6 +961,42 @@ def cmd_plot_projection(args):
         return 1
 
 
+def cmd_render_snapshots(args):
+    """Render animation frames from saved optimization snapshots."""
+    from autoflatten.animation import render_snapshot_frames
+
+    npz_path = os.path.abspath(args.snapshots_file)
+    if not os.path.exists(npz_path):
+        print(f"Error: Snapshots file not found: {npz_path}")
+        return 1
+
+    output_dir = args.output_dir or os.path.join(
+        os.path.dirname(npz_path), "flatten_frames"
+    )
+
+    try:
+        frames = render_snapshot_frames(
+            npz_path=npz_path,
+            output_dir=output_dir,
+            n_frames=args.n_frames,
+            curv_path=args.curv_path,
+            subject_dir=args.subject_dir,
+            figsize=args.figsize,
+            dpi=args.dpi,
+            overwrite=args.overwrite,
+        )
+        print(
+            f"\nTo create video:\n"
+            f"  ffmpeg -r 30 -i {output_dir}/frame_%04d.png "
+            f"-c:v libx264 -pix_fmt yuv420p flatten.mp4"
+        )
+        return 0
+    except Exception as e:
+        print(f"Error rendering frames: {e}")
+        traceback.print_exc()
+        return 1
+
+
 # =============================================================================
 # Argument Parsers
 # =============================================================================
@@ -1044,6 +1082,18 @@ def add_pyflatten_args(parser):
         "--debug-save-distances",
         action="store_true",
         help="Save k-ring distances to cache file for debugging",
+    )
+    group.add_argument(
+        "--save-snapshots",
+        metavar="PATH",
+        help="Save intermediate UV snapshots to .npz file for animation",
+    )
+    group.add_argument(
+        "--snapshot-every",
+        type=int,
+        default=10,
+        help="Save snapshot every N iterations (default: 10). "
+        "Only used with --save-snapshots.",
     )
 
 
@@ -1261,9 +1311,63 @@ Examples:
     )
     parser_plot_projection.set_defaults(func=cmd_plot_projection)
 
+    # 'render-snapshots' subcommand
+    parser_render = subparsers.add_parser(
+        "render-snapshots",
+        help="Render animation frames from saved optimization snapshots",
+    )
+    parser_render.add_argument(
+        "snapshots_file",
+        help="Path to .npz snapshot file (from --save-snapshots)",
+    )
+    parser_render.add_argument(
+        "-o",
+        "--output-dir",
+        help="Output directory for frame PNGs (default: flatten_frames/)",
+    )
+    parser_render.add_argument(
+        "--n-frames",
+        type=int,
+        default=120,
+        help="Number of frames to render (default: 120)",
+    )
+    parser_render.add_argument(
+        "--curv-path",
+        help="Path to curvature file for cortical shading (e.g., lh.curv)",
+    )
+    parser_render.add_argument(
+        "--subject-dir",
+        help="FreeSurfer subject directory (auto-detect curvature)",
+    )
+    parser_render.add_argument(
+        "--figsize",
+        type=float,
+        default=6.0,
+        help="Figure size in inches (default: 6)",
+    )
+    parser_render.add_argument(
+        "--dpi",
+        type=int,
+        default=150,
+        help="Resolution in DPI (default: 150)",
+    )
+    parser_render.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing frame files",
+    )
+    parser_render.set_defaults(func=cmd_render_snapshots)
+
     # Handle default case: autoflatten /path/to/subject [options]
     # Insert 'run' subcommand when first arg looks like a path
-    known_commands = {"project", "flatten", "plot-flatmap", "plot-projection", "run"}
+    known_commands = {
+        "project",
+        "flatten",
+        "plot-flatmap",
+        "plot-projection",
+        "render-snapshots",
+        "run",
+    }
     if (
         len(sys.argv) > 1
         and sys.argv[1] not in known_commands
@@ -1282,6 +1386,8 @@ Examples:
         return cmd_plot_flatmap(args)
     elif args.command == "plot-projection":
         return cmd_plot_projection(args)
+    elif args.command == "render-snapshots":
+        return cmd_render_snapshots(args)
     elif args.command == "run":
         return cmd_run_full_pipeline(args)
     else:
