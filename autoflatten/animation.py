@@ -282,17 +282,12 @@ def _draw_label(ax, meta: dict) -> None:
     if "n_flipped" in meta:
         lines.append(f"Flipped: {meta['n_flipped']}")
 
-    label_text = "\n".join(lines)
-    ax.text(
-        0.98,
-        0.02,
+    label_text = "  |  ".join(lines)
+    ax.set_title(
         label_text,
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=9,
+        fontsize=10,
         fontfamily="monospace",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+        pad=8,
     )
 
 
