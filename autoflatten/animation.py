@@ -18,6 +18,7 @@ Typical workflow::
 
 import json
 import os
+import shutil
 
 import numpy as np
 
@@ -128,6 +129,9 @@ def render_snapshot_frames(
     dpi: int = 150,
     overwrite: bool = False,
     fps: float = 15.0,
+    hold_start: float = 1.5,
+    hold_phase_transition: float = 0.75,
+    hold_end: float = 2.0,
 ) -> list[str]:
     """Render animation frames from saved optimization snapshots.
 
@@ -158,6 +162,12 @@ def render_snapshot_frames(
         Whether to overwrite existing frame files.
     fps : float
         Frames per second (used in the suggested ffmpeg command).
+    hold_start : float
+        Seconds to hold the first frame (initial projection).
+    hold_phase_transition : float
+        Seconds to hold at each phase boundary.
+    hold_end : float
+        Seconds to hold the last frame (final result).
 
     Returns
     -------
@@ -193,6 +203,11 @@ def render_snapshot_frames(
         indices = np.round(np.linspace(0, n_total - 1, n_frames)).astype(int)
         indices = np.unique(indices)  # remove duplicates
 
+    # Expand frame list with hold frames for pacing
+    indices = _expand_frames_with_holds(
+        indices, all_metadata, fps, hold_start, hold_phase_transition, hold_end
+    )
+
     # Load curvature for face coloring
     face_colors = _load_face_colors(curv_path, subject_dir, orig_indices, faces)
 
@@ -210,13 +225,18 @@ def render_snapshot_frames(
     os.makedirs(output_dir, exist_ok=True)
 
     frame_paths = []
-    n_digits = len(str(len(indices) - 1))
+    rendered_cache = {}  # snap_idx -> frame_path (first rendered copy)
 
     for frame_idx, snap_idx in enumerate(indices):
         frame_path = os.path.join(output_dir, f"frame_{frame_idx:04d}.png")
         frame_paths.append(frame_path)
 
         if os.path.exists(frame_path) and not overwrite:
+            continue
+
+        # Copy from cache if this snap_idx was already rendered
+        if snap_idx in rendered_cache:
+            shutil.copy2(rendered_cache[snap_idx], frame_path)
             continue
 
         uv = snapshots[snap_idx]  # (V, 2)
@@ -255,6 +275,7 @@ def render_snapshot_frames(
             facecolor="white",
         )
         plt.close(fig)
+        rendered_cache[snap_idx] = frame_path
 
         if (frame_idx + 1) % 20 == 0 or frame_idx == len(indices) - 1:
             print(f"  Rendered frame {frame_idx + 1}/{len(indices)}")
@@ -267,6 +288,63 @@ def render_snapshot_frames(
         f"-c:v libx264 -pix_fmt yuv420p flatten.mp4"
     )
     return frame_paths
+
+
+def _expand_frames_with_holds(
+    indices: np.ndarray,
+    all_metadata: list[dict] | None,
+    fps: float,
+    hold_start: float,
+    hold_phase_transition: float,
+    hold_end: float,
+) -> np.ndarray:
+    """Insert duplicate frame indices to create holds at key moments.
+
+    Returns an expanded array of snapshot indices where duplicates
+    produce hold/pause effects at uniform fps playback.
+    """
+    if len(indices) == 0:
+        return indices
+
+    expanded = []
+
+    # Hold on the first frame
+    n_hold_start = max(0, int(hold_start * fps))
+    expanded.extend([indices[0]] * n_hold_start)
+
+    for i, snap_idx in enumerate(indices):
+        expanded.append(snap_idx)
+
+        # Detect phase transitions
+        if (
+            hold_phase_transition > 0
+            and all_metadata is not None
+            and i < len(indices) - 1
+        ):
+            cur_phase = (
+                all_metadata[snap_idx].get("phase", "")
+                if snap_idx < len(all_metadata)
+                else ""
+            )
+            next_snap = indices[i + 1]
+            next_phase = (
+                all_metadata[next_snap].get("phase", "")
+                if next_snap < len(all_metadata)
+                else ""
+            )
+            if cur_phase and next_phase and cur_phase != next_phase:
+                n_hold = max(0, int(hold_phase_transition * fps))
+                expanded.extend([snap_idx] * n_hold)
+
+    # Hold on the last frame
+    n_hold_end = max(0, int(hold_end * fps))
+    expanded.extend([indices[-1]] * n_hold_end)
+
+    n_added = len(expanded) - len(indices)
+    if n_added > 0:
+        print(f"  Added {n_added} hold frames ({len(expanded)} total)")
+
+    return np.array(expanded, dtype=indices.dtype)
 
 
 def _draw_label(ax, meta: dict) -> None:

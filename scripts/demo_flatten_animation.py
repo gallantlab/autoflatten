@@ -7,6 +7,10 @@ import tempfile
 import nibabel.freesurfer
 import numpy as np
 
+from autoflatten.animation import SnapshotCollector, render_snapshot_frames
+from autoflatten.flatten import FlattenConfig, SurfaceFlattener
+from autoflatten.freesurfer import write_patch
+
 
 def make_half_sphere(n_subdivisions=20):
     """Create a half-sphere mesh with disk topology (open, not wrapped).
@@ -96,8 +100,6 @@ def main():
     print(f"  Saved curvature: {curv_path}")
 
     # Create patch file (all vertices, border = equator ring)
-    from autoflatten.freesurfer import write_patch
-
     orig_indices = np.arange(len(vertices), dtype=np.int32)
 
     patch_path = os.path.join(surf_dir, "lh.autoflatten.patch.3d")
@@ -108,9 +110,6 @@ def main():
     print("\nRunning flattening with snapshot capture...")
     snapshot_path = os.path.join(tmpdir, "snapshots.npz")
     output_path = os.path.join(surf_dir, "lh.autoflatten.flat.patch.3d")
-
-    from autoflatten.flatten import FlattenConfig, SurfaceFlattener
-    from autoflatten.animation import SnapshotCollector
 
     config = FlattenConfig()
     # Use fast settings for the demo
@@ -141,8 +140,7 @@ def main():
 
     # Render frames
     print("\nRendering frames...")
-    from autoflatten.animation import render_snapshot_frames
-
+    fps = 8
     frames_dir = os.path.join(tmpdir, "frames")
     frames = render_snapshot_frames(
         npz_path=snapshot_path,
@@ -151,34 +149,47 @@ def main():
         curv_path=curv_path,
         figsize=6.0,
         dpi=100,
+        fps=fps,
     )
 
     # Assemble video
     print("\nAssembling video...")
-    gif_path = os.path.join(tmpdir, "flatten.gif")
     mp4_path = os.path.join(tmpdir, "flatten.mp4")
+    gif_path = os.path.join(tmpdir, "flatten.gif")
     try:
-        import imageio.v3 as iio
+        import subprocess
 
-        frame_images = [iio.imread(fp)[:, :, :3] for fp in frames]
-
-        # Try MP4 first, fall back to GIF
-        fps = 4
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-r",
+                str(fps),
+                "-i",
+                os.path.join(frames_dir, "frame_%04d.png"),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                mp4_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        print(f"Video saved to: {mp4_path}")
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(f"ffmpeg failed ({e}), trying GIF fallback...")
         try:
-            iio.imwrite(mp4_path, frame_images, fps=fps, codec="libx264", plugin="pyav")
-            print(f"Video saved to: {mp4_path}")
-        except Exception:
-            duration_ms = 250
+            import imageio.v3 as iio
+
+            frame_images = [iio.imread(fp)[:, :, :3] for fp in frames]
+            duration_ms = int(1000 / fps)
             iio.imwrite(
                 gif_path, frame_images, duration=duration_ms, loop=0, plugin="pillow"
             )
             print(f"GIF saved to: {gif_path}")
-    except Exception as e:
-        print(f"Could not create video ({e}), frames are in: {frames_dir}")
-        print(
-            f"Create manually: ffmpeg -r 30 -i {frames_dir}/frame_%04d.png "
-            f"-c:v libx264 -pix_fmt yuv420p {mp4_path}"
-        )
+        except Exception as e2:
+            print(f"Could not create video ({e2}), frames are in: {frames_dir}")
 
     print(f"\nAll outputs in: {tmpdir}")
     return tmpdir
