@@ -147,7 +147,9 @@ def render_snapshot_frames(
     orig_indices = data["orig_indices"]  # (V,)
 
     n_total = len(snapshots)
-    print(f"Loaded {n_total} snapshots, {len(faces)} faces, {len(orig_indices)} vertices")
+    print(
+        f"Loaded {n_total} snapshots, {len(faces)} faces, {len(orig_indices)} vertices"
+    )
 
     # Subsample to n_frames evenly spaced
     if n_total <= n_frames:
@@ -159,13 +161,15 @@ def render_snapshot_frames(
     # Load curvature for face coloring
     face_colors = _load_face_colors(curv_path, subject_dir, orig_indices, faces)
 
-    # Compute global bounding box across all selected snapshots for consistent axes
+    # Compute per-frame bounding boxes with consistent aspect ratio
+    # Use a smooth transition so the "camera" follows the mesh
     all_selected = snapshots[indices]
-    global_min = all_selected.reshape(-1, 2).min(axis=0)
-    global_max = all_selected.reshape(-1, 2).max(axis=0)
-    margin = 0.05 * max(global_max[0] - global_min[0], global_max[1] - global_min[1])
-    xlim = (global_min[0] - margin, global_max[0] + margin)
-    ylim = (global_min[1] - margin, global_max[1] + margin)
+    per_frame_mins = all_selected.min(axis=1)  # (n_frames, 2)
+    per_frame_maxs = all_selected.max(axis=1)  # (n_frames, 2)
+    per_frame_centers = (per_frame_mins + per_frame_maxs) / 2
+    per_frame_extents = per_frame_maxs - per_frame_mins
+    # Use max of x/y extent per frame for square aspect
+    per_frame_size = per_frame_extents.max(axis=1)  # (n_frames,)
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -196,8 +200,11 @@ def render_snapshot_frames(
         )
         ax.add_collection(poly)
 
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
+        # Per-frame bounding box (square, centered on mesh)
+        center = per_frame_centers[frame_idx]
+        half_size = per_frame_size[frame_idx] / 2 * 1.1  # 10% margin
+        ax.set_xlim(center[0] - half_size, center[0] + half_size)
+        ax.set_ylim(center[1] - half_size, center[1] + half_size)
         ax.set_aspect("equal")
         ax.axis("off")
         ax.set_facecolor("white")
@@ -205,9 +212,7 @@ def render_snapshot_frames(
         fig.savefig(
             frame_path,
             dpi=dpi,
-            bbox_inches="tight",
             facecolor="white",
-            pad_inches=0.1,
         )
         plt.close(fig)
 
