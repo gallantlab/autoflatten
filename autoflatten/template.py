@@ -2,6 +2,7 @@
 
 import networkx as nx
 import numpy as np
+from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
 
 from .freesurfer import load_surface
@@ -264,45 +265,41 @@ def merge_small_components(
         main_cuts = cut_components[:5]
         small_cuts = cut_components[5:]
 
+        # Pre-compute coordinates for medial wall border once
+        if medial_wall_border:
+            mwall_border_arr = np.array(list(medial_wall_border))
+            mwall_border_coords = pts_inflated[mwall_border_arr]
+
         # For each small component, find which main component it's closest to
         for small_comp in small_cuts:
-            small_comp_list = list(small_comp)
+            small_arr = np.array(list(small_comp))
+            small_coords = pts_inflated[small_arr]
 
-            # Compute nearest-neighbor distance to each main cut
+            # Compute nearest-neighbor distance to each main cut using cdist
             closest_idx = -1
             min_distance = float("inf")
             assign_to_medial_wall = False
 
-            # First, check distance to each main cut
             for i, main_comp in enumerate(main_cuts):
-                main_comp_list = list(main_comp)
+                main_arr = np.array(list(main_comp))
+                main_coords = pts_inflated[main_arr]
+                dist = cdist(small_coords, main_coords).min()
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_idx = i
+                    assign_to_medial_wall = False
 
-                # Find minimum distance between any vertex in small_comp and any vertex in main_comp
-                for v1 in small_comp_list:
-                    for v2 in main_comp_list:
-                        dist = np.linalg.norm(pts_inflated[v1] - pts_inflated[v2])
-                        if dist < min_distance:
-                            min_distance = dist
-                            closest_idx = i
-                            assign_to_medial_wall = False
-
-            # Now, check distance to medial wall BORDER
+            # Check distance to medial wall border
             if medial_wall_border:
-                medial_wall_border_list = list(medial_wall_border)
-
-                for v1 in small_comp_list:
-                    for v2 in medial_wall_border_list:
-                        dist = np.linalg.norm(pts_inflated[v1] - pts_inflated[v2])
-                        if dist < min_distance:
-                            min_distance = dist
-                            assign_to_medial_wall = True
+                dist = cdist(small_coords, mwall_border_coords).min()
+                if dist < min_distance:
+                    min_distance = dist
+                    assign_to_medial_wall = True
 
             # Assign the small component based on nearest-neighbor distance
             if assign_to_medial_wall:
-                # Add to medial wall
                 updated_medial_wall.update(small_comp)
             else:
-                # Add to closest cut
                 main_cuts[closest_idx].update(small_comp)
     else:
         main_cuts = cut_components

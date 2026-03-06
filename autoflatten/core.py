@@ -50,16 +50,73 @@ def _find_geometric_endpoints(cut_vertices, pts):
     max_dist : float
         Euclidean distance between the endpoints.
     """
-    max_dist = 0
-    start, end = cut_vertices[0], cut_vertices[0]
-    for idx1, v1 in enumerate(cut_vertices):
-        pos1 = pts[v1]
-        for v2 in cut_vertices[idx1 + 1 :]:
-            dist = np.linalg.norm(pos1 - pts[v2])
-            if dist > max_dist:
-                max_dist = dist
-                start, end = v1, v2
-    return start, end, max_dist
+    cut_vertices = np.asarray(cut_vertices)
+    coords = pts[cut_vertices]
+    dist_matrix = cdist(coords, coords)
+    i, j = np.unravel_index(dist_matrix.argmax(), dist_matrix.shape)
+    return cut_vertices[i], cut_vertices[j], dist_matrix[i, j]
+
+
+def _build_surface_graph(pts, polys):
+    """Build a weighted surface graph from vertices and faces.
+
+    Parameters
+    ----------
+    pts : ndarray of shape (V, 3)
+        Vertex coordinates (used for edge weights).
+    polys : ndarray of shape (F, 3)
+        Triangle face indices.
+
+    Returns
+    -------
+    G : networkx.Graph
+        Surface graph with Euclidean distance edge weights.
+    """
+    # Extract all edges from triangles: (v0,v1), (v0,v2), (v1,v2) per face
+    polys = np.asarray(polys)
+    edges_01 = polys[:, [0, 1]]
+    edges_02 = polys[:, [0, 2]]
+    edges_12 = polys[:, [1, 2]]
+    all_edges = np.vstack([edges_01, edges_02, edges_12])
+
+    # Compute edge weights (Euclidean distances) in batch
+    weights = np.linalg.norm(pts[all_edges[:, 0]] - pts[all_edges[:, 1]], axis=1)
+
+    # Build graph with all edges at once
+    G = nx.Graph()
+    G.add_nodes_from(range(len(pts)))
+    G.add_weighted_edges_from(
+        zip(all_edges[:, 0].tolist(), all_edges[:, 1].tolist(), weights.tolist())
+    )
+
+    return G
+
+
+def _find_farthest_vertex(start, candidates, pts):
+    """Find the vertex in candidates farthest from start.
+
+    Parameters
+    ----------
+    start : int
+        Starting vertex index.
+    candidates : array-like
+        Candidate vertex indices to search.
+    pts : ndarray of shape (V, 3)
+        Vertex coordinates.
+
+    Returns
+    -------
+    farthest : int
+        Index of the farthest vertex.
+    max_dist : float
+        Distance to the farthest vertex.
+    """
+    candidates = np.asarray(list(candidates))
+    if len(candidates) == 0:
+        return start, 0.0
+    dists = np.linalg.norm(pts[candidates] - pts[start], axis=1)
+    idx = np.argmax(dists)
+    return candidates[idx], dists[idx]
 
 
 def ensure_continuous_cuts(vertex_dict, subject, hemi):
@@ -96,17 +153,7 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
 
     # Create surface graph for path finding (using fiducial)
     print("Creating surface graph...")
-    G = nx.Graph()
-    G.add_nodes_from(range(len(pts_fiducial)))
-
-    for triangle in polys:
-        for i in range(3):
-            v1 = triangle[i]
-            for j in range(i + 1, 3):
-                v2 = triangle[j]
-                # Use fiducial for edge weights to get accurate paths
-                weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
-                G.add_edge(v1, v2, weight=weight)
+    G = _build_surface_graph(pts_fiducial, polys)
 
     # Process each cut (using anatomical names from template)
     cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
@@ -148,59 +195,19 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
                 if len(deg1_vertices) == 1:
                     # Find most distant vertex from the degree-1 vertex
                     start = deg1_vertices[0]
-                    max_dist = 0
-                    end = start
-
-                    # Use Euclidean distance on inflated surface
-                    start_pos = pts_inflated[start]
-                    for v in comp:
-                        dist = np.linalg.norm(start_pos - pts_inflated[v])
-                        if dist > max_dist:
-                            max_dist = dist
-                            end = v
-
+                    end, _ = _find_farthest_vertex(start, comp, pts_inflated)
                     component_endpoints.append((start, end))
                 else:
                     # Find most distant pair among degree-1 vertices
-                    max_dist = 0
-                    best_pair = (deg1_vertices[0], deg1_vertices[0])
-
-                    # Use Euclidean distance on inflated surface
-                    for idx1, v1 in enumerate(deg1_vertices):
-                        pos1 = pts_inflated[v1]
-                        for v2 in deg1_vertices[idx1 + 1 :]:
-                            dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                            if dist > max_dist:
-                                max_dist = dist
-                                best_pair = (v1, v2)
-
-                    component_endpoints.append(best_pair)
+                    start, end, _ = _find_geometric_endpoints(
+                        deg1_vertices, pts_inflated
+                    )
+                    component_endpoints.append((start, end))
             else:
-                # No degree-1 vertices - find diameter using Euclidean distances
-                # Two-pass approach for finding diameter
+                # No degree-1 vertices - find diameter using two-pass approach
                 start = comp_list[0]
-                max_dist = 0
-                far_vertex = start
-
-                # First pass - find furthest vertex from arbitrary start
-                start_pos = pts_inflated[start]
-                for v in comp:
-                    dist = np.linalg.norm(start_pos - pts_inflated[v])
-                    if dist > max_dist:
-                        max_dist = dist
-                        far_vertex = v
-
-                # Second pass - find furthest vertex from far_vertex
-                max_dist = 0
-                end = far_vertex
-                far_pos = pts_inflated[far_vertex]
-
-                for v in comp:
-                    dist = np.linalg.norm(far_pos - pts_inflated[v])
-                    if dist > max_dist:
-                        max_dist = dist
-                        end = v
-
+                far_vertex, _ = _find_farthest_vertex(start, comp, pts_inflated)
+                end, _ = _find_farthest_vertex(far_vertex, comp, pts_inflated)
                 component_endpoints.append((far_vertex, end))
 
         # Step 3: Find global start and end points using Euclidean distances
@@ -210,25 +217,18 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
             for v in (start, end)
         ]
 
-        max_dist = 0
-        global_start_idx, global_end_idx = 0, 1  # Default to first two endpoints
+        ep_vertices = np.array([v for v, _ in flat_endpoints])
+        ep_comps = np.array([c for _, c in flat_endpoints])
+        ep_coords = pts_inflated[ep_vertices]
+        ep_dist_matrix = cdist(ep_coords, ep_coords)
 
-        # Find the most distant pair using Euclidean distance
-        for i in range(len(flat_endpoints) - 1):
-            v1, comp1 = flat_endpoints[i]
-            pos1 = pts_inflated[v1]
+        # Mask out same-component pairs by setting their distance to -1
+        same_comp = ep_comps[:, None] == ep_comps[None, :]
+        ep_dist_matrix[same_comp] = -1
 
-            for j in range(i + 1, len(flat_endpoints)):
-                v2, comp2 = flat_endpoints[j]
-                # Skip pairs from same component
-                if comp1 == comp2:
-                    continue
-
-                # Use Euclidean distance on inflated surface
-                dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                if dist > max_dist:
-                    max_dist = dist
-                    global_start_idx, global_end_idx = i, j
+        global_start_idx, global_end_idx = np.unravel_index(
+            ep_dist_matrix.argmax(), ep_dist_matrix.shape
+        )
 
         # Get global endpoints
         global_start, start_comp = flat_endpoints[global_start_idx]
@@ -260,25 +260,25 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
             closest_v1 = None
             closest_v2 = None
 
-            # Use Euclidean distance to find closest components
+            # Use vectorized cdist to find closest components
             for conn_idx in connected:
-                conn_comp = component_list[conn_idx]
+                conn_verts = np.array(list(component_list[conn_idx]))
+                conn_coords = pts_inflated[conn_verts]
 
                 for remain_idx in remaining:
-                    remain_comp = component_list[remain_idx]
+                    remain_verts = np.array(list(component_list[remain_idx]))
+                    remain_coords = pts_inflated[remain_verts]
 
-                    # Find closest vertices between components using Euclidean distance
-                    for v1 in conn_comp:
-                        pos1 = pts_inflated[v1]
+                    dist_matrix = cdist(conn_coords, remain_coords)
+                    min_idx = np.unravel_index(dist_matrix.argmin(), dist_matrix.shape)
+                    dist = dist_matrix[min_idx]
 
-                        for v2 in remain_comp:
-                            dist = np.linalg.norm(pos1 - pts_inflated[v2])
-                            if dist < min_dist:
-                                min_dist = dist
-                                best_conn = conn_idx
-                                best_remain = remain_idx
-                                closest_v1 = v1
-                                closest_v2 = v2
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_conn = conn_idx
+                        best_remain = remain_idx
+                        closest_v1 = conn_verts[min_idx[0]]
+                        closest_v2 = remain_verts[min_idx[1]]
 
             if closest_v1 is not None and closest_v2 is not None:
                 # Use surface graph to find shortest path between closest vertices
@@ -417,6 +417,9 @@ def fill_holes_in_patch(faces, excluded_vertices):
     if faces.size == 0:
         return set()
 
+    # Ensure faces are int for consistent set operations
+    faces = faces.astype(int)
+
     all_hole_vertices = set()
 
     for iteration in range(HOLE_FILL_MAX_ITERATIONS):
@@ -426,8 +429,8 @@ def fill_holes_in_patch(faces, excluded_vertices):
         )
         patch_faces = []
         for face in faces:
-            if all(int(v) in patch_vertex_set for v in face):
-                patch_faces.append([int(v) for v in face])
+            if all(v in patch_vertex_set for v in face):
+                patch_faces.append(face.tolist())
 
         if len(patch_faces) == 0:
             break
@@ -439,7 +442,7 @@ def fill_holes_in_patch(faces, excluded_vertices):
         edge_face_count = defaultdict(int)
         for face in patch_faces:
             for i in range(3):
-                edge = tuple(sorted([int(face[i]), int(face[(i + 1) % 3])]))
+                edge = tuple(sorted([face[i], face[(i + 1) % 3]]))
                 edge_face_count[edge] += 1
 
         # Boundary edges appear in exactly 1 face
@@ -484,7 +487,7 @@ def fill_holes_in_patch(faces, excluded_vertices):
         # Collect all vertices in hole boundary loops
         new_hole_vertices = set()
         for loop in hole_loops:
-            new_hole_vertices.update(int(v) for v in loop)
+            new_hole_vertices.update(v for v in loop)
 
         if not new_hole_vertices:
             break
@@ -552,17 +555,7 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
 
     # Create surface graph with geodesic weights
     print("Creating surface graph with geodesic weights...")
-    G = nx.Graph()
-    G.add_nodes_from(range(len(pts_fiducial)))
-
-    for triangle in polys:
-        for i in range(3):
-            v1 = triangle[i]
-            for j in range(i + 1, 3):
-                v2 = triangle[j]
-                # Use fiducial surface for accurate geodesic distances
-                weight = np.linalg.norm(pts_fiducial[v1] - pts_fiducial[v2])
-                G.add_edge(v1, v2, weight=weight)
+    G = _build_surface_graph(pts_fiducial, polys)
 
     # Convert medial wall to set for fast lookup
     mwall_set = set(medial_wall_vertices) if medial_wall_vertices is not None else set()

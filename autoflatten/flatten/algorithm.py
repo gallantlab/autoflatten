@@ -723,6 +723,8 @@ def run_smoothed_optimization(
     max_small: int = 50000,
     total_small_limit: int = 15000,
     n_coarse_steps: int = 15,
+    grad_J_d_fn=None,
+    grad_J_a_fn=None,
 ) -> np.ndarray:
     """Run gradient descent with FreeSurfer-style gradient smoothing.
 
@@ -749,6 +751,8 @@ def run_smoothed_optimization(
         max_small: Max consecutive small steps
         total_small_limit: Max total small steps
         n_coarse_steps: Number of line search steps
+        grad_J_d_fn: Pre-compiled JIT gradient for distance energy. If None, created internally.
+        grad_J_a_fn: Pre-compiled JIT gradient for area energy. If None, created internally.
 
     Returns:
         Optimized UV coordinates
@@ -757,16 +761,20 @@ def run_smoothed_optimization(
         lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
     )
 
-    # Create separate gradient functions for FreeSurfer-style normalization
-    @jax.jit
-    def grad_J_d_fn(uv):
-        return jax.grad(
-            lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
-        )(uv)
+    # Use pre-compiled gradient functions if provided, otherwise create them
+    if grad_J_d_fn is None:
 
-    @jax.jit
-    def grad_J_a_fn(uv):
-        return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
+        @jax.jit
+        def grad_J_d_fn(uv):
+            return jax.grad(
+                lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
+            )(uv)
+
+    if grad_J_a_fn is None:
+
+        @jax.jit
+        def grad_J_a_fn(uv):
+            return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
 
     # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
     compute_weighted_gradient = make_weighted_gradient_fn(
@@ -918,6 +926,8 @@ def run_adaptive_optimization(
     flipped_threshold_factor: float = 20.0,
     recovery_area_ratio: float = 0.5,
     recovery_iterations: int = 50,
+    grad_J_d_fn=None,
+    grad_J_a_fn=None,
 ) -> np.ndarray:
     """Run adaptive gradient descent with flipped-triangle recovery.
 
@@ -950,6 +960,8 @@ def run_adaptive_optimization(
         flipped_threshold_factor: Trigger recovery when flipped > initial * factor
         recovery_area_ratio: Area/distance ratio during recovery (higher = more area weight)
         recovery_iterations: Number of recovery iterations
+        grad_J_d_fn: Pre-compiled JIT gradient for distance energy. If None, created internally.
+        grad_J_a_fn: Pre-compiled JIT gradient for area energy. If None, created internally.
 
     Returns:
         Optimized UV coordinates
@@ -958,16 +970,20 @@ def run_adaptive_optimization(
         lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
     )
 
-    # Create separate gradient functions for FreeSurfer-style normalization
-    @jax.jit
-    def grad_J_d_fn(uv):
-        return jax.grad(
-            lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
-        )(uv)
+    # Use pre-compiled gradient functions if provided, otherwise create them
+    if grad_J_d_fn is None:
 
-    @jax.jit
-    def grad_J_a_fn(uv):
-        return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
+        @jax.jit
+        def grad_J_d_fn(uv):
+            return jax.grad(
+                lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
+            )(uv)
+
+    if grad_J_a_fn is None:
+
+        @jax.jit
+        def grad_J_a_fn(uv):
+            return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
 
     # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
     compute_weighted_gradient = make_weighted_gradient_fn(
@@ -1971,6 +1987,8 @@ class SurfaceFlattener:
                     max_small=config.convergence.max_small,
                     total_small_limit=config.convergence.total_small,
                     n_coarse_steps=config.line_search.n_coarse_steps,
+                    grad_J_d_fn=self._grad_J_d,
+                    grad_J_a_fn=self._grad_J_a,
                 )
             else:
                 uv = run_smoothed_optimization(
@@ -1993,6 +2011,8 @@ class SurfaceFlattener:
                     max_small=config.convergence.max_small,
                     total_small_limit=config.convergence.total_small,
                     n_coarse_steps=config.line_search.n_coarse_steps,
+                    grad_J_d_fn=self._grad_J_d,
+                    grad_J_a_fn=self._grad_J_a,
                 )
 
         # Final negative area removal (FreeSurfer step 3)

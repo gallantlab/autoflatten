@@ -57,14 +57,10 @@ def load_surface(subject, type, hemi, subjects_dir=None):
     if subjects_dir is None:
         raise ValueError("SUBJECTS_DIR environment variable not set")
     subject_surf_dir = os.path.join(subjects_dir, subject, "surf")
-    # Construct the file path
     surf_file = os.path.join(subject_surf_dir, f"{hemi}.{type}")
     if not os.path.exists(surf_file):
         raise FileNotFoundError(f"Surface file {surf_file} not found")
-    # Load the surface using nibabel
-    surf_data = nib.freesurfer.read_geometry(surf_file)
-    coords, faces = surf_data
-    return coords, faces
+    return read_surface(surf_file)
 
 
 def is_freesurfer_available():
@@ -225,63 +221,61 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     if coords is None:
         coords = vertices
 
-    # Collect all vertices to exclude (all keys in vertex_dict: medial wall, cuts, holes, etc.)
-    excluded_vertices = set()
-    for key, verts in vertex_dict.items():
-        excluded_vertices.update(int(v) for v in verts)
+    faces = np.asarray(faces)
+    n_vertices = len(vertices)
 
-    # Find vertices that are adjacent to cuts (border vertices)
-    border_vertices = set()
-
-    # Create a vertex adjacency list
-    adjacency = [set() for _ in range(len(vertices))]
-    for face in faces:
-        for i in range(3):
-            adjacency[face[i]].update([face[j] for j in range(3) if j != i])
-
-    # Find vertices adjacent to excluded vertices (cuts, holes, medial wall)
-    # These form the border of the patch
+    # Collect all vertices to exclude using a boolean mask for fast lookup
+    excluded_mask = np.zeros(n_vertices, dtype=bool)
     for key, verts in vertex_dict.items():
         for v in verts:
-            v_int = int(v)
-            if v_int < len(adjacency):
-                for neighbor in adjacency[v_int]:
-                    if neighbor not in excluded_vertices:
-                        border_vertices.add(neighbor)
+            excluded_mask[int(v)] = True
 
-    # Collect vertices used in faces (excluding the excluded vertices)
-    included_vertices = set()
-    for face in faces:
-        # Skip faces if any of its vertices are excluded
-        if all(v not in excluded_vertices for v in face):
-            included_vertices.update(face)
-
-    # Create list of vertices to include in the patch file
-    patch_vertices = []
-    for v in included_vertices:
-        patch_vertices.append((v, coords[v]))
-
-    # Write the patch file
-    with open(filename, "wb") as fp:
-        fp.write(struct.pack(">2i", -1, len(patch_vertices)))
-
-        for idx, coord in patch_vertices:
-            # Convert to Python int to avoid unsigned integer overflow
-            # (numpy uint32 indices would wrap around when negated)
-            idx_int = int(idx)
-            # FreeSurfer convention: negative = border, positive = interior
-            if idx in border_vertices:
-                # Border vertices get negative indices -(idx + 1)
-                fp.write(struct.pack(">i3f", -(idx_int + 1), *coord))
-            else:
-                # Interior vertices get positive indices (idx + 1)
-                fp.write(struct.pack(">i3f", idx_int + 1, *coord))
-
-    print(f"Created patch file {filename} with {len(patch_vertices)} vertices")
-    print(f"Excluded {len(excluded_vertices)} vertices (medial wall and cuts)")
-    print(
-        f"Marked {len(border_vertices & included_vertices)} vertices as border vertices"
+    # Find included faces: faces where no vertex is excluded (vectorized)
+    face_excluded = (
+        excluded_mask[faces[:, 0]]
+        | excluded_mask[faces[:, 1]]
+        | excluded_mask[faces[:, 2]]
     )
+    included_face_mask = ~face_excluded
+    included_faces = faces[included_face_mask]
+
+    # Get unique included vertices
+    included_vertex_indices = np.unique(included_faces)
+
+    # Find border vertices: included vertices that are adjacent to excluded vertices
+    # Build adjacency from included faces only - find edges touching excluded vertices
+    border_mask = np.zeros(n_vertices, dtype=bool)
+    for face in faces:
+        for i in range(3):
+            if excluded_mask[face[i]]:
+                # This face has an excluded vertex; its non-excluded vertices are border
+                for j in range(3):
+                    if not excluded_mask[face[j]]:
+                        border_mask[face[j]] = True
+
+    # Build patch vertices list (preserving original return format)
+    patch_vertices = [(int(v), coords[v]) for v in included_vertex_indices]
+
+    # Write the patch file using batched I/O
+    n_patch = len(patch_vertices)
+    buf = bytearray(8 + 16 * n_patch)
+    struct.pack_into(">2i", buf, 0, -1, n_patch)
+
+    for i, (idx, coord) in enumerate(patch_vertices):
+        # FreeSurfer convention: negative = border, positive = interior
+        if border_mask[idx]:
+            raw_idx = -(idx + 1)
+        else:
+            raw_idx = idx + 1
+        struct.pack_into(">i3f", buf, 8 + i * 16, raw_idx, *coord)
+
+    with open(filename, "wb") as fp:
+        fp.write(buf)
+
+    n_border = int(border_mask[included_vertex_indices].sum())
+    print(f"Created patch file {filename} with {n_patch} vertices")
+    print(f"Excluded {int(excluded_mask.sum())} vertices (medial wall and cuts)")
+    print(f"Marked {n_border} vertices as border vertices")
 
     return filename, patch_vertices
 
@@ -311,14 +305,13 @@ def create_label_file(vertex_ids, subject, hemi, output_file):
     # Get the surface coordinates from the subject's surface file
     coords, polys = load_surface(subject, "inflated", hemi)
 
-    # Create the label data
+    # Create the label data (vectorized)
+    vertex_ids = np.asarray(vertex_ids)
     n_vertices = len(vertex_ids)
     label_data = np.zeros((n_vertices, 5))
-
-    for i, vid in enumerate(vertex_ids):
-        label_data[i, 0] = vid
-        label_data[i, 1:4] = coords[vid]  # x, y, z coordinates
-        label_data[i, 4] = 1.0  # Value (typically 1.0)
+    label_data[:, 0] = vertex_ids
+    label_data[:, 1:4] = coords[vertex_ids]
+    label_data[:, 4] = 1.0
 
     # Write the file
     with open(output_file, "w") as f:
@@ -548,38 +541,9 @@ def _create_temp_surf_directory(subject, surf_dir, temp_root):
     return temp_surf_dir
 
 
-def _run_command(cmd, cwd, log_path):
+def _run_command(cmd, cwd, log_path, env=None):
     """
     Run a command and log its output.
-
-    Parameters
-    ----------
-    cmd : list
-        Command to execute as a list of arguments.
-    cwd : str
-        Working directory to execute the command in.
-    log_path : str
-        Path to the log file to write stdout and stderr.
-
-    Returns
-    -------
-    int
-        Return code of the command.
-    """
-    print(f"Running command: {' '.join(cmd)}")
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    with open(log_path, "w") as f:
-        f.write(proc.stdout)
-        f.write(proc.stderr)
-    return proc.returncode
-
-
-def _run_command_with_env(cmd, cwd, log_path, env=None):
-    """
-    Run a command with custom environment and log its output.
-
-    This is similar to _run_command but allows overriding environment variables,
-    particularly SUBJECTS_DIR to point to a temporary location.
 
     Parameters
     ----------
@@ -598,17 +562,13 @@ def _run_command_with_env(cmd, cwd, log_path, env=None):
         Return code of the command.
     """
     print(f"Running command: {' '.join(cmd)}")
-    print(f"Working directory: {cwd}")
     if env and "SUBJECTS_DIR" in env:
         print(f"Using temporary SUBJECTS_DIR: {env['SUBJECTS_DIR']}")
 
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
-
-    # Write combined output to log file
     with open(log_path, "w") as f:
         f.write(proc.stdout)
         f.write(proc.stderr)
-
     return proc.returncode
 
 
@@ -742,7 +702,7 @@ def run_mris_flatten(
         env["SUBJECTS_DIR"] = temp_root
 
         # Run mris_flatten from temp surf directory
-        ret = _run_command_with_env(cmd, cwd=temp_surf_dir, log_path=temp_log, env=env)
+        ret = _run_command(cmd, cwd=temp_surf_dir, log_path=temp_log, env=env)
 
         # Handle failure
         if ret != 0:
@@ -834,25 +794,28 @@ def read_patch(filepath):
             raise ValueError(f"Invalid patch file header: expected -1, got {header[0]}")
         n_vertices = header[1]
 
-        # Read vertex data
-        vertices = np.zeros((n_vertices, 3), dtype=np.float64)
-        original_indices = np.zeros(n_vertices, dtype=np.int32)
-        is_border = np.zeros(n_vertices, dtype=bool)
+        # Read all vertex data at once (16 bytes per vertex: 1 int32 + 3 float32)
+        raw_data = fp.read(16 * n_vertices)
 
-        for i in range(n_vertices):
-            data = struct.unpack(">i3f", fp.read(16))
-            raw_idx = data[0]
+    # Parse using struct.unpack_from for batch processing
+    vertices = np.zeros((n_vertices, 3), dtype=np.float64)
+    original_indices = np.zeros(n_vertices, dtype=np.int32)
+    is_border = np.zeros(n_vertices, dtype=bool)
 
-            # Decode index: negative = border, positive = interior
-            # (FreeSurfer convention: border vertices use -(vno+1))
-            if raw_idx < 0:
-                original_indices[i] = -raw_idx - 1  # Convert to 0-based
-                is_border[i] = True
-            else:
-                original_indices[i] = raw_idx - 1  # Convert to 0-based
-                is_border[i] = False
+    for i in range(n_vertices):
+        data = struct.unpack_from(">i3f", raw_data, i * 16)
+        raw_idx = data[0]
 
-            vertices[i] = data[1:4]
+        # Decode index: negative = border, positive = interior
+        # (FreeSurfer convention: border vertices use -(vno+1))
+        if raw_idx < 0:
+            original_indices[i] = -raw_idx - 1  # Convert to 0-based
+            is_border[i] = True
+        else:
+            original_indices[i] = raw_idx - 1  # Convert to 0-based
+            is_border[i] = False
+
+        vertices[i] = data[1:4]
 
     return vertices, original_indices, is_border
 
@@ -898,22 +861,24 @@ def write_patch(filepath, vertices, original_indices, is_border=None):
     if is_border is None:
         is_border = np.zeros(n_vertices, dtype=bool)
 
+    # Build entire buffer in memory, then write at once
+    buf = bytearray(8 + 16 * n_vertices)
+    struct.pack_into(">2i", buf, 0, -1, n_vertices)
+
+    for i in range(n_vertices):
+        # Convert to Python int to avoid unsigned integer overflow
+        # (numpy uint32 indices would wrap around when negated)
+        idx = int(original_indices[i])
+        # FreeSurfer convention: negative = border, positive = interior
+        if is_border[i]:
+            raw_idx = -(idx + 1)  # Negative for border
+        else:
+            raw_idx = idx + 1  # Positive for interior
+
+        struct.pack_into(">i3f", buf, 8 + i * 16, raw_idx, *vertices[i])
+
     with open(filepath, "wb") as fp:
-        # Write header
-        fp.write(struct.pack(">2i", -1, n_vertices))
-
-        # Write vertex data
-        for i in range(n_vertices):
-            # Convert to Python int to avoid unsigned integer overflow
-            # (numpy uint32 indices would wrap around when negated)
-            idx = int(original_indices[i])
-            # FreeSurfer convention: negative = border, positive = interior
-            if is_border[i]:
-                raw_idx = -(idx + 1)  # Negative for border
-            else:
-                raw_idx = idx + 1  # Positive for interior
-
-            fp.write(struct.pack(">i3f", raw_idx, *vertices[i]))
+        fp.write(buf)
 
 
 def extract_patch_faces(faces, patch_indices):
@@ -942,17 +907,24 @@ def extract_patch_faces(faces, patch_indices):
     >>> _, orig_faces = load_surface(subject, 'white', 'lh')
     >>> faces = extract_patch_faces(orig_faces, orig_idx)
     """
-    # Create mapping from original index to patch index
-    idx_set = set(patch_indices)
-    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(patch_indices)}
-
-    # Filter faces where all vertices are in the patch
-    patch_faces = []
-    for face in faces:
-        if all(v in idx_set for v in face):
-            patch_faces.append([old_to_new[v] for v in face])
-
-    if len(patch_faces) == 0:
+    # Handle empty inputs
+    if len(faces) == 0 or len(patch_indices) == 0:
         return np.zeros((0, 3), dtype=np.int32)
 
-    return np.array(patch_faces, dtype=np.int32)
+    # Create a boolean mask for which original indices are in the patch
+    max_idx = max(int(faces.max()), int(patch_indices.max())) + 1
+    in_patch = np.zeros(max_idx, dtype=bool)
+    in_patch[patch_indices] = True
+
+    # Filter faces where all 3 vertices are in the patch (vectorized)
+    face_mask = in_patch[faces[:, 0]] & in_patch[faces[:, 1]] & in_patch[faces[:, 2]]
+    selected_faces = faces[face_mask]
+
+    if len(selected_faces) == 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    # Build remapping array from original index to patch index
+    old_to_new = np.empty(max_idx, dtype=np.int32)
+    old_to_new[patch_indices] = np.arange(len(patch_indices), dtype=np.int32)
+
+    return old_to_new[selected_faces]
