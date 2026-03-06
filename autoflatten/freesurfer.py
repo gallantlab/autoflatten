@@ -242,16 +242,17 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     # Get unique included vertices
     included_vertex_indices = np.unique(included_faces)
 
-    # Find border vertices: included vertices that are adjacent to excluded vertices
-    # Build adjacency from included faces only - find edges touching excluded vertices
+    # Find border vertices: non-excluded vertices in faces that touch excluded vertices
+    border_face_mask = (
+        excluded_mask[faces[:, 0]]
+        | excluded_mask[faces[:, 1]]
+        | excluded_mask[faces[:, 2]]
+    )
+    border_faces = faces[border_face_mask]
     border_mask = np.zeros(n_vertices, dtype=bool)
-    for face in faces:
-        for i in range(3):
-            if excluded_mask[face[i]]:
-                # This face has an excluded vertex; its non-excluded vertices are border
-                for j in range(3):
-                    if not excluded_mask[face[j]]:
-                        border_mask[face[j]] = True
+    for col in range(3):
+        col_verts = border_faces[:, col]
+        border_mask[col_verts[~excluded_mask[col_verts]]] = True
 
     # Build patch vertices list (preserving original return format)
     patch_vertices = [(int(v), coords[v]) for v in included_vertex_indices]
@@ -305,7 +306,7 @@ def create_label_file(vertex_ids, subject, hemi, output_file):
     # Get the surface coordinates from the subject's surface file
     coords, polys = load_surface(subject, "inflated", hemi)
 
-    # Create the label data (vectorized)
+    # Create the label data
     vertex_ids = np.asarray(vertex_ids)
     n_vertices = len(vertex_ids)
     label_data = np.zeros((n_vertices, 5))
@@ -752,8 +753,8 @@ def read_patch(filepath):
     Read FreeSurfer binary patch file.
 
     FreeSurfer patch files store vertices with their original surface indices.
-    Border vertices (on the cut boundary) have positive indices, interior
-    vertices have negative indices.
+    Border vertices (on the cut boundary) have negative indices, interior
+    vertices have positive indices.
 
     Parameters
     ----------
@@ -795,9 +796,16 @@ def read_patch(filepath):
         n_vertices = header[1]
 
         # Read all vertex data at once (16 bytes per vertex: 1 int32 + 3 float32)
-        raw_data = fp.read(16 * n_vertices)
+        expected_size = 16 * n_vertices
+        raw_data = fp.read(expected_size)
+        if len(raw_data) != expected_size:
+            raise ValueError(
+                f"Truncated patch file: expected {expected_size} bytes of vertex data, "
+                f"got {len(raw_data)} bytes ({len(raw_data) // 16} complete vertices "
+                f"out of {n_vertices})"
+            )
 
-    # Parse using struct.unpack_from for batch processing
+    # Parse vertex data from pre-read buffer (single I/O read, per-vertex unpacking)
     vertices = np.zeros((n_vertices, 3), dtype=np.float64)
     original_indices = np.zeros(n_vertices, dtype=np.int32)
     is_border = np.zeros(n_vertices, dtype=bool)
@@ -924,7 +932,7 @@ def extract_patch_faces(faces, patch_indices):
         return np.zeros((0, 3), dtype=np.int32)
 
     # Build remapping array from original index to patch index
-    old_to_new = np.empty(max_idx, dtype=np.int32)
+    old_to_new = np.full(max_idx, -1, dtype=np.int32)
     old_to_new[patch_indices] = np.arange(len(patch_indices), dtype=np.int32)
 
     return old_to_new[selected_faces]

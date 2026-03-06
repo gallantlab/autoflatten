@@ -111,7 +111,7 @@ def _find_farthest_vertex(start, candidates, pts):
     max_dist : float
         Distance to the farthest vertex.
     """
-    candidates = np.asarray(list(candidates))
+    candidates = np.fromiter(candidates, dtype=int)
     if len(candidates) == 0:
         return start, 0.0
     dists = np.linalg.norm(pts[candidates] - pts[start], axis=1)
@@ -260,7 +260,7 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
             closest_v1 = None
             closest_v2 = None
 
-            # Use vectorized cdist to find closest components
+            # Use cdist for pairwise distance computation between component vertex sets
             for conn_idx in connected:
                 conn_verts = np.array(list(component_list[conn_idx]))
                 conn_coords = pts_inflated[conn_verts]
@@ -487,7 +487,7 @@ def fill_holes_in_patch(faces, excluded_vertices):
         # Collect all vertices in hole boundary loops
         new_hole_vertices = set()
         for loop in hole_loops:
-            new_hole_vertices.update(v for v in loop)
+            new_hole_vertices.update(loop)
 
         if not new_hole_vertices:
             break
@@ -755,7 +755,7 @@ def refine_cuts_with_geodesic(vertex_dict, subject, hemi, medial_wall_vertices=N
             )
         except Exception as e:
             print(f"  ERROR: Failed to compute geodesic path: {e}")
-            print(f"  Keeping original cut")
+            print("  Keeping original cut")
 
     # Post-processing: find and absorb any isolated small regions that would
     # create holes in the patch
