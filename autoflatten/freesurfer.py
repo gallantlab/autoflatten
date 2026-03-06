@@ -243,12 +243,7 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     included_vertex_indices = np.unique(included_faces)
 
     # Find border vertices: non-excluded vertices in faces that touch excluded vertices
-    border_face_mask = (
-        excluded_mask[faces[:, 0]]
-        | excluded_mask[faces[:, 1]]
-        | excluded_mask[faces[:, 2]]
-    )
-    border_faces = faces[border_face_mask]
+    border_faces = faces[face_excluded]
     border_mask = np.zeros(n_vertices, dtype=bool)
     for col in range(3):
         col_verts = border_faces[:, col]
