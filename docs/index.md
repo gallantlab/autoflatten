@@ -17,6 +17,7 @@
     - **pyflatten** (default): JAX-accelerated Python implementation - fast and reliable
     - **freesurfer**: FreeSurfer `mris_flatten` wrapper
 - **Visualization** of 3D projections and 2D flatmaps with distortion metrics
+- **Animation** of the flattening process — capture optimization snapshots and render videos
 
 ## Quick Install
 
@@ -41,6 +42,10 @@ autoflatten plot-projection lh.autoflatten.patch.3d
 
 # Visualize the 2D flatmap with distortion metrics
 autoflatten plot-flatmap lh.autoflatten.flat.patch.3d
+
+# Create an animation of the flattening process
+autoflatten flatten lh.patch.3d --save-snapshots snapshots.npz
+autoflatten render-snapshots snapshots.npz --subject-dir /path/to/subject
 ```
 
 ## Requirements
