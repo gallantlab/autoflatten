@@ -226,9 +226,14 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
         same_comp = ep_comps[:, None] == ep_comps[None, :]
         ep_dist_matrix[same_comp] = -1
 
-        global_start_idx, global_end_idx = np.unravel_index(
-            ep_dist_matrix.argmax(), ep_dist_matrix.shape
-        )
+        # Defensive: if all pairs are same-component (should not happen since
+        # we only reach here with 2+ components), fall back to first two endpoints
+        if ep_dist_matrix.max() < 0:
+            global_start_idx, global_end_idx = 0, min(1, len(flat_endpoints) - 1)
+        else:
+            global_start_idx, global_end_idx = np.unravel_index(
+                ep_dist_matrix.argmax(), ep_dist_matrix.shape
+            )
 
         # Get global endpoints
         global_start, start_comp = flat_endpoints[global_start_idx]

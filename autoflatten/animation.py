@@ -228,9 +228,13 @@ def render_snapshot_frames(
         indices = np.unique(indices)  # remove duplicates
 
     # Expand frame list with hold frames for pacing
+    n_before = len(indices)
     indices = _expand_frames_with_holds(
         indices, all_metadata, fps, hold_start, hold_phase_transition, hold_end
     )
+    n_added = len(indices) - n_before
+    if n_added > 0:
+        print(f"  Added {n_added} hold frames ({len(indices)} total)")
 
     # Prepare face coloring
     if color_mode == "distortion":
@@ -238,7 +242,9 @@ def render_snapshot_frames(
         areas_3d = _compute_face_areas_3d(vertices_3d, faces)
         face_colors = None  # computed per-frame
     else:
-        face_colors = _load_face_colors(curv_path, subject_dir, orig_indices, faces)
+        face_colors = _load_face_colors(
+            curv_path, subject_dir, orig_indices, faces, npz_path=npz_path
+        )
         areas_3d = None
 
     # Compute per-frame bounding boxes with consistent aspect ratio
@@ -385,10 +391,6 @@ def _expand_frames_with_holds(
     n_hold_end = max(0, int(hold_end * fps))
     expanded.extend([indices[-1]] * n_hold_end)
 
-    n_added = len(expanded) - len(indices)
-    if n_added > 0:
-        print(f"  Added {n_added} hold frames ({len(expanded)} total)")
-
     return np.array(expanded, dtype=indices.dtype)
 
 
@@ -518,7 +520,7 @@ def _draw_label(ax, meta: dict) -> None:
     )
 
 
-def _load_face_colors(curv_path, subject_dir, orig_indices, faces):
+def _load_face_colors(curv_path, subject_dir, orig_indices, faces, npz_path=None):
     """Load curvature and compute per-face colors.
 
     Returns an (F, 4) RGBA array with sulci in dark gray and gyri in
@@ -530,7 +532,7 @@ def _load_face_colors(curv_path, subject_dir, orig_indices, faces):
         curv = _read_curv(curv_path, orig_indices)
     elif subject_dir is not None:
         # Auto-detect hemisphere and curvature
-        curv = _auto_detect_curv(subject_dir, orig_indices)
+        curv = _auto_detect_curv(subject_dir, orig_indices, npz_path=npz_path)
 
     n_faces = len(faces)
     colors = np.ones((n_faces, 4))  # RGBA
@@ -569,18 +571,42 @@ def _read_curv(curv_path, orig_indices):
     return curv_full[orig_indices]
 
 
-def _auto_detect_curv(subject_dir, orig_indices):
-    """Try to auto-detect and load curvature from subject directory."""
+def _auto_detect_curv(subject_dir, orig_indices, npz_path=None):
+    """Try to auto-detect and load curvature from subject directory.
+
+    Parameters
+    ----------
+    subject_dir : str
+        FreeSurfer subject directory (or its surf/ subdirectory).
+    orig_indices : ndarray
+        Mapping from patch vertices to full-surface vertex indices.
+    npz_path : str, optional
+        Path to the snapshot .npz file. If provided, the hemisphere is
+        inferred from the filename (e.g., ``snapshots_lh.npz`` → ``lh``).
+    """
     from pathlib import Path
 
     surf_dir = Path(subject_dir) / "surf"
     if not surf_dir.is_dir():
         surf_dir = Path(subject_dir)
 
-    for hemi in ("lh", "rh"):
+    # Infer hemisphere from npz filename if possible
+    hemi_order = ["lh", "rh"]
+    if npz_path is not None:
+        basename = os.path.basename(npz_path).lower()
+        if "_rh" in basename or basename.startswith("rh"):
+            hemi_order = ["rh", "lh"]
+        elif "_lh" in basename or basename.startswith("lh"):
+            hemi_order = ["lh", "rh"]
+
+    for hemi in hemi_order:
         curv_path = surf_dir / f"{hemi}.curv"
         if curv_path.exists():
-            curv = _read_curv(str(curv_path), orig_indices)
+            try:
+                curv = _read_curv(str(curv_path), orig_indices)
+            except IndexError:
+                # Wrong hemisphere — vertex indices out of bounds
+                continue
             if curv is not None:
                 print(f"  Auto-detected curvature file: {curv_path}")
                 return curv

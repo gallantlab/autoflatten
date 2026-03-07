@@ -1612,15 +1612,17 @@ def final_spring_smoothing(
         # Apply step (displacement points toward centroid, so we add)
         uv = uv + step
 
+        n_flipped = None
         if snapshot_callback is not None or verbose:
             n_flipped = int(count_flipped_triangles(uv, faces_jax))
 
-        snapshot_callback = _emit_snapshot(
-            snapshot_callback,
-            uv,
-            n_flipped=n_flipped,
-            iteration=i + 1,
-        )
+        if snapshot_callback is not None and n_flipped is not None:
+            snapshot_callback = _emit_snapshot(
+                snapshot_callback,
+                uv,
+                n_flipped=n_flipped,
+                iteration=i + 1,
+            )
 
         if verbose:
             pct_err = float(
