@@ -238,6 +238,12 @@ def render_snapshot_frames(
 
     # Prepare face coloring
     if color_mode == "distortion":
+        if "vertices_3d" not in data:
+            raise ValueError(
+                "Snapshot file does not contain 'vertices_3d', which is required "
+                "when color_mode='distortion'. Re-run snapshot generation with a "
+                "newer version of autoflatten or use a different color_mode."
+            )
         vertices_3d = data["vertices_3d"]
         areas_3d = _compute_face_areas_3d(vertices_3d, faces)
         face_colors = None  # computed per-frame
@@ -406,7 +412,7 @@ def _compute_face_areas_3d(vertices_3d, faces):
 def _compute_distortion_colors(uv, faces, areas_3d):
     """Compute per-face area distortion colors and flipped triangle mask.
 
-    Uses log2(area_2d / area_3d) mapped to the plasma colormap.
+    Uses log2(area_2d / area_3d) mapped to the viridis colormap.
 
     Returns
     -------

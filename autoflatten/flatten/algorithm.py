@@ -704,7 +704,11 @@ def make_vectorized_line_search(energy_fn, n_coarse_steps: int = 15):
 
 
 def _wrap_callback(cb, phase_name):
-    """Wrap snapshot callback to inject phase name into metadata."""
+    """Wrap snapshot callback to inject phase name into metadata.
+
+    The wrapped callback calls ``cb(uv, metadata=meta)`` where *meta*
+    is a dict with at least a ``"phase"`` key.
+    """
     if cb is None:
         return None
 
@@ -1950,9 +1954,12 @@ class SurfaceFlattener:
         Parameters
         ----------
         snapshot_callback : callable, optional
-            If provided, called with ``uv`` (numpy array of shape (V, 2))
-            after each optimization iteration. Useful for capturing
-            intermediate states for animation.
+            If provided, called after each optimization iteration with
+            ``uv`` (numpy array of shape (V, 2)) and a ``metadata`` keyword
+            argument, e.g. ``callback(uv, metadata=meta_dict)``. This is
+            useful for capturing intermediate states for animation or logging.
+            The callback should accept a ``metadata`` parameter
+            (e.g. ``def cb(uv, metadata=None): ...``).
 
         Returns
         -------
