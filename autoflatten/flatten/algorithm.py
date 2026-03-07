@@ -7,7 +7,7 @@ using FreeSurfer-style gradient descent with vectorized line search.
 import os
 import time
 import warnings
-from typing import Optional
+from typing import Callable, Optional
 
 import igl
 import jax
@@ -699,6 +699,42 @@ def make_vectorized_line_search(energy_fn, n_coarse_steps: int = 15):
 
 
 # =============================================================================
+# Snapshot callback helpers
+# =============================================================================
+
+
+def _wrap_callback(cb, phase_name):
+    """Wrap snapshot callback to inject phase name into metadata."""
+    if cb is None:
+        return None
+
+    def wrapper(uv, metadata=None):
+        meta = metadata or {}
+        meta.setdefault("phase", phase_name)
+        cb(uv, metadata=meta)
+
+    return wrapper
+
+
+def _emit_snapshot(callback, uv, **metadata):
+    """Invoke snapshot callback safely, disabling it on failure.
+
+    Returns the callback (or None if it failed and was disabled).
+    """
+    if callback is None:
+        return None
+    try:
+        callback(np.array(uv), metadata=metadata)
+        return callback
+    except Exception as e:
+        print(
+            f"Warning: Snapshot callback failed: {e}. "
+            f"Disabling snapshot capture for this phase."
+        )
+        return None
+
+
+# =============================================================================
 # Optimization functions
 # =============================================================================
 
@@ -725,7 +761,7 @@ def run_smoothed_optimization(
     n_coarse_steps: int = 15,
     grad_J_d_fn=None,
     grad_J_a_fn=None,
-    snapshot_callback: Optional[callable] = None,
+    snapshot_callback: Callable | None = None,
 ) -> np.ndarray:
     """Run gradient descent with FreeSurfer-style gradient smoothing.
 
@@ -827,15 +863,13 @@ def run_smoothed_optimization(
             current_sse = float(energy)
             alpha_val = float(alpha)
 
-            if snapshot_callback is not None:
-                snapshot_callback(
-                    np.array(uv),
-                    metadata={
-                        "J_d": float(J_d),
-                        "J_a": float(J_a),
-                        "iteration": iteration,
-                    },
-                )
+            snapshot_callback = _emit_snapshot(
+                snapshot_callback,
+                uv,
+                J_d=float(J_d),
+                J_a=float(J_a),
+                iteration=iteration,
+            )
 
             # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
             rel_change = 0.0
@@ -939,7 +973,7 @@ def run_adaptive_optimization(
     recovery_iterations: int = 50,
     grad_J_d_fn=None,
     grad_J_a_fn=None,
-    snapshot_callback: Optional[callable] = None,
+    snapshot_callback: Callable | None = None,
 ) -> np.ndarray:
     """Run adaptive gradient descent with flipped-triangle recovery.
 
@@ -1058,16 +1092,14 @@ def run_adaptive_optimization(
             # Check flipped count and trigger recovery if needed
             n_flipped = int(count_flipped_triangles(uv, faces_jax))
 
-            if snapshot_callback is not None:
-                snapshot_callback(
-                    np.array(uv),
-                    metadata={
-                        "J_d": float(J_d),
-                        "J_a": float(J_a),
-                        "n_flipped": n_flipped,
-                        "iteration": iteration,
-                    },
-                )
+            snapshot_callback = _emit_snapshot(
+                snapshot_callback,
+                uv,
+                J_d=float(J_d),
+                J_a=float(J_a),
+                n_flipped=n_flipped,
+                iteration=iteration,
+            )
 
             # Track best state
             if n_flipped < best_flipped:
@@ -1265,7 +1297,7 @@ def remove_negative_area(
     print_every: int = 20,
     verbose: bool = True,
     orig_area: Optional[float] = None,
-    snapshot_callback: Optional[callable] = None,
+    snapshot_callback: Callable | None = None,
 ) -> np.ndarray:
     """FreeSurfer-style negative area removal with vectorized line search.
 
@@ -1408,15 +1440,13 @@ def remove_negative_area(
                 current_sse = float(energy)
                 alpha_val = float(alpha)
 
-                if snapshot_callback is not None:
-                    snapshot_callback(
-                        np.array(uv),
-                        metadata={
-                            "J_d": float(J_d),
-                            "J_a": float(J_a),
-                            "iteration": iteration,
-                        },
-                    )
+                snapshot_callback = _emit_snapshot(
+                    snapshot_callback,
+                    uv,
+                    J_d=float(J_d),
+                    J_a=float(J_a),
+                    iteration=iteration,
+                )
 
                 # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
                 rel_change = 0.0
@@ -1501,7 +1531,7 @@ def final_spring_smoothing(
     mask_jax: jnp.ndarray,
     config: SpringSmoothingConfig,
     verbose: bool = True,
-    snapshot_callback: Optional[callable] = None,
+    snapshot_callback: Callable | None = None,
 ) -> np.ndarray:
     """FreeSurfer-style final spring smoothing.
 
@@ -1585,14 +1615,12 @@ def final_spring_smoothing(
         if snapshot_callback is not None or verbose:
             n_flipped = int(count_flipped_triangles(uv, faces_jax))
 
-        if snapshot_callback is not None:
-            snapshot_callback(
-                np.array(uv),
-                metadata={
-                    "n_flipped": n_flipped,
-                    "iteration": i + 1,
-                },
-            )
+        snapshot_callback = _emit_snapshot(
+            snapshot_callback,
+            uv,
+            n_flipped=n_flipped,
+            iteration=i + 1,
+        )
 
         if verbose:
             pct_err = float(
@@ -1914,7 +1942,7 @@ class SurfaceFlattener:
 
         return uv
 
-    def run(self, snapshot_callback: Optional[callable] = None) -> np.ndarray:
+    def run(self, snapshot_callback: Callable | None = None) -> np.ndarray:
         """Run complete optimization pipeline.
 
         Parameters
@@ -1943,23 +1971,14 @@ class SurfaceFlattener:
             print("FREESURFER-STYLE OPTIMIZATION (Vectorized Quadratic Line Search)")
             print("=" * 85)
 
-        def _wrap_callback(cb, phase_name):
-            """Wrap snapshot callback to inject phase name into metadata."""
-            if cb is None:
-                return None
-
-            def wrapper(uv, metadata=None):
-                meta = metadata or {}
-                meta.setdefault("phase", phase_name)
-                cb(uv, metadata=meta)
-
-            return wrapper
-
         # Initial projection
         uv = self.initial_projection()
 
-        if snapshot_callback is not None:
-            snapshot_callback(uv, metadata={"phase": "initial"})
+        snapshot_callback = _emit_snapshot(
+            snapshot_callback,
+            uv,
+            phase="initial",
+        )
 
         uv_jax = jnp.asarray(uv)
 

@@ -114,6 +114,28 @@ class TestSnapshotCollector:
         # Should have a copy, not affected by mutation
         assert collector._snapshots[0][0, 0] == 1.0
 
+    def test_save_empty_raises(self):
+        collector = SnapshotCollector(every_n=1)
+        verts = np.zeros((2, 3), dtype=np.float32)
+        faces = np.array([[0, 1, 0]], dtype=np.int32)
+        orig = np.array([0, 1], dtype=np.int32)
+        with pytest.raises(ValueError, match="No snapshots"):
+            collector.save("/tmp/empty.npz", verts, faces, orig)
+
+
+# ---------------------------------------------------------------------------
+# render_snapshot_frames validation
+# ---------------------------------------------------------------------------
+
+
+class TestRenderSnapshotFramesValidation:
+    def test_invalid_npz_missing_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            npz_path = os.path.join(tmpdir, "bad.npz")
+            np.savez(npz_path, foo=np.array([1, 2, 3]))
+            with pytest.raises(ValueError, match="missing required arrays"):
+                render_snapshot_frames(npz_path, os.path.join(tmpdir, "frames"))
+
 
 # ---------------------------------------------------------------------------
 # _expand_frames_with_holds

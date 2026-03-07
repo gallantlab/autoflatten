@@ -645,6 +645,16 @@ def cmd_run_full_pipeline(args):
 
     backend_kwargs = _build_backend_kwargs(args, n_jobs=n_cores_per_hemi)
 
+    # Per-hemisphere snapshot paths to avoid overwrites when processing both
+    def _hemi_kwargs(hemi, extra=None):
+        kw = dict(backend_kwargs)
+        if len(hemispheres) > 1 and kw.get("snapshot_path") is not None:
+            base, ext = os.path.splitext(kw["snapshot_path"])
+            kw["snapshot_path"] = f"{base}_{hemi}{ext}"
+        if extra:
+            kw.update(extra)
+        return kw
+
     results = {}
 
     # Process hemispheres
@@ -665,7 +675,7 @@ def cmd_run_full_pipeline(args):
                     True,  # verbose
                     True,  # run_plot
                     None,  # base_surface (auto-detect)
-                    **{**backend_kwargs, "tqdm_position": idx},
+                    **_hemi_kwargs(hemi, {"tqdm_position": idx}),
                 ): hemi
                 for idx, hemi in enumerate(hemispheres)
             }
@@ -691,7 +701,7 @@ def cmd_run_full_pipeline(args):
                     True,  # verbose
                     True,  # run_plot
                     None,  # base_surface (auto-detect)
-                    **backend_kwargs,
+                    **_hemi_kwargs(hemi),
                 )
             except Exception:
                 print(f"Error processing {hemi} hemisphere:")
@@ -974,7 +984,7 @@ def cmd_render_snapshots(args):
     )
 
     try:
-        frames = render_snapshot_frames(
+        render_snapshot_frames(
             npz_path=npz_path,
             output_dir=output_dir,
             n_frames=args.n_frames,

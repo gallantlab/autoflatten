@@ -418,7 +418,7 @@ def fill_holes_in_patch(faces, excluded_vertices):
         return set()
 
     # Ensure faces are int for consistent set operations
-    faces = faces.astype(int)
+    faces = np.asarray(faces, dtype=int)
 
     all_hole_vertices = set()
 

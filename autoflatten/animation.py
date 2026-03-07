@@ -100,6 +100,12 @@ class SnapshotCollector:
         str
             The output file path.
         """
+        if not self._snapshots:
+            raise ValueError(
+                "No snapshots were collected. Cannot save an empty snapshot file. "
+                "Check that the optimization ran and every_n is not larger than "
+                "the total number of iterations."
+            )
         snapshots = np.stack(self._snapshots, axis=0)  # (M, V, 2)
         metadata_json = np.array(json.dumps(self._metadata))
         np.savez_compressed(
@@ -186,6 +192,14 @@ def render_snapshot_frames(
 
     # Load snapshots
     data = np.load(npz_path, allow_pickle=True)
+    required_keys = {"snapshots", "faces", "orig_indices"}
+    missing = required_keys - set(data.files)
+    if missing:
+        raise ValueError(
+            f"Snapshot file {npz_path} is missing required arrays: {missing}. "
+            f"Available keys: {list(data.files)}. "
+            f"Was this file created with --save-snapshots?"
+        )
     snapshots = data["snapshots"]  # (M, V, 2)
     faces = data["faces"]  # (F, 3)
     orig_indices = data["orig_indices"]  # (V,)
@@ -195,8 +209,11 @@ def render_snapshot_frames(
     if "metadata_json" in data:
         try:
             all_metadata = json.loads(str(data["metadata_json"]))
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as e:
+            print(
+                f"Warning: Could not parse snapshot metadata: {e}. "
+                f"Stage labels and phase-transition holds will be missing."
+            )
 
     n_total = len(snapshots)
     print(
@@ -398,7 +415,8 @@ def _compute_distortion_colors(uv, faces, areas_3d):
     """
     import matplotlib.cm as cm
 
-    # Signed 2D areas
+    # Signed 2D triangle areas (same formula as viz.compute_triangle_areas,
+    # kept inline to avoid triggering heavy viz.py import chain)
     v0 = uv[faces[:, 0]]
     v1 = uv[faces[:, 1]]
     v2 = uv[faces[:, 2]]
@@ -406,7 +424,6 @@ def _compute_distortion_colors(uv, faces, areas_3d):
         (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
         - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
     )
-
     flipped = signed_areas_2d < 0
     areas_2d = np.abs(signed_areas_2d)
 
@@ -535,14 +552,21 @@ def _load_face_colors(curv_path, subject_dir, orig_indices, faces):
 
 def _read_curv(curv_path, orig_indices):
     """Read curvature file and extract patch vertices."""
-    try:
-        import nibabel.freesurfer
+    import nibabel.freesurfer
 
+    try:
         curv_full = nibabel.freesurfer.read_morph_data(curv_path)
-        return curv_full[orig_indices]
-    except Exception as e:
+    except (OSError, IOError) as e:
         print(f"Warning: Could not read curvature file {curv_path}: {e}")
         return None
+
+    if orig_indices.max() >= len(curv_full):
+        raise IndexError(
+            f"Curvature file {curv_path} has {len(curv_full)} vertices, "
+            f"but patch references vertex index {orig_indices.max()}. "
+            f"Are you using the correct curvature file for this subject?"
+        )
+    return curv_full[orig_indices]
 
 
 def _auto_detect_curv(subject_dir, orig_indices):
@@ -558,5 +582,7 @@ def _auto_detect_curv(subject_dir, orig_indices):
         if curv_path.exists():
             curv = _read_curv(str(curv_path), orig_indices)
             if curv is not None:
+                print(f"  Auto-detected curvature file: {curv_path}")
                 return curv
+    print("  Warning: Could not auto-detect curvature file. Using uniform gray.")
     return None
