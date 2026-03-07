@@ -20,6 +20,7 @@
 - **Automatic cut mapping** from a template to individual subjects
 - **Two flattening backends**: JAX-accelerated pyflatten (default) or FreeSurfer's `mris_flatten`
 - **Visualization** with area distortion metrics
+- **Animation** of the flattening process — capture snapshots and render videos
 
 ## Quick Start
 

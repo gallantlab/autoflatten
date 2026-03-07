@@ -69,6 +69,8 @@ class PyflattenBackend(FlattenBackend):
         cache_distances: bool = False,
         tqdm_position: int = 0,
         print_every: int = 1,
+        snapshot_path: Optional[str] = None,
+        snapshot_every: int = 10,
         **kwargs,
     ) -> str:
         """Flatten a cortical surface patch using pyflatten.
@@ -103,6 +105,12 @@ class PyflattenBackend(FlattenBackend):
             Position of tqdm progress bar (for stacking bars in parallel execution)
         print_every : int
             Print progress every N iterations (default: 1 = every iteration)
+        snapshot_path : str, optional
+            If provided, save intermediate UV snapshots to this ``.npz``
+            file for animation. See :class:`autoflatten.animation.SnapshotCollector`.
+        snapshot_every : int
+            Save a snapshot every N optimization iterations (default: 10).
+            Only used when *snapshot_path* is set.
         **kwargs
             Additional arguments (ignored)
 
@@ -177,11 +185,29 @@ class PyflattenBackend(FlattenBackend):
             # Prepare optimization
             flattener.prepare_optimization()
 
+            # Set up snapshot callback if requested
+            snapshot_callback = None
+            collector = None
+            if snapshot_path is not None:
+                from ..animation import SnapshotCollector
+
+                collector = SnapshotCollector(every_n=snapshot_every)
+                snapshot_callback = collector
+
             # Run optimization
-            uv = flattener.run()
+            uv = flattener.run(snapshot_callback=snapshot_callback)
 
             # Save result
             flattener.save_result(uv, output_path)
+
+            # Save snapshots if requested
+            if collector is not None and collector.n_snapshots > 0:
+                collector.save(
+                    snapshot_path,
+                    vertices_3d=flattener.vertices,
+                    faces=flattener.faces,
+                    orig_indices=flattener.orig_indices,
+                )
 
             return output_path
 

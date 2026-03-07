@@ -2,7 +2,7 @@
 
 This page describes all available CLI commands and options.
 
-autoflatten provides a CLI with five commands:
+autoflatten provides a CLI with six commands:
 
 | Command | Description |
 |---------|-------------|
@@ -11,6 +11,7 @@ autoflatten provides a CLI with five commands:
 | `autoflatten flatten PATCH_FILE` | Flattening only: flatten existing patch |
 | `autoflatten plot-projection PATCH` | Plot 3D surface with cuts highlighted |
 | `autoflatten plot-flatmap FLAT_PATCH` | Plot 2D flatmap with distortion metrics |
+| `autoflatten render-snapshots NPZ` | Render animation frames from optimization snapshots |
 
 ## Full Pipeline
 
@@ -95,6 +96,68 @@ This generates a three-panel visualization showing:
 - Per-vertex metric distortion map
 - Distortion distribution histogram
 
+## Animation
+
+You can capture the optimization process as a video to visualize how the surface is flattened over time. This is a two-step process: first capture snapshots during flattening, then render them as frames.
+
+### Step 1: Capture Snapshots
+
+Add `--save-snapshots` when running `flatten` or the full pipeline:
+
+```bash
+# During flattening
+autoflatten flatten lh.autoflatten.patch.3d --save-snapshots snapshots.npz
+
+# During full pipeline
+autoflatten /path/to/subjects/sub-01 --save-snapshots snapshots.npz
+
+# Control snapshot frequency (default: every 10 iterations)
+autoflatten flatten lh.autoflatten.patch.3d --save-snapshots snapshots.npz --snapshot-every 5
+```
+
+When processing both hemispheres, snapshot paths are automatically suffixed (e.g., `snapshots_lh.npz`, `snapshots_rh.npz`).
+### Step 2: Render Frames
+
+```bash
+# Basic rendering with curvature shading
+autoflatten render-snapshots snapshots.npz --subject-dir /path/to/subject
+
+# Show area distortion instead of curvature
+autoflatten render-snapshots snapshots.npz --color-mode distortion
+
+# Customize output
+autoflatten render-snapshots snapshots.npz \
+    --output-dir my_frames \
+    --n-frames 60 \
+    --fps 10 \
+    --dpi 200
+```
+
+### Step 3: Assemble Video
+
+Use ffmpeg to combine the frames into a video:
+
+```bash
+ffmpeg -r 15 -i flatten_frames/frame_%04d.png \
+    -c:v libx264 -pix_fmt yuv420p flatten.mp4
+```
+
+### Render Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-o`, `--output-dir` | `flatten_frames/` | Directory for output PNGs |
+| `--n-frames` | 120 | Number of frames to render |
+| `--fps` | 15 | Frames per second (used in suggested ffmpeg command) |
+| `--color-mode` | `curvature` | Face coloring: `curvature` or `distortion` |
+| `--subject-dir` | - | FreeSurfer subject directory (auto-detect curvature) |
+| `--curv-path` | - | Path to curvature file (e.g., `lh.curv`) |
+| `--figsize` | 6.0 | Figure size in inches |
+| `--dpi` | 150 | Resolution in DPI |
+| `--overwrite` | False | Overwrite existing frame files |
+
+The renderer automatically adds hold frames at the start, end, and phase transitions to create natural pacing in the video.
+
 ## Output Files
 
 For each processed hemisphere, the pipeline creates:
@@ -107,6 +170,7 @@ For each processed hemisphere, the pipeline creates:
 | `{hemi}.autoflatten.patch.png` | 3D projection visualization |
 | `{hemi}.autoflatten.flat.patch.png` | 2D flatmap visualization |
 | `{hemi}.autoflatten.projection.log` | Projection phase log |
+| `snapshots.npz` | Optimization snapshots (with `--save-snapshots`) |
 
 ## Common Options
 
@@ -126,6 +190,8 @@ For each processed hemisphere, the pipeline creates:
 | `--n-cores` | -1 | CPU cores (-1 = all) |
 | `--skip-phase` | - | Skip specific optimization phases |
 | `--skip-spring-smoothing` | False | Skip final smoothing |
+| `--save-snapshots` | - | Save optimization snapshots to `.npz` file |
+| `--snapshot-every` | 10 | Save snapshot every N iterations |
 
 ## FreeSurfer Backend Options
 

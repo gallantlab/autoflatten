@@ -68,6 +68,12 @@ autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subje
 
 # Plot a flattened surface:
 autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/subject/surf
+
+# Capture optimization snapshots for animation:
+autoflatten flatten lh.autoflatten.patch.3d --save-snapshots snapshots.npz
+
+# Render animation frames from snapshots:
+autoflatten render-snapshots snapshots.npz --subject-dir /path/to/subject
 ```
 
 ## Code Style
@@ -82,7 +88,8 @@ autoflatten plot-flatmap lh.autoflatten.flat.patch.3d --subject-dir /path/to/sub
 
 ```
 autoflatten/
-  cli.py                # CLI with project/flatten/plot-projection/plot-flatmap subcommands
+  animation.py          # Snapshot capture and animation frame rendering
+  cli.py                # CLI with project/flatten/plot-projection/plot-flatmap/render-snapshots subcommands
   config.py             # Configuration and template paths
   core.py               # Graph algorithms for cut processing
   freesurfer.py         # FreeSurfer I/O and command wrappers
@@ -156,6 +163,7 @@ The CLI supports three modes:
   - `cmd_flatten()`: Flattening only
   - `cmd_plot_projection()`: 3D surface visualization with cuts
   - `cmd_plot_flatmap()`: 2D flatmap visualization
+  - `cmd_render_snapshots()`: Render animation frames from snapshots
   - Supports parallel hemisphere processing with `--parallel`
 
 - **[flatten/](autoflatten/flatten/)**: JAX-accelerated flattening
@@ -176,6 +184,11 @@ The CLI supports three modes:
   - Shows flipped triangles in red, boundary vertices in blue
   - Computes per-vertex metric distortion (% error between 2D and 3D distances)
   - Parses log file for optimization results
+
+- **[animation.py](autoflatten/animation.py)**: Flattening animation
+  - `SnapshotCollector`: Callback that captures UV snapshots during optimization
+  - `render_snapshot_frames()`: Renders snapshots as PNG frames with curvature or distortion coloring
+  - Hold-frame pacing at phase transitions for natural video timing
 
 - **[freesurfer.py](autoflatten/freesurfer.py)**: FreeSurfer interface
   - Surface and patch file I/O (binary format)
