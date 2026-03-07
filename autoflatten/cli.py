@@ -36,7 +36,6 @@ from autoflatten.core import (
 )
 from autoflatten.freesurfer import create_patch_file, load_surface
 from autoflatten.logging import restore_logging, setup_logging
-from autoflatten.template import identify_surface_components
 from autoflatten.utils import load_json
 from autoflatten.viz import plot_patch, plot_projection
 
@@ -985,6 +984,7 @@ def cmd_render_snapshots(args):
             dpi=args.dpi,
             overwrite=args.overwrite,
             fps=args.fps,
+            color_mode=args.color_mode,
         )
         return 0
     except Exception as e:
@@ -1357,6 +1357,15 @@ Examples:
         type=float,
         default=15.0,
         help="Frames per second for video assembly (default: 15)",
+    )
+    parser_render.add_argument(
+        "--color-mode",
+        choices=["curvature", "distortion"],
+        default="curvature",
+        help=(
+            "Face coloring mode (default: curvature). "
+            "'distortion' shows area distortion with flipped triangles in red."
+        ),
     )
     parser_render.set_defaults(func=cmd_render_snapshots)
 

@@ -132,6 +132,7 @@ def render_snapshot_frames(
     hold_start: float = 1.5,
     hold_phase_transition: float = 0.75,
     hold_end: float = 2.0,
+    color_mode: str = "curvature",
 ) -> list[str]:
     """Render animation frames from saved optimization snapshots.
 
@@ -168,6 +169,12 @@ def render_snapshot_frames(
         Seconds to hold at each phase boundary.
     hold_end : float
         Seconds to hold the last frame (final result).
+    color_mode : str
+        Face coloring mode. One of:
+
+        - ``"curvature"`` (default): sulcal/gyral shading from curvature file
+        - ``"distortion"``: per-face area distortion (log ratio of 2D/3D area)
+          with flipped triangles in red
 
     Returns
     -------
@@ -208,8 +215,14 @@ def render_snapshot_frames(
         indices, all_metadata, fps, hold_start, hold_phase_transition, hold_end
     )
 
-    # Load curvature for face coloring
-    face_colors = _load_face_colors(curv_path, subject_dir, orig_indices, faces)
+    # Prepare face coloring
+    if color_mode == "distortion":
+        vertices_3d = data["vertices_3d"]
+        areas_3d = _compute_face_areas_3d(vertices_3d, faces)
+        face_colors = None  # computed per-frame
+    else:
+        face_colors = _load_face_colors(curv_path, subject_dir, orig_indices, faces)
+        areas_3d = None
 
     # Compute per-frame bounding boxes with consistent aspect ratio
     # Use a smooth transition so the "camera" follows the mesh
@@ -246,14 +259,25 @@ def render_snapshot_frames(
         # Build polygon vertices for each face
         verts_per_face = uv[faces]  # (F, 3, 2)
 
+        # Compute per-frame colors for distortion mode
+        if color_mode == "distortion":
+            frame_colors, flipped_mask = _compute_distortion_colors(uv, faces, areas_3d)
+        else:
+            frame_colors = face_colors
+            flipped_mask = None
+
         poly = PolyCollection(
             verts_per_face,
-            facecolors=face_colors,
+            facecolors=frame_colors,
             edgecolors="none",
             linewidths=0,
             antialiaseds=False,
         )
         ax.add_collection(poly)
+
+        # Draw flipped triangles on top (matching viz.py style)
+        if flipped_mask is not None and np.any(flipped_mask):
+            _draw_flipped_triangles(ax, uv, faces, flipped_mask)
 
         # Per-frame bounding box (square, centered on mesh)
         center = per_frame_centers[frame_idx]
@@ -263,6 +287,10 @@ def render_snapshot_frames(
         ax.set_aspect("equal")
         ax.axis("off")
         ax.set_facecolor("white")
+
+        # Add colorbar for distortion mode
+        if color_mode == "distortion":
+            _add_distortion_colorbar(fig, ax)
 
         # Draw stage label in bottom-right corner
         if all_metadata is not None and snap_idx < len(all_metadata):
@@ -345,6 +373,110 @@ def _expand_frames_with_holds(
         print(f"  Added {n_added} hold frames ({len(expanded)} total)")
 
     return np.array(expanded, dtype=indices.dtype)
+
+
+def _compute_face_areas_3d(vertices_3d, faces):
+    """Compute 3D triangle areas from vertices and faces."""
+    v0 = vertices_3d[faces[:, 0]]
+    v1 = vertices_3d[faces[:, 1]]
+    v2 = vertices_3d[faces[:, 2]]
+    cross = np.cross(v1 - v0, v2 - v0)
+    return 0.5 * np.linalg.norm(cross, axis=1)
+
+
+def _compute_distortion_colors(uv, faces, areas_3d):
+    """Compute per-face area distortion colors and flipped triangle mask.
+
+    Uses log2(area_2d / area_3d) mapped to the plasma colormap.
+
+    Returns
+    -------
+    colors : ndarray of shape (F, 4)
+        RGBA face colors from the distortion colormap.
+    flipped : ndarray of shape (F,)
+        Boolean mask of flipped (negative signed area) triangles.
+    """
+    import matplotlib.cm as cm
+
+    # Signed 2D areas
+    v0 = uv[faces[:, 0]]
+    v1 = uv[faces[:, 1]]
+    v2 = uv[faces[:, 2]]
+    signed_areas_2d = 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+
+    flipped = signed_areas_2d < 0
+    areas_2d = np.abs(signed_areas_2d)
+
+    # Log ratio: positive = expanded, negative = compressed
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(areas_3d > 0, areas_2d / areas_3d, 1.0)
+        log_ratio = np.log2(np.clip(ratio, 1e-6, 1e6))
+
+    # Map to colormap: clip to [-3, 3] (8x compression to 8x expansion)
+    vmin, vmax = -3.0, 3.0
+    normalized = np.clip((log_ratio - vmin) / (vmax - vmin), 0, 1)
+    colors = cm.viridis(normalized)  # dark=compressed, bright=expanded
+
+    return colors, flipped
+
+
+def _draw_flipped_triangles(ax, uv, faces, flipped_mask):
+    """Draw flipped triangles as red polygons with yellow centroid markers."""
+    from matplotlib.collections import PolyCollection
+
+    flipped_faces = faces[flipped_mask]
+    flipped_verts = uv[flipped_faces]  # (N, 3, 2)
+
+    # Red polygons with dark red edges
+    poly = PolyCollection(
+        flipped_verts,
+        facecolors="red",
+        edgecolors="darkred",
+        alpha=0.9,
+        linewidths=0.5,
+        zorder=10,
+    )
+    ax.add_collection(poly)
+
+    # Yellow centroid markers for visibility when zoomed out
+    centroids = flipped_verts.mean(axis=1)  # (N, 2)
+    ax.scatter(
+        centroids[:, 0],
+        centroids[:, 1],
+        c="yellow",
+        s=8,
+        marker="o",
+        edgecolors="red",
+        linewidths=0.5,
+        zorder=11,
+    )
+
+
+def _add_distortion_colorbar(fig, ax):
+    """Add a horizontal colorbar for area distortion below the plot."""
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    vmin, vmax = -3.0, 3.0
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    sm = cm.ScalarMappable(cmap=cm.viridis, norm=norm)
+    sm.set_array([])
+
+    # Position colorbar below the axes
+    bbox = ax.get_position()
+    cbar_ax = fig.add_axes([bbox.x0 + 0.1, bbox.y0 - 0.02, bbox.width - 0.2, 0.015])
+    cbar = fig.colorbar(sm, cax=cbar_ax, orientation="horizontal")
+    cbar.set_label(
+        "log₂(area 2D / area 3D)",
+        fontsize=8,
+        fontfamily="monospace",
+    )
+    cbar.set_ticks([-3, -2, -1, 0, 1, 2, 3])
+    cbar.set_ticklabels(["⅛×", "¼×", "½×", "1×", "2×", "4×", "8×"])
+    cbar.ax.tick_params(labelsize=7)
 
 
 def _draw_label(ax, meta: dict) -> None:
