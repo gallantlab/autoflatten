@@ -145,41 +145,6 @@ def compute_metric_energy_edges(uv, src, dst, targets, n_vertices):
 
 
 @jax.jit
-def compute_both_energies_edges(
-    uv, src, dst, edge_targets, n_vertices, faces, original_areas
-):
-    """Compute both energy components using edge list format.
-
-    Parameters
-    ----------
-    uv : ndarray of shape (V, 2)
-        Current 2D vertex positions
-    src : ndarray of shape (E,)
-        Source vertex indices
-    dst : ndarray of shape (E,)
-        Destination vertex indices
-    edge_targets : ndarray of shape (E,)
-        Target distances
-    n_vertices : int
-        Number of vertices
-    faces : ndarray of shape (T, 3)
-        Triangle indices
-    original_areas : ndarray of shape (T,)
-        Original 3D triangle areas
-
-    Returns
-    -------
-    J_d : float
-        Metric distortion energy
-    J_a : float
-        Area energy
-    """
-    J_d = compute_metric_energy_edges(uv, src, dst, edge_targets, n_vertices)
-    J_a = compute_area_energy(uv, faces, original_areas)
-    return J_d, J_a
-
-
-@jax.jit
 def compute_metric_energy(uv, neighbors, targets, mask):
     """Compute metric distortion energy J_d (vectorized, JIT-compiled).
 

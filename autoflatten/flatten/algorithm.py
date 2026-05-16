@@ -2237,31 +2237,3 @@ class SurfaceFlattener:
 
         if self.config.verbose:
             print(f"Saved flattened patch to {output_path}")
-
-    def compute_distance_error(self, uv: np.ndarray) -> float:
-        """Compute average % distance error for UV coordinates.
-
-        Args:
-            uv: (V, 2) UV coordinates
-
-        Returns:
-            Percentage distance error
-        """
-        uv_jax = jnp.asarray(uv)
-        return float(
-            _compute_distance_error_jit(
-                uv_jax, self.neighbors_jax, self.targets_jax, self.mask_jax
-            )
-        )
-
-    def count_flipped(self, uv: np.ndarray) -> int:
-        """Count flipped triangles.
-
-        Args:
-            uv: (V, 2) UV coordinates
-
-        Returns:
-            Number of flipped triangles
-        """
-        uv_jax = jnp.asarray(uv)
-        return int(count_flipped_triangles(uv_jax, self.faces_jax))
