@@ -589,11 +589,6 @@ def process_hemisphere(
 # =============================================================================
 
 
-def cmd_default(args):
-    """Default command: full pipeline (project + flatten)."""
-    return cmd_run_full_pipeline(args)
-
-
 def cmd_run_full_pipeline(args):
     """Run the full pipeline: projection + flattening."""
     print("Starting Autoflatten Pipeline...")

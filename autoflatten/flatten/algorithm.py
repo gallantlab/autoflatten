@@ -1137,7 +1137,7 @@ def run_adaptive_optimization(
                     recovery_energy_fn, n_coarse_steps=n_coarse_steps
                 )
 
-                for r_iter in range(recovery_iterations):
+                for _ in range(recovery_iterations):
                     r_grad = recovery_grad_fn(uv)
                     if n_avg > 0:
                         r_grad = smooth_gradient(

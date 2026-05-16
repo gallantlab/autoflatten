@@ -5,7 +5,7 @@ Tests for the core module.
 import os
 import subprocess
 import tempfile
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import networkx as nx
 import numpy as np

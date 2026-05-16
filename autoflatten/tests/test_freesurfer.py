@@ -389,7 +389,7 @@ class TestRunMrisFlatten:
         hemi = "lh"
         surf_dir = tmp_path / "subjects" / subject / "surf"
         surf_dir.mkdir(parents=True)
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         with pytest.raises(FileNotFoundError):
             run_mris_flatten(
@@ -409,7 +409,7 @@ class TestRunMrisFlatten:
         existing_output = output_dir / output_name
         existing_output.write_text("old")
 
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
         monkeypatch.setattr(
             fs,
             "_run_command",
@@ -446,7 +446,7 @@ class TestRunMrisFlatten:
         existing_output = output_dir / output_name
         existing_output.write_text("old")
 
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         def fake_run_command(cmd, cwd, log_path, env=None):
             flat = cmd[-1]
@@ -487,7 +487,7 @@ class TestRunMrisFlatten:
         output_dir = tmp_path / "outdir"
         output_dir.mkdir()
 
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         def fake_fail(cmd, cwd, log_path, env=None):
             with open(log_path, "w") as f:
@@ -514,7 +514,7 @@ class TestRunMrisFlatten:
         output_dir = tmp_path / "outdir"
         output_dir.mkdir()
 
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         def fake_run(cmd, cwd, log_path, env=None):
             flat = cmd[-1]
@@ -614,7 +614,7 @@ class TestRunMrisFlatten:
         output_dir.mkdir()
 
         # Mock _resolve_subject_dir to return our test surf_dir
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         # Mock _run_command to simulate successful mris_flatten
         def fake_run_command(cmd, cwd, log_path, env=None):
@@ -699,7 +699,7 @@ class TestRunMrisFlatten:
         temp_dirs = []
 
         # Mock _resolve_subject_dir
-        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda subj: str(surf_dir))
+        monkeypatch.setattr(fs, "_resolve_subject_dir", lambda _subj: str(surf_dir))
 
         # Mock _run_command and capture temp directory
         def fake_run_command(cmd, cwd, log_path, env=None):
