@@ -1,8 +1,7 @@
 """Distance computation functions for surface meshes.
 
-Provides two methods for computing geodesic distances:
-1. Heat method (igl): More accurate but slower, good for global distances
-2. Graph-based Dijkstra: Fast for local k-ring distances
+Computes geodesic distances with graph-based Dijkstra, which is fast and
+accurate for local k-ring distances.
 
 Includes Numba-accelerated implementations for significant speedups:
 - K-ring computation: ~20x faster with parallel Numba
@@ -26,50 +25,6 @@ from tqdm import tqdm
 # Correction factor for graph distances on triangulated surfaces (from FreeSurfer)
 # Graph distances underestimate true geodesic distances; this corrects for that
 GRAPH_DISTANCE_CORRECTION = (1 + np.sqrt(2)) / 2
-
-
-# =============================================================================
-# Heat method (accurate, slower)
-# =============================================================================
-
-
-def setup_heat_geodesic(vertices, faces):
-    """Precompute heat geodesic solver.
-
-    Parameters
-    ----------
-    vertices : ndarray of shape (N, 3)
-        Vertex positions
-    faces : ndarray of shape (F, 3)
-        Face indices
-
-    Returns
-    -------
-    HeatGeodesicsData
-        Object for use with compute_heat_distance
-    """
-    data = igl.HeatGeodesicsData()
-    igl.heat_geodesics_precompute(vertices, faces.astype(np.int64), data)
-    return data
-
-
-def compute_heat_distance(heat_data, source_idx):
-    """Compute geodesic distances from a source vertex using heat method.
-
-    Parameters
-    ----------
-    heat_data : HeatGeodesicsData
-        Precomputed data from setup_heat_geodesic
-    source_idx : int
-        Index of source vertex
-
-    Returns
-    -------
-    ndarray of shape (N,)
-        Distances from source to all vertices
-    """
-    gamma = np.array([source_idx], dtype=np.int32)
-    return igl.heat_geodesics_solve(heat_data, gamma)
 
 
 # =============================================================================
@@ -147,43 +102,6 @@ def get_k_ring(faces, n_vertices, k):
     return k_rings
 
 
-def get_single_k_ring(adj, center_vertex, k):
-    """Get k-ring neighbors for a single vertex.
-
-    Parameters
-    ----------
-    adj : list
-        Adjacency list from igl.adjacency_list(faces)
-    center_vertex : int
-        Index of center vertex
-    k : int
-        Number of rings to include
-
-    Returns
-    -------
-    ndarray
-        Vertex indices in the k-ring (excluding center)
-    """
-    visited = {center_vertex}
-    frontier = {center_vertex}
-    for _ in range(k):
-        new_frontier = set()
-        for u in frontier:
-            for neighbor in adj[u]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    new_frontier.add(neighbor)
-        frontier = new_frontier
-    visited.discard(center_vertex)
-    return np.array(sorted(visited), dtype=np.int64)
-
-
-# =============================================================================
-# Numba-accelerated k-ring computation (~20x faster)
-# =============================================================================
-
-
-@njit(parallel=True, cache=True)
 def _get_k_rings_numba(adj_flat, adj_offsets, k):
     """Compute k-ring neighbors for all vertices in parallel using Numba.
 
@@ -480,30 +398,6 @@ def _limited_dijkstra(v, k_ring, graph, correction):
 
     # Return distances in same order as k_ring, with correction applied
     return np.array([found.get(idx, np.inf) / correction for idx in k_ring])
-
-
-def compute_graph_distance(graph, source_idx, k_ring, correction=None):
-    """Compute graph-based distances from source to k-ring neighbors.
-
-    Parameters
-    ----------
-    graph : sparse.csr_matrix
-        Sparse CSR adjacency matrix from build_mesh_graph
-    source_idx : int
-        Index of source vertex
-    k_ring : ndarray
-        Array of target vertex indices
-    correction : float, optional
-        Correction factor (default: GRAPH_DISTANCE_CORRECTION)
-
-    Returns
-    -------
-    ndarray
-        Distances to k_ring vertices
-    """
-    if correction is None:
-        correction = GRAPH_DISTANCE_CORRECTION
-    return _limited_dijkstra(source_idx, k_ring, graph, correction)
 
 
 def compute_kring_geodesic_distances(

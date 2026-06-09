@@ -277,17 +277,9 @@ class FlattenConfig:
         Print progress every N iterations.
     verbose : bool
         Whether to print progress messages.
-    n_jobs : int
-        Number of parallel jobs for distance computation.
-        -1 means use all available CPUs.
     strict_topology : bool
         If True, raise error for non-disk topology (chi != 1).
         If False, warn but continue (flattening will likely fail).
-    adaptive_recovery : bool
-        Enable adaptive flipped-triangle recovery during
-        distance refinement phase. When flipped count exceeds threshold,
-        temporarily increases area weight to fix flipped triangles.
-        Disabled by default to match FreeSurfer's fixed schedule.
     """
 
     kring: KRingConfig = field(default_factory=KRingConfig)
@@ -305,9 +297,7 @@ class FlattenConfig:
     phases: list[PhaseConfig] = field(default_factory=_default_phases)
     print_every: int = 100
     verbose: bool = True
-    n_jobs: int = -1
     strict_topology: bool = True
-    adaptive_recovery: bool = False  # Disabled by default for FreeSurfer mode
     initial_scale: float = 3.0  # Scale factor after initial 2D projection
 
     def to_dict(self) -> dict:
@@ -365,9 +355,7 @@ class FlattenConfig:
             ],
             "print_every": self.print_every,
             "verbose": self.verbose,
-            "n_jobs": self.n_jobs,
             "strict_topology": self.strict_topology,
-            "adaptive_recovery": self.adaptive_recovery,
             "initial_scale": self.initial_scale,
         }
 
@@ -402,9 +390,7 @@ class FlattenConfig:
             phases=phases,
             print_every=data.get("print_every", 100),
             verbose=data.get("verbose", True),
-            n_jobs=data.get("n_jobs", -1),
             strict_topology=data.get("strict_topology", True),
-            adaptive_recovery=data.get("adaptive_recovery", False),  # Default to False
             initial_scale=data.get("initial_scale", 3.0),
         )
 

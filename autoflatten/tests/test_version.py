@@ -24,8 +24,6 @@ def test_version_fallback():
         # Force ImportError when trying to import from _version
         import importlib
 
-        import autoflatten
-
         # Reload to trigger the import logic
         with mock.patch.object(
             importlib, "import_module", side_effect=ImportError("mocked")

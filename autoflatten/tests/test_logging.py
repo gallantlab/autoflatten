@@ -3,7 +3,6 @@
 import sys
 from io import StringIO
 
-import pytest
 
 from autoflatten.logging import TeeStream, restore_logging, setup_logging
 

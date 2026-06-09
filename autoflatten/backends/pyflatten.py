@@ -130,7 +130,6 @@ class PyflattenBackend(FlattenBackend):
             restore_logging,
             get_kring_cache_filename,
         )
-        from ..flatten.config import KRingConfig
 
         # Load or create configuration
         if config_path is not None:
@@ -142,7 +141,6 @@ class PyflattenBackend(FlattenBackend):
         config.kring.k_ring = k_ring
         config.kring.n_neighbors_per_ring = n_neighbors_per_ring
         config.verbose = verbose
-        config.n_jobs = n_jobs
         config.print_every = print_every
 
         if skip_spring_smoothing:
@@ -161,7 +159,7 @@ class PyflattenBackend(FlattenBackend):
 
         try:
             if verbose:
-                print(f"Running pyflatten backend")
+                print("Running pyflatten backend")
                 print(f"  Input patch: {patch_path}")
                 print(f"  Base surface: {surface_path}")
                 print(f"  Output: {output_path}")

@@ -13,8 +13,6 @@ for XLA thread limits to take effect.
 import os
 from typing import Optional
 
-_THREADING_CONFIGURED = False
-
 
 def configure_threading(n_threads: Optional[int] = None) -> None:
     """Configure thread counts for all parallel backends.
@@ -51,11 +49,8 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
     >>> # Now import JAX and other libraries
     >>> import jax
     """
-    global _THREADING_CONFIGURED
-
     # None or -1 or 0 means use all CPUs (no limit)
     if n_threads is None or n_threads <= 0:
-        _THREADING_CONFIGURED = True
         return
 
     def _append_xla_flag(current: str, flag: str) -> str:
@@ -115,44 +110,3 @@ def configure_threading(n_threads: Optional[int] = None) -> None:
         pass  # Numba not installed
     except ValueError:
         pass  # Requested threads exceed available cores
-
-    _THREADING_CONFIGURED = True
-
-
-def is_configured() -> bool:
-    """Check if threading has been configured.
-
-    Returns
-    -------
-    bool
-        True if configure_threading() has been called.
-    """
-    return _THREADING_CONFIGURED
-
-
-def get_effective_threads() -> dict:
-    """Get the current effective thread settings.
-
-    Returns
-    -------
-    dict
-        Dictionary with thread counts for each backend.
-    """
-    result = {
-        "XLA_FLAGS": os.environ.get("XLA_FLAGS", "(not set)"),
-        "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS", "(not set)"),
-        "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS", "(not set)"),
-        "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS", "(not set)"),
-        "VECLIB_MAXIMUM_THREADS": os.environ.get("VECLIB_MAXIMUM_THREADS", "(not set)"),
-        "NUMEXPR_NUM_THREADS": os.environ.get("NUMEXPR_NUM_THREADS", "(not set)"),
-    }
-
-    # Numba threads (if available)
-    try:
-        import numba
-
-        result["numba_threads"] = numba.get_num_threads()
-    except ImportError:
-        result["numba_threads"] = "(numba not installed)"
-
-    return result

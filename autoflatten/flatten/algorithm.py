@@ -14,18 +14,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-
-# =============================================================================
-# Exceptions
-# =============================================================================
-
-
-class TopologyError(Exception):
-    """Raised when surface topology is incompatible with flattening."""
-
-    pass
-
-
 from .config import (
     FlattenConfig,
     NegativeAreaRemovalConfig,
@@ -49,6 +37,17 @@ from .energy import (
 
 # Import I/O functions from autoflatten.freesurfer
 from ..freesurfer import extract_patch_faces, read_patch, read_surface, write_patch
+
+
+# =============================================================================
+# Exceptions
+# =============================================================================
+
+
+class TopologyError(Exception):
+    """Raised when surface topology is incompatible with flattening."""
+
+    pass
 
 
 # =============================================================================
@@ -495,24 +494,6 @@ def make_energy_functions(
     return compute_energies, grad_J_d, grad_J_a
 
 
-def compute_normalized_lambdas(
-    J_d: float, J_a: float, ratio: float
-) -> tuple[float, float]:
-    """Compute lambda weights so effective contributions have desired ratio.
-
-    Args:
-        J_d: Current distance energy
-        J_a: Current area energy
-        ratio: Desired area/distance energy ratio
-
-    Returns:
-        Tuple of (lambda_d, lambda_a)
-    """
-    lambda_d = 1.0
-    lambda_a = ratio * J_d / J_a
-    return lambda_d, lambda_a
-
-
 def make_energy_fn(
     lambda_d: float,
     lambda_a: float,
@@ -945,302 +926,6 @@ def run_smoothed_optimization(
             )
 
     elapsed = time.time() - start_time
-    if verbose:
-        print(f"\nTotal: {iteration} iterations in {elapsed:.1f}s")
-
-    return np.array(uv)
-
-
-def run_adaptive_optimization(
-    uv_init: np.ndarray,
-    lambda_d: float,
-    lambda_a: float,
-    smoothing_schedule: list[int],
-    neighbors_jax: jnp.ndarray,
-    targets_jax: jnp.ndarray,
-    mask_jax: jnp.ndarray,
-    faces_jax: jnp.ndarray,
-    smooth_neighbors_jax: jnp.ndarray,
-    smooth_mask_jax: jnp.ndarray,
-    smooth_counts_jax: jnp.ndarray,
-    compute_energies_fn,
-    avg_nbrs: float,
-    iters_per_level: int = 50,
-    print_every: int = 10,
-    verbose: bool = True,
-    base_tol: float = 0.2,
-    max_small: int = 50000,
-    total_small_limit: int = 15000,
-    n_coarse_steps: int = 15,
-    flipped_threshold_factor: float = 20.0,
-    recovery_area_ratio: float = 0.5,
-    recovery_iterations: int = 50,
-    grad_J_d_fn=None,
-    grad_J_a_fn=None,
-    snapshot_callback: Callable | None = None,
-) -> np.ndarray:
-    """Run adaptive gradient descent with flipped-triangle recovery.
-
-    This is similar to run_smoothed_optimization but monitors for flipped
-    triangle explosions and triggers recovery when needed. When the flipped
-    count exceeds a threshold, the optimizer temporarily increases the area
-    weight to fix the flipped triangles before resuming normal optimization.
-
-    Args:
-        uv_init: Initial UV coordinates
-        lambda_d: Weight for distance energy
-        lambda_a: Weight for area energy
-        smoothing_schedule: List of gradient averaging counts
-        neighbors_jax: (V, max_neighbors) neighbor indices
-        targets_jax: (V, max_neighbors) target distances
-        mask_jax: (V, max_neighbors) validity mask
-        faces_jax: (F, 3) face indices
-        smooth_neighbors_jax: Smoothing adjacency
-        smooth_mask_jax: Smoothing validity mask
-        smooth_counts_jax: Smoothing neighbor counts
-        compute_energies_fn: Function to compute (J_d, J_a) for energy tracking
-        avg_nbrs: Average number of neighbors per vertex (for gradient normalization)
-        iters_per_level: Max iterations per smoothing level
-        print_every: Print progress every N iterations
-        verbose: Print progress messages
-        base_tol: Base convergence tolerance
-        max_small: Max consecutive small steps
-        total_small_limit: Max total small steps
-        n_coarse_steps: Number of line search steps
-        flipped_threshold_factor: Trigger recovery when flipped > initial * factor
-        recovery_area_ratio: Area/distance ratio during recovery (higher = more area weight)
-        recovery_iterations: Number of recovery iterations
-        grad_J_d_fn: Pre-compiled JIT gradient for distance energy. If None, created internally.
-        grad_J_a_fn: Pre-compiled JIT gradient for area energy. If None, created internally.
-
-    Returns:
-        Optimized UV coordinates
-    """
-    energy_fn = make_energy_fn(
-        lambda_d, lambda_a, neighbors_jax, targets_jax, mask_jax, faces_jax
-    )
-
-    # Use pre-compiled gradient functions if provided, otherwise create them
-    if grad_J_d_fn is None:
-
-        @jax.jit
-        def grad_J_d_fn(uv):
-            return jax.grad(
-                lambda u: compute_metric_energy(u, neighbors_jax, targets_jax, mask_jax)
-            )(uv)
-
-    if grad_J_a_fn is None:
-
-        @jax.jit
-        def grad_J_a_fn(uv):
-            return jax.grad(lambda u: compute_area_energy_fs_v6(u, faces_jax))(uv)
-
-    # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
-    compute_weighted_gradient = make_weighted_gradient_fn(
-        grad_J_d_fn, grad_J_a_fn, avg_nbrs
-    )
-
-    line_search_fn = make_vectorized_line_search(
-        energy_fn, n_coarse_steps=n_coarse_steps
-    )
-
-    uv = jnp.asarray(uv_init)
-
-    # Track initial flipped count for adaptive recovery threshold
-    initial_flipped = int(count_flipped_triangles(uv, faces_jax))
-    flipped_threshold = max(initial_flipped * flipped_threshold_factor, 500)
-    best_uv = uv
-    best_flipped = initial_flipped
-    recovery_count = 0
-    max_recoveries = 3  # Limit recovery attempts
-
-    iteration = 0
-    total_small = 0.0
-    start_time = time.time()
-
-    if verbose:
-        print(
-            f"\n{'Iter':>5} {'n_avg':>6} {'Energy':>12} {'J_d':>10} {'J_a':>10} "
-            f"{'relΔSSE':>10} {'alpha':>10} {'Flipped':>8} {'%err':>7}"
-        )
-        print("-" * 100)
-
-    for n_avg in smoothing_schedule:
-        # FreeSurfer-style tolerance scaling (tighter at low n_avg)
-        scaled_tol = base_tol * np.sqrt((n_avg + 1.0) / 1024.0)
-
-        nsmall = 0
-        old_sse = None
-
-        for i in range(iters_per_level):
-            # FreeSurfer-style gradient: lambda_d * (g_d / avg_nbrs) + lambda_a * g_a
-            grad = compute_weighted_gradient(uv, lambda_d, lambda_a)
-
-            if n_avg > 0:
-                grad_smooth = smooth_gradient(
-                    grad,
-                    smooth_neighbors_jax,
-                    smooth_mask_jax,
-                    smooth_counts_jax,
-                    n_avg,
-                )
-            else:
-                grad_smooth = grad
-
-            uv, energy, alpha, (J_d, J_a) = line_search_fn(uv, grad_smooth)
-
-            iteration += 1
-            current_sse = float(energy)
-            alpha_val = float(alpha)
-
-            # Check flipped count and trigger recovery if needed
-            n_flipped = int(count_flipped_triangles(uv, faces_jax))
-
-            snapshot_callback = _emit_snapshot(
-                snapshot_callback,
-                uv,
-                J_d=float(J_d),
-                J_a=float(J_a),
-                n_flipped=n_flipped,
-                iteration=iteration,
-            )
-
-            # Track best state
-            if n_flipped < best_flipped:
-                best_flipped = n_flipped
-                best_uv = uv
-
-            # Adaptive recovery: if flipped explodes, run recovery phase
-            if n_flipped > flipped_threshold and recovery_count < max_recoveries:
-                if verbose:
-                    print(
-                        f"  -> RECOVERY TRIGGERED: {n_flipped} flipped > "
-                        f"threshold {flipped_threshold:.0f}"
-                    )
-
-                # Run recovery with higher area weight
-                J_d_curr, J_a_curr = compute_energies_fn(uv)
-                recovery_lambda_d, recovery_lambda_a = compute_normalized_lambdas(
-                    float(J_d_curr), float(J_a_curr), ratio=recovery_area_ratio
-                )
-
-                recovery_energy_fn = make_energy_fn(
-                    recovery_lambda_d,
-                    recovery_lambda_a,
-                    neighbors_jax,
-                    targets_jax,
-                    mask_jax,
-                    faces_jax,
-                )
-                recovery_grad_fn = jax.jit(jax.grad(lambda u: recovery_energy_fn(u)[0]))
-                recovery_line_search = make_vectorized_line_search(
-                    recovery_energy_fn, n_coarse_steps=n_coarse_steps
-                )
-
-                for r_iter in range(recovery_iterations):
-                    r_grad = recovery_grad_fn(uv)
-                    if n_avg > 0:
-                        r_grad = smooth_gradient(
-                            r_grad,
-                            smooth_neighbors_jax,
-                            smooth_mask_jax,
-                            smooth_counts_jax,
-                            min(n_avg, 64),
-                        )
-                    uv, _, _, _ = recovery_line_search(uv, r_grad)
-
-                n_flipped_after = int(count_flipped_triangles(uv, faces_jax))
-                recovery_count += 1
-
-                if verbose:
-                    print(
-                        f"  -> RECOVERY COMPLETE: {n_flipped} -> {n_flipped_after} flipped "
-                        f"(attempt {recovery_count}/{max_recoveries})"
-                    )
-
-                # Update threshold to prevent repeated triggers
-                flipped_threshold = max(n_flipped_after * 5, flipped_threshold)
-
-            # FreeSurfer convergence: 100 * rel_change < tol, i.e., rel_change < tol/100
-            rel_change = 0.0
-            if old_sse is not None and old_sse > 0:
-                rel_change = (old_sse - current_sse) / old_sse
-
-                # Divide scaled_tol by 100 to match FreeSurfer's formula
-                if rel_change < scaled_tol / 100.0:
-                    nsmall += 1
-                    total_small += 1
-                else:
-                    total_small = max(0, total_small - 0.25)
-                    nsmall = 0
-
-            should_print = verbose and (iteration % print_every == 0 or i == 0)
-            if should_print:
-                pct_err = float(
-                    _compute_distance_error_jit(
-                        uv, neighbors_jax, targets_jax, mask_jax
-                    )
-                )
-                print(
-                    f"{iteration:5d} {n_avg:6d} {current_sse:12.4f} {float(J_d):10.4f} "
-                    f"{float(J_a):10.4f} {rel_change:10.2e} {alpha_val:10.2e} "
-                    f"{n_flipped:8d} {pct_err:6.1f}%"
-                )
-
-            if nsmall > max_small:
-                if verbose:
-                    print(
-                        f"  -> Converged at n_avg={n_avg}: {nsmall} consecutive "
-                        f"small steps (>{max_small})"
-                    )
-                break
-
-            if total_small > total_small_limit:
-                if verbose:
-                    print(
-                        f"  -> Converged: total_small={total_small:.0f} > "
-                        f"{total_small_limit}"
-                    )
-                break
-
-            if old_sse is not None and current_sse > 0:
-                if 100 * (old_sse - current_sse) / current_sse < scaled_tol:
-                    if verbose:
-                        print(
-                            f"  -> Converged at n_avg={n_avg}: relative change < "
-                            f"{scaled_tol:.2e}"
-                        )
-                    break
-
-            if alpha_val == 0:
-                if verbose:
-                    print(f"  -> At minimum (alpha=0) at n_avg={n_avg}")
-                break
-
-            old_sse = current_sse
-
-        if verbose:
-            n_flipped = int(count_flipped_triangles(uv, faces_jax))
-            pct_err = float(
-                _compute_distance_error_jit(uv, neighbors_jax, targets_jax, mask_jax)
-            )
-            print(
-                f"  -> Level n_avg={n_avg} done: {n_flipped} flipped, {pct_err:.1f}% err, "
-                f"nsmall={nsmall}, total_small={total_small:.0f}"
-            )
-
-    elapsed = time.time() - start_time
-
-    # Use best state if final state has significantly more flipped triangles
-    final_flipped = int(count_flipped_triangles(uv, faces_jax))
-    if best_flipped < final_flipped * 0.5:
-        if verbose:
-            print(
-                f"  -> Using best state: {best_flipped} flipped "
-                f"(vs final {final_flipped})"
-            )
-        uv = best_uv
-
     if verbose:
         print(f"\nTotal: {iteration} iterations in {elapsed:.1f}s")
 
@@ -2061,63 +1746,32 @@ class SurfaceFlattener:
                 else config.convergence.base_tol
             )
 
-            # Use adaptive optimization for the final epoch if enabled
-            # (historically named "distance_refinement", now "epoch_3" by default)
-            use_adaptive = config.adaptive_recovery and phase.name == "epoch_3"
-
             phase_callback = _wrap_callback(snapshot_callback, phase.name)
 
-            if use_adaptive:
-                uv = run_adaptive_optimization(
-                    uv,
-                    lambda_d=lambda_d,
-                    lambda_a=lambda_a,
-                    smoothing_schedule=phase.smoothing_schedule,
-                    neighbors_jax=self.neighbors_jax,
-                    targets_jax=self.targets_jax,
-                    mask_jax=self.mask_jax,
-                    faces_jax=self.faces_jax,
-                    smooth_neighbors_jax=self.smooth_neighbors_jax,
-                    smooth_mask_jax=self.smooth_mask_jax,
-                    smooth_counts_jax=self.smooth_counts_jax,
-                    compute_energies_fn=self._compute_energies,
-                    avg_nbrs=self.avg_neighbors,
-                    iters_per_level=phase.iters_per_level,
-                    print_every=config.print_every,
-                    verbose=verbose,
-                    base_tol=base_tol,
-                    max_small=config.convergence.max_small,
-                    total_small_limit=config.convergence.total_small,
-                    n_coarse_steps=config.line_search.n_coarse_steps,
-                    grad_J_d_fn=self._grad_J_d,
-                    grad_J_a_fn=self._grad_J_a,
-                    snapshot_callback=phase_callback,
-                )
-            else:
-                uv = run_smoothed_optimization(
-                    uv,
-                    lambda_d=lambda_d,
-                    lambda_a=lambda_a,
-                    smoothing_schedule=phase.smoothing_schedule,
-                    neighbors_jax=self.neighbors_jax,
-                    targets_jax=self.targets_jax,
-                    mask_jax=self.mask_jax,
-                    faces_jax=self.faces_jax,
-                    smooth_neighbors_jax=self.smooth_neighbors_jax,
-                    smooth_mask_jax=self.smooth_mask_jax,
-                    smooth_counts_jax=self.smooth_counts_jax,
-                    avg_nbrs=self.avg_neighbors,
-                    iters_per_level=phase.iters_per_level,
-                    print_every=config.print_every,
-                    verbose=verbose,
-                    base_tol=base_tol,
-                    max_small=config.convergence.max_small,
-                    total_small_limit=config.convergence.total_small,
-                    n_coarse_steps=config.line_search.n_coarse_steps,
-                    grad_J_d_fn=self._grad_J_d,
-                    grad_J_a_fn=self._grad_J_a,
-                    snapshot_callback=phase_callback,
-                )
+            uv = run_smoothed_optimization(
+                uv,
+                lambda_d=lambda_d,
+                lambda_a=lambda_a,
+                smoothing_schedule=phase.smoothing_schedule,
+                neighbors_jax=self.neighbors_jax,
+                targets_jax=self.targets_jax,
+                mask_jax=self.mask_jax,
+                faces_jax=self.faces_jax,
+                smooth_neighbors_jax=self.smooth_neighbors_jax,
+                smooth_mask_jax=self.smooth_mask_jax,
+                smooth_counts_jax=self.smooth_counts_jax,
+                avg_nbrs=self.avg_neighbors,
+                iters_per_level=phase.iters_per_level,
+                print_every=config.print_every,
+                verbose=verbose,
+                base_tol=base_tol,
+                max_small=config.convergence.max_small,
+                total_small_limit=config.convergence.total_small,
+                n_coarse_steps=config.line_search.n_coarse_steps,
+                grad_J_d_fn=self._grad_J_d,
+                grad_J_a_fn=self._grad_J_a,
+                snapshot_callback=phase_callback,
+            )
 
         # Final negative area removal (FreeSurfer step 3)
         if config.final_negative_area_removal.enabled:
@@ -2237,31 +1891,3 @@ class SurfaceFlattener:
 
         if self.config.verbose:
             print(f"Saved flattened patch to {output_path}")
-
-    def compute_distance_error(self, uv: np.ndarray) -> float:
-        """Compute average % distance error for UV coordinates.
-
-        Args:
-            uv: (V, 2) UV coordinates
-
-        Returns:
-            Percentage distance error
-        """
-        uv_jax = jnp.asarray(uv)
-        return float(
-            _compute_distance_error_jit(
-                uv_jax, self.neighbors_jax, self.targets_jax, self.mask_jax
-            )
-        )
-
-    def count_flipped(self, uv: np.ndarray) -> int:
-        """Count flipped triangles.
-
-        Args:
-            uv: (V, 2) UV coordinates
-
-        Returns:
-            Number of flipped triangles
-        """
-        uv_jax = jnp.asarray(uv)
-        return int(count_flipped_triangles(uv_jax, self.faces_jax))
