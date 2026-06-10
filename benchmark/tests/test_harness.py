@@ -136,3 +136,40 @@ def test_per_vertex_p90_zero_when_isometric():
     targets = np.array([[1.0, 1.0], [1.0, np.sqrt(2)], [1.0, np.sqrt(2)]])
     mask = np.ones_like(targets, dtype=bool)
     assert metrics._per_vertex_p90(uv, neighbors, targets, mask) == pytest.approx(0.0)
+
+
+# --- flip-free init probe ---------------------------------------------------------
+def _disk_mesh(n: int = 12):
+    """A flat triangle-fan disk: center vertex + ``n`` boundary vertices on a circle."""
+    ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    rim = np.column_stack([np.cos(ang), np.sin(ang), np.zeros(n)])
+    vertices = np.vstack([[0.0, 0.0, 0.0], rim])
+    faces = np.array([[0, 1 + i, 1 + (i + 1) % n] for i in range(n)], dtype=np.int64)
+    return vertices, faces
+
+
+def _signed_areas(uv, faces):
+    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
+    return 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+
+
+def test_tutte_init_is_flip_free():
+    from benchmark.probe_tutte_init import flipfree_init
+
+    vertices, faces = _disk_mesh()
+    uv = flipfree_init(vertices, faces, method="tutte")
+    areas = _signed_areas(uv, faces)
+    # All triangles share one orientation -> zero flips (Tutte guarantee).
+    assert np.all(areas > 0) or np.all(areas < 0)
+
+
+def test_scale_to_area_matches_target():
+    from benchmark.probe_tutte_init import scale_to_area
+
+    uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)  # area 1
+    faces = np.array([[0, 1, 2], [0, 2, 3]])
+    scaled = scale_to_area(uv, faces, target_area=9.0)
+    assert np.abs(_signed_areas(scaled, faces)).sum() == pytest.approx(9.0)
