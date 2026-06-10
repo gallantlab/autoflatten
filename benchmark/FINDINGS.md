@@ -262,6 +262,41 @@ would be redundant in the isometric limit and would *fight* `J_d` in the real (n
 trading distance fidelity for area fidelity. Only worth it if the scientific use is reading cortical
 *area* off the map (an equiareal/authalic objective) — a different goal from Fischl's metric-distance one.
 
+## 10. Target correction, re-judged on the GLOBAL metric (reverses §8, but only partly)
+
+§8 swept the graph-distance correction and concluded "1.207 is near-optimal, recalibration is a dead
+end" — but that was scored on the **local ≤30 mm** metric, which §9(c) showed is gameable. Re-running
+the sweep scored on the faithful **global** metric (`benchmark/probe_truedist.py --target-scale`, which
+rescales the cached targets, equivalent to changing the correction without a cache rebuild; eff.
+correction = 1.207 / target_scale) flips the conclusion — *larger* targets (smaller correction, toward
+the directly-measured Dijkstra/geodesic ratio ~1.08) **reduce** global true distortion, but the size of
+the win is **subject-dependent**.
+
+Global true distortion at each map's distance-optimal scale (removes the global-zoom confound):
+
+| target_scale (eff. correction) | sub-022 lh | sub-022 rh | sub-026 lh | mean |
+|---|---|---|---|---|
+| 1.00 (1.207, default) | 11.65% | 11.30% | 11.78% | 11.58% |
+| 1.05 (1.15) | 11.34% | 11.20% | 11.84% | 11.46% |
+| 1.10 (1.10) | **11.13%** | 11.20% | 11.82% | 11.38% |
+
+- On **sub-022** (both hemispheres) calibrating toward ~1.10 helps clearly (−0.1 to −0.5pp; lh is
+  monotonic out to 1.10). At ts=1.10 the map beats even the *best post-hoc rescale of the baseline*
+  (11.13 vs 11.65 on lh), so calibrated targets reshape the map, not just rezoom it.
+- On **sub-026 lh** it is neutral-to-slightly-worse (+0.04–0.06pp). The optimal correction is
+  subject-dependent, and ts=1.10 *overshoots* (its post-hoc s* drops below 1.0).
+- Flips stay comparable throughout (24–40), so calibration is not trading validity for distance.
+
+**Takeaways.** (i) §8's "dead end" was a metric artifact — on the right (global) objective the correction
+*does* matter and the FreeSurfer 1.207 is **slightly too large** (too-compact targets). (ii) But the gain
+is small (~0.2pp mean) and not universal, so the shippable change is modest: nudge the effective
+correction toward ~1.10–1.15 (the measured ratio), expect a small global-distortion reduction on most
+subjects, and pair it with a distance-optimal output scale (§9d) rather than `scale_to_area`. (iii) The
+consistent, always-safe component is the output-scale fix (`s*≈1.02` on all three hemispheres). A larger,
+robust reduction would need **long-range geodesic anchors** in the energy (the paper's own point that
+long-range distances are required to unfold) — a real energy change with weight-tuning, not a config
+knob; left as the next step pending a decision on scope.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
