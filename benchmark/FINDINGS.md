@@ -297,6 +297,43 @@ robust reduction would need **long-range geodesic anchors** in the energy (the p
 long-range distances are required to unfold) — a real energy change with weight-tuning, not a config
 knob; left as the next step pending a decision on scope.
 
+## 11. Broadened validation: the correction optimum is subject-specific and unpredictable
+
+Per the §10 caveat, the correction sweep was broadened to **8 hemispheres across 7 subjects** (added
+sub-041/052/059/066/075 lh to the benchmark, each with its own heat-geodesic reference; scored on global
+true distortion at each map's own optimal scale).
+
+| subject | Dijkstra/geo ratio | ts=1.0 (1.207) | ts=1.05 (1.15) | ts=1.10 (1.10) | Δ(1.0→1.10) |
+|---|---|---|---|---|---|
+| sub-041 lh | 1.087 | 12.33% | — | 11.78% | **−0.55** |
+| sub-022 lh | 1.078 | 11.65% | 11.34% | 11.13% | **−0.52** |
+| sub-052 lh | 1.089 | 12.02% | — | 11.69% | **−0.33** |
+| sub-059 lh | 1.093 | 12.50% | — | 12.21% | **−0.29** |
+| sub-022 rh | 1.082 | 11.30% | — | 11.20% | −0.10 |
+| sub-026 lh | 1.084 | 11.78% | — | 11.82% | +0.04 |
+| sub-066 lh | 1.085 | 11.59% | 11.64% | 11.63% | +0.05 |
+| sub-075 lh | 1.076 | 12.28% | 12.64% | 12.50% | +0.22 |
+
+**Mean Δ = −0.19pp; 5/8 helped, 2 neutral, 1 (sub-075) hurt.** Two robust negatives emerged:
+
+1. **The local Dijkstra/geodesic ratio is nearly subject-invariant (1.076–1.093)** — so all subjects'
+   targets are ~8% too compact in the *same* way. It therefore **cannot predict** the optimum: sub-075
+   has the *lowest* ratio yet is *hurt* by a smaller correction; sub-059 has the *highest* and is
+   *helped*. Per-subject **auto-calibration to the measured ratio would not work** (it would apply ~the
+   same correction to everyone).
+2. **No correction change is universally safe.** A milder ts=1.05 does not rescue the non-helpers — on
+   sub-075 it is *worse* than ts=1.10 (12.64 vs 12.50 vs 12.28 baseline); sub-066 also degrades at any
+   increase. 5 subjects want ~1.10, 3 genuinely prefer the original 1.207, and nothing local separates
+   the groups (the difference is global geometry / optimization dynamics).
+
+**Conclusion.** Changing the default correction is **not a robust win**: ~−0.2pp on average but with
+real per-subject downside (up to +0.35pp). FreeSurfer's 1.207 is defensible as a robust compromise even
+though it is slightly too large for the average subject on the global metric. The config-lever avenue is
+now **exhausted**: the only consistently non-harmful operation is the distance-optimal **output scale**
+(a 1-parameter minimization, ≥0 by construction, but small — `s*` ranges 0.995–1.020 across subjects), and
+the only remaining path to a *larger, robust* reduction is **long-range geodesic anchors in the energy**
+(a real energy change, not a config knob).
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
