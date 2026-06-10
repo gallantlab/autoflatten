@@ -117,6 +117,44 @@ flip-free but band-limited. The genuinely better directions remaining are a **me
 geometric multigrid** or a proper **SLIM** local-global solver — real reimplementations, not drop-in
 swaps. The one validated free win remains the **Tutte flip-free init** (§1).
 
+## 7. Speeding up the FreeSurfer-style optimizer (the productive direction)
+
+Rather than replace the optimizer, **accelerate it**. Profiling one iteration (193k-vertex
+hemisphere, CPU):
+
+| component | cost / iter | notes |
+|---|---|---|
+| gradient (J_d + J_a) | 177 ms | iterates over ~16M k-ring edges |
+| line search (15 pts, vmap) | 272 ms | also iterates over k-ring edges |
+| `smooth_gradient`, n_avg=1 | 1 ms | fine levels |
+| `smooth_gradient`, n_avg=256 | 243 ms | |
+| `smooth_gradient`, n_avg=1024 | **902 ms** | 1024 sequential neighbor-averaging passes |
+
+So per iteration ≈ gradient + line search (~450 ms, constant) + smoothing (1→902 ms by level).
+The levers, each **measured on sub-022 lh** (Tutte init; reference Tutte+full = 15.25% / 24 / 454s):
+
+| lever | distortion | flips | runtime | vs 454s |
+|---|---|---|---|---|
+| line search 15 → 7 points | 15.28% | 28 | 319s | **−30%, ~free** |
+| k-ring neighbors 12 → 6 | 15.37% | 30 | 303s | −33%, +0.1pp |
+| k_ring 7 → 5 | 15.73% | 24 | 340s | −25%, +0.5pp |
+| iters/level 40 → 20 | 15.37% | 28 | 362s | −20%, +0.1pp |
+| drop n_avg=1024 level | 15.35% | 35 | 422s | −7% (few coarse iters) |
+| **combo** (ls7 + iters25 + smooth256) | 15.51% | 28 | **262s** | **−42%** |
+
+These levers are largely **independent and compounding**, and stack on top of the Tutte init
+(which removed the ~4-min initial NAR). The combined "fast" config reaches **262s vs the original
+658s baseline — ~60% faster** — at +0.31pp distortion and comparable flips. The biggest near-free
+win is the **line search point count** (15→7, no measurable quality cost); the biggest single lever
+is **k-ring density** (fewer neighbors cuts gradient + line search + the one-time k-ring computation
++ the 237MB cache together). Capping the coarse smoothing helps less than expected because few
+iterations actually run at the coarsest level.
+
+**Takeaway:** the practical, low-risk path to a faster pipeline is not a new optimizer but
+(1) Tutte init, (2) a leaner line search, (3) a sparser k-ring, (4) fewer iters/level — each a small
+config change, together a ~2.5× speedup at near-baseline quality. (A spectral/low-rank acceleration
+of the coarse `smooth_gradient` is a deeper exact win if the coarse levels ever dominate.)
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
