@@ -53,6 +53,8 @@ bench = [
     # Benchmark / autoresearch harness (see benchmark/PLAN.md). Not packaged.
     "optuna>=3.6",       # optional HPO driver
     "pandas>=2.0",       # report tables
+    "optax>=0.2",        # gradient-based optimizers (optimizer-swap experiments)
+    "jaxopt>=0.8",       # L-BFGS / solvers on JAX energies
 ]
 
 [project.scripts]
