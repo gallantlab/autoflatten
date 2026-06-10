@@ -56,7 +56,27 @@ python -m benchmark.report
   one `flatten_fn`; alternatives register via `register_flatten_fn`.
 - [`build_dataset.py`](build_dataset.py), [`run_baseline.py`](run_baseline.py),
   [`report.py`](report.py) — the Phase-A commands above.
-- `probe_tutte_init.py`, `optimize.py` — Phase B/C (alt-method probe, optional HPO).
+- [`probe_tutte_init.py`](probe_tutte_init.py) — the flip-free (Tutte/LSCM) init probe
+  (Phase B primary experiment): injects a guaranteed-injective embedding and disables the
+  initial NAR, reusing the existing refinement.
+- [`experiment.py`](experiment.py) — **general autoresearch runner**. Parametrizes the init
+  method (`--init projection|tutte|lscm`) and refinement toggles
+  (`--skip-initial-nar`/`--skip-final-nar`/`--skip-spring`/`--skip-epoch`, `--k-ring`),
+  logging each variant to the ledger with a decision trace. This is how optimization ideas
+  are fanned out.
+- [`plot.py`](plot.py) — fast flatmap renderer for visual verification of any logged
+  experiment (`python -m benchmark.plot <experiment_id>`; `--full` for the slow 3-panel).
+- `optimize.py` — optional Optuna HPO (Phase C, not yet built).
+
+## Running an optimization experiment
+
+```bash
+# e.g. test whether a flip-free start makes the final NAR phase removable:
+python -m benchmark.experiment --init tutte --skip-final-nar --subset 1 --save \
+    --label tutte_nofinalnar --hypothesis "flip-free start keeps the map near-injective"
+python -m benchmark.plot --latest experiment      # eyeball the result
+python -m benchmark.report                          # refresh NOTEBOOK.md
+```
 
 ## Full public replication path
 
