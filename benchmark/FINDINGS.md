@@ -200,6 +200,56 @@ geodesic targets** (heat/exact) in the energy — a constant can't capture the s
 Dijkstra/geodesic ratio. That is the real "better energy at the cost of a slight slowdown," but it
 needs per-vertex geodesic computation (expensive) and is left as the next step.
 
+## 9. Local vs global distance metric, and a validated free win: distance-optimal output scale
+
+Pushing on "reduce distance error at a slight slowdown" (all on `sub-022 lh`, scored with the
+heat-method true-geodesic yardstick; `benchmark/probe_truedist.py`, `benchmark/truedist.py`):
+
+**a) Direct measurement of the Dijkstra/geodesic relationship.** Using the 200 saved heat-geodesic
+source fields vs raw graph Dijkstra: raw Dijkstra overestimates the true geodesic by only **~7.8%**
+(ratio 1.078), and that ratio is **nearly flat across 0–30 mm** (1.12→1.07). The code computes
+`target = Dijkstra / 1.207`, so the **targets are ~11% *smaller* than true geodesics** (target/true =
+0.893). Two consequences: (i) a *distance-dependent* correction is pointless (no distance structure to
+exploit), and (ii) §8's "shrink the correction" sweep only ever made targets *larger*; the optimum is
+at/above 1.207, confirming 1.207 is near-optimal. The targets are a **confirmed dead end**.
+
+**b) `k_ring` 7→11 does not help.** True distortion 18.84%→18.66% (−0.18pp) but flips 24→444 and
+runtime 445→649 s (+46%). More constraints with the same flawed targets just add folding pressure.
+
+**c) The local metric is gameable — a conformal disk beats a real flatmap on it.** Skipping all metric
+epochs (just flip-cleaning the Tutte init) gives the *lowest* local (≤30 mm) true distortion in the
+study — **16.26%, 0 flips, 6 s** — but the map is a **featureless disk** (Tutte pins the boundary to a
+circle, destroying all anatomical shape). Lighter-touch variants (skip epoch_3 / epoch_2+3) are *worse*
+(18.9–19.0%), not better. So the metric epochs are not "degrading" quality; the **local ≤30 mm metric
+simply doesn't see the global/boundary area distortion** and mis-ranks a useless disk above a correct
+flatmap. Lesson for the paper: report distance distortion **globally**, not just locally.
+
+| map | local ≤30 mm | **global (all pairs)** | flips | shape |
+|---|---|---|---|---|
+| clean_init (Tutte disk) | **16.26%** | 13.04% | 0 | degenerate disk |
+| full pipeline (fast_ultimate) | 17.93% | **11.35%** | 33 | correct flatmap |
+
+On the **global** metric (all geodesic pairs, no 30 mm cap) the full pipeline is **best** and the disk is
+**worst** — the correct ranking. The pipeline is actually better at long range (11.35%) than short range
+(17.93%); its only real weakness is a slight **global scale** bias.
+
+**d) Validated win — distance-optimal output scale (≈ free).** The final `scale_to_area` normalizes the
+map to match *total surface area*, but that is **not** the scale that minimizes geodesic distortion: the
+too-compact targets leave the optimized map ~4% too small. Refitting a single global scale `s`:
+
+| | global true distortion |
+|---|---|
+| `s = 1.0` (area-matched, current) | 11.35% |
+| `s* ≈ 1.04` (distance-optimal) | **10.88%** (−0.48pp, ~4% relative) |
+
+**Not metric-gaming:** fitting `s` on 100 sources and evaluating on the 100 held-out sources reproduces
+it (11.31%→10.74% on the held-out half), so it is a real, systematic global property, consistent with
+the directly-measured 11% target compaction. A single multiplicative rescale of the output `uv` costs
+nothing and changes no shape — only the zoom. **Caveat:** validated on one hemisphere; before becoming a
+default it should be confirmed across hemispheres/subjects (the bias direction is principled, but the
+exact factor may vary). The clean way to ship it: after optimization, choose the output scale that
+minimizes geodesic (or k-ring) distortion instead of matching total area.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
