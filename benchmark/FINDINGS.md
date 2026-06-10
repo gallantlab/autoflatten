@@ -233,22 +233,34 @@ On the **global** metric (all geodesic pairs, no 30 mm cap) the full pipeline is
 **worst** — the correct ranking. The pipeline is actually better at long range (11.35%) than short range
 (17.93%); its only real weakness is a slight **global scale** bias.
 
-**d) Validated win — distance-optimal output scale (≈ free).** The final `scale_to_area` normalizes the
-map to match *total surface area*, but that is **not** the scale that minimizes geodesic distortion: the
-too-compact targets leave the optimized map ~4% too small. Refitting a single global scale `s`:
+**d) Output scale is not metric-optimal — but the picture is subtle (grounded in Fischl 1999).**
+Fischl, Sereno & Dale (1999), §2.1–2.3: the flattening energy is `J = λ_d·J_d + λ_a·J_a` where
+`J_d = (1/2V) Σ_i Σ_{n∈N(i)} (d_in^t − d_in^0)^2` is **metric (distance) distortion** — *the* objective —
+and `J_a = (1/2T) Σ_i P(A_i)(A_i − A_i^0)^2` with `P(A_i)=1 iff A_i ≤ 0`. The area term is **gated to
+folded (negative-area) triangles only**; valid triangles' area magnitude is unconstrained. So FreeSurfer
+has **no area-preservation objective** — `J_a` only removes folds, and area is preserved only as a
+*byproduct* of distance preservation (an isometry preserves both; distance is the stronger property).
+The final `scale_to_area` (`s = √(orig_area/total_area)`) is therefore a **display convention**, not part
+of the objective.
 
-| | global true distortion |
-|---|---|
-| `s = 1.0` (area-matched, current) | 11.35% |
-| `s* ≈ 1.04` (distance-optimal) | **10.88%** (−0.48pp, ~4% relative) |
+Refitting a single global scale `s` on the optimized map exposes that the area-matched scale is not
+distortion-optimal — and the two distance metrics disagree on direction:
 
-**Not metric-gaming:** fitting `s` on 100 sources and evaluating on the 100 held-out sources reproduces
-it (11.31%→10.74% on the held-out half), so it is a real, systematic global property, consistent with
-the directly-measured 11% target compaction. A single multiplicative rescale of the output `uv` costs
-nothing and changes no shape — only the zoom. **Caveat:** validated on one hemisphere; before becoming a
-default it should be confirmed across hemispheres/subjects (the bias direction is principled, but the
-exact factor may vary). The clean way to ship it: after optimization, choose the output scale that
-minimizes geodesic (or k-ring) distortion instead of matching total area.
+| objective | optimal scale | note |
+|---|---|---|
+| **true geodesic** (heat, the paper's *intent*) | `s ≈ 1.04` (expand) | area-matched map is ~4% too small vs truth; rescale cuts true distortion 11.35%→10.88% (−0.48pp), reproduced on held-out sources (11.31%→10.74%) |
+| **k-ring surrogate `J_d`** (the energy actually minimized, `Dijkstra/1.207` targets) | `s ≈ 0.98` (shrink) | the ~11% too-compact targets pull the surrogate optimum the *wrong* way |
+
+So this is **not** a clean free win: the true-geodesic gain is real (it improves the paper's actual
+objective) but it is a **symptom of the target-compaction bias (a)**, and the implemented surrogate energy
+prefers the opposite scale. Shippable form: after optimization, choose the output scale that minimizes
+distortion against a **true-geodesic sample**, rather than matching total area (and ideally fix the target
+calibration upstream). Validated on one hemisphere; confirm multi-hemi before changing a default.
+
+**Area as an objective?** Per Fischl 1999 it deliberately is *not* one. Adding an area-preservation term
+would be redundant in the isometric limit and would *fight* `J_d` in the real (non-isometric) regime,
+trading distance fidelity for area fidelity. Only worth it if the scientific use is reading cortical
+*area* off the map (an equiareal/authalic objective) — a different goal from Fischl's metric-distance one.
 
 ## Method note
 
