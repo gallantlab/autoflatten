@@ -150,10 +150,20 @@ is **k-ring density** (fewer neighbors cuts gradient + line search + the one-tim
 + the 237MB cache together). Capping the coarse smoothing helps less than expected because few
 iterations actually run at the coarsest level.
 
+**Validated stacked "fast" config** (Tutte init + n_neighbors 6 + line-search 7 + iters/level 25 +
+smoothing cap 256), across **4 hemispheres / 2 subjects**:
+
+| | mean distortion | total flips | mean runtime |
+|---|---|---|---|
+| baseline (n=4) | 14.73% | 121 | 702 s |
+| **fast_ultimate (n=4)** | 15.10% | 237 | **194 s (−72%, 3.6×)** |
+
++0.37pp distortion, flips still 0.06% of faces, and visually clean maps on both subjects.
+
 **Takeaway:** the practical, low-risk path to a faster pipeline is not a new optimizer but
 (1) Tutte init, (2) a leaner line search, (3) a sparser k-ring, (4) fewer iters/level — each a small
-config change, together a ~2.5× speedup at near-baseline quality. (A spectral/low-rank acceleration
-of the coarse `smooth_gradient` is a deeper exact win if the coarse levels ever dominate.)
+config change, together a **~3.6× speedup** at near-baseline quality. (A spectral/low-rank
+acceleration of the coarse `smooth_gradient` is a deeper exact win if the coarse levels ever dominate.)
 
 ## Method note
 
