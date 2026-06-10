@@ -260,7 +260,6 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
         while remaining and end_comp in remaining:
             # Find closest remaining component to any connected component
             min_dist = float("inf")
-            best_conn = None
             best_remain = None
             closest_v1 = None
             closest_v2 = None
@@ -280,7 +279,6 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
 
                     if dist < min_dist:
                         min_dist = dist
-                        best_conn = conn_idx
                         best_remain = remain_idx
                         closest_v1 = conn_verts[min_idx[0]]
                         closest_v2 = remain_verts[min_idx[1]]

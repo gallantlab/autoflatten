@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import networkx as nx
 import numpy as np
-import pytest
 
 # Import the module functions to test
 from autoflatten.template import (
@@ -15,7 +14,6 @@ from autoflatten.template import (
     create_surface_graphs,
     find_connected_components,
     find_removed_vertices,
-    get_surface_data,
     identify_medial_wall_border,
     identify_surface_components,
     merge_small_components,

@@ -4,9 +4,7 @@ Tests for the freesurfer module.
 
 import os
 import struct
-import subprocess
 import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -715,9 +713,7 @@ class TestRunMrisFlatten:
         monkeypatch.setattr(fs, "_run_command", fake_run_command)
 
         # Run with debug=True
-        result = run_mris_flatten(
-            subject, hemi, str(patch_file), str(output_dir), debug=True
-        )
+        run_mris_flatten(subject, hemi, str(patch_file), str(output_dir), debug=True)
 
         # Verify temporary directory was preserved
         assert len(temp_dirs) == 1

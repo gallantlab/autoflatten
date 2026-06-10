@@ -223,8 +223,8 @@ class TestComputeDistortionColors:
         faces_flipped[0] = faces_flipped[0][::-1]
         areas_3d = np.array([0.5, 0.5])
         colors, flipped = _compute_distortion_colors(uv, faces_flipped, areas_3d)
-        assert flipped[0] == True
-        assert flipped[1] == False
+        assert flipped[0]
+        assert not flipped[1]
 
     def test_output_rgba(self):
         _, uv, faces = _make_quad_mesh()

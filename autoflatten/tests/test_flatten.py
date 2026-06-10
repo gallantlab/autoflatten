@@ -157,9 +157,7 @@ class TestFlattenConfig:
         assert isinstance(config.negative_area_removal, NegativeAreaRemovalConfig)
         assert isinstance(config.spring_smoothing, SpringSmoothingConfig)
         assert config.verbose is True
-        assert config.n_jobs == -1
         assert len(config.phases) == 3  # 3 FreeSurfer-style epochs
-        assert config.adaptive_recovery is False  # Disabled by default
 
     def test_default_phases(self):
         """Test that default phases are created correctly (FreeSurfer 3-epoch structure)."""
@@ -191,7 +189,6 @@ class TestFlattenConfig:
         d = {
             "kring": {"k_ring": 15, "n_neighbors_per_ring": 20},
             "verbose": False,
-            "n_jobs": 4,
             # Need to provide phases with required fields or use default
             "phases": [
                 {"name": "test_phase", "l_nlarea": 1.0, "l_dist": 0.1},
@@ -201,7 +198,6 @@ class TestFlattenConfig:
         assert config.kring.k_ring == 15
         assert config.kring.n_neighbors_per_ring == 20
         assert config.verbose is False
-        assert config.n_jobs == 4
         assert config.phases[0].l_nlarea == 1.0
         assert config.phases[0].l_dist == 0.1
 
@@ -1195,117 +1191,6 @@ class TestPrepareMetricData:
         assert mask[0, 0]
 
 
-class TestPrepareEdgeList:
-    """Tests for prepare_edge_list function."""
-
-    def test_edge_list_from_k_rings(self):
-        """Test converting k-rings to edge list."""
-        from autoflatten.flatten.energy import prepare_edge_list
-
-        k_rings = [np.array([1, 2]), np.array([0, 2])]
-        target_distances = [np.array([1.0, 1.5]), np.array([1.0, 1.2])]
-
-        src, dst, targets, n_vertices = prepare_edge_list(k_rings, target_distances)
-
-        assert n_vertices == 2
-        assert len(src) == 4  # 2 + 2 edges
-        assert len(dst) == 4
-        assert len(targets) == 4
-
-        # Source vertices should be in order
-        assert list(src[:2]) == [0, 0]
-        assert list(src[2:]) == [1, 1]
-
-    def test_empty_k_ring(self):
-        """Test with a vertex that has no neighbors."""
-        from autoflatten.flatten.energy import prepare_edge_list
-
-        k_rings = [np.array([1]), np.array([], dtype=np.int64)]
-        target_distances = [np.array([1.0]), np.array([], dtype=np.float64)]
-
-        src, dst, targets, n_vertices = prepare_edge_list(k_rings, target_distances)
-
-        assert n_vertices == 2
-        assert len(src) == 1
-
-
-class TestMetricEnergyEdges:
-    """Tests for compute_metric_energy_edges function."""
-
-    def test_zero_distortion_on_isometric_embedding(self):
-        """Test that isometric embedding has zero energy."""
-        from autoflatten.flatten.energy import compute_metric_energy_edges
-
-        # Square with unit edges
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
-
-        # Edge list: each vertex connected to its neighbors with distance 1.0
-        src = jnp.array([0, 0, 1, 1, 2, 2, 3, 3])
-        dst = jnp.array([1, 2, 0, 3, 0, 3, 1, 2])
-        targets = jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
-
-        energy = compute_metric_energy_edges(uv, src, dst, targets, 4)
-
-        assert float(energy) < 1e-10
-
-    def test_positive_energy_on_stretched_mesh(self):
-        """Test that stretching produces positive energy."""
-        from autoflatten.flatten.energy import compute_metric_energy_edges
-
-        # Stretched square (2x1 instead of 1x1)
-        uv = jnp.array([[0.0, 0.0], [2.0, 0.0], [0.0, 1.0], [2.0, 1.0]])
-
-        # Target distances are 1.0 but actual x-distances are 2.0
-        src = jnp.array([0, 1])
-        dst = jnp.array([1, 0])
-        targets = jnp.array([1.0, 1.0])
-
-        energy = compute_metric_energy_edges(uv, src, dst, targets, 4)
-
-        # Actual distance is 2.0, target is 1.0, error = (2-1)^2 = 1 per edge
-        assert float(energy) > 0
-
-
-class TestSpringEnergy:
-    """Tests for compute_spring_energy function."""
-
-    def test_positive_when_vertices_not_at_centroids(self):
-        """Test that vertices NOT at neighbor centroids have positive spring energy."""
-        from autoflatten.flatten.energy import compute_spring_energy
-
-        # Triangle mesh where vertices are displaced from neighbor centroids
-        uv = jnp.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0]])
-
-        # Vertex 2's neighbors are 0 and 1, centroid is (1, 0)
-        # But vertex 2 is at (1, 1) - displaced from centroid by 1.0 in y
-        neighbors = jnp.array([[1, 2], [0, 2], [0, 1]])
-        mask = jnp.array([[True, True], [True, True], [True, True]])
-        counts = jnp.array([3, 3, 3])  # degree + 1
-
-        energy = compute_spring_energy(uv, neighbors, mask, counts)
-
-        # Energy should be positive since vertices are not at centroids
-        assert float(energy) > 0, f"Expected positive energy but got {float(energy)}"
-
-    def test_spring_energy_increases_with_displacement(self):
-        """Test that displacing a vertex increases spring energy."""
-        from autoflatten.flatten.energy import compute_spring_energy
-
-        neighbors = jnp.array([[1, 2], [0, 2], [0, 1]])
-        mask = jnp.array([[True, True], [True, True], [True, True]])
-        counts = jnp.array([3, 3, 3])
-
-        # Baseline
-        uv1 = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
-        energy1 = compute_spring_energy(uv1, neighbors, mask, counts)
-
-        # Displaced vertex 2 further from centroid
-        uv2 = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 2.0]])
-        energy2 = compute_spring_energy(uv2, neighbors, mask, counts)
-
-        assert float(energy2) > float(energy1)
-
-
 class TestGetVerticesWithNegativeArea:
     """Tests for get_vertices_with_negative_area function."""
 
@@ -1484,25 +1369,6 @@ class TestGetKRing:
             assert len(kr2) >= len(kr1)
 
 
-class TestGetSingleKRing:
-    """Tests for get_single_k_ring function."""
-
-    def test_single_vertex_k_ring(self, simple_quad_mesh):
-        """Test k-ring for a single vertex."""
-        from autoflatten.flatten.distance import get_single_k_ring
-        import igl
-
-        vertices, faces = simple_quad_mesh
-        adj = igl.adjacency_list(faces.astype(np.int64))
-
-        # Get 1-ring of vertex 0
-        kr = get_single_k_ring(adj, center_vertex=0, k=1)
-
-        # Vertex 0 is connected to 1 and 2 in the quad
-        assert len(kr) == 2
-        assert 0 not in kr  # Center vertex excluded
-
-
 class TestSelectAngularSamples:
     """Tests for select_angular_samples function."""
 
@@ -1602,80 +1468,6 @@ class TestValidateTopology:
 # =============================================================================
 
 
-class TestComputeAreaEnergy:
-    """Tests for compute_area_energy (sigmoid-weighted area energy)."""
-
-    def test_zero_energy_on_matching_areas(self):
-        """Test that matching 2D and 3D areas give low energy."""
-        from autoflatten.flatten.energy import compute_area_energy
-
-        # Unit square with matching areas
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
-
-        # Original areas match 2D areas (each triangle is 0.5)
-        original_areas = jnp.array([0.5, 0.5])
-
-        energy = compute_area_energy(uv, faces, original_areas)
-
-        # Energy should be low (sigmoid weights are low for positive ratios)
-        assert float(energy) < 0.1
-
-    def test_high_energy_on_flipped_triangles(self):
-        """Test that flipped triangles produce high energy."""
-        from autoflatten.flatten.energy import compute_area_energy
-
-        # Square with one triangle flipped (CW winding)
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        faces = jnp.array([[0, 1, 2], [0, 3, 2]])  # Second triangle is CW
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        energy = compute_area_energy(uv, faces, original_areas)
-
-        # Energy should be higher than for correctly oriented mesh
-        assert float(energy) > 0.1
-
-    def test_energy_increases_with_more_flips(self):
-        """Test that more flipped triangles increase energy."""
-        from autoflatten.flatten.energy import compute_area_energy
-
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        original_areas = jnp.array([0.5, 0.5])
-
-        # Zero flipped triangles
-        faces_good = jnp.array([[0, 1, 2], [0, 2, 3]])
-        energy_good = compute_area_energy(uv, faces_good, original_areas)
-
-        # One flipped triangle
-        faces_one_flip = jnp.array([[0, 1, 2], [0, 3, 2]])
-        energy_one = compute_area_energy(uv, faces_one_flip, original_areas)
-
-        # Two flipped triangles
-        faces_two_flips = jnp.array([[0, 2, 1], [0, 3, 2]])
-        energy_two = compute_area_energy(uv, faces_two_flips, original_areas)
-
-        assert float(energy_one) > float(energy_good)
-        assert float(energy_two) > float(energy_one)
-
-    def test_neg_area_k_parameter(self):
-        """Test that neg_area_k affects sigmoid steepness."""
-        from autoflatten.flatten.energy import compute_area_energy
-
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
-        faces = jnp.array([[0, 2, 1]])  # Flipped
-        original_areas = jnp.array([0.25])
-
-        # Lower k = gentler sigmoid
-        energy_low_k = compute_area_energy(uv, faces, original_areas, neg_area_k=1.0)
-        # Higher k = steeper sigmoid
-        energy_high_k = compute_area_energy(uv, faces, original_areas, neg_area_k=20.0)
-
-        # Both should be positive (flipped triangle)
-        assert float(energy_low_k) > 0
-        assert float(energy_high_k) > 0
-
-
 class TestComputeAreaEnergyFsV6:
     """Tests for compute_area_energy_fs_v6 (log-softplus area energy)."""
 
@@ -1720,147 +1512,6 @@ class TestComputeAreaEnergyFsV6:
 
         # Larger negative area should have higher energy
         assert float(energy_large) > float(energy_small)
-
-
-class TestComputeLogBarrierAreaEnergy:
-    """Tests for compute_log_barrier_area_energy (hybrid barrier energy)."""
-
-    def test_low_energy_at_original_size(self):
-        """Test that triangles at original proportions have low energy."""
-        from autoflatten.flatten.energy import compute_log_barrier_area_energy
-
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
-
-        # Equal fractions (each triangle is 50% of total)
-        original_fracs = jnp.array([0.5, 0.5])
-
-        energy = compute_log_barrier_area_energy(uv, faces, original_fracs)
-
-        # Energy should be low at original proportions
-        assert float(energy) < 1.0
-
-    def test_high_energy_when_shrunk(self):
-        """Test that shrunk triangles produce higher energy."""
-        from autoflatten.flatten.energy import compute_log_barrier_area_energy
-
-        # One triangle is much smaller relative to original
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.01]])
-        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
-
-        # Original had equal fractions
-        original_fracs = jnp.array([0.5, 0.5])
-
-        energy = compute_log_barrier_area_energy(uv, faces, original_fracs)
-
-        # Energy should be higher due to shrinkage
-        assert float(energy) > 0.5
-
-    def test_barrier_weight_affects_energy(self):
-        """Test that barrier_weight parameter affects energy."""
-        from autoflatten.flatten.energy import compute_log_barrier_area_energy
-
-        uv = jnp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.1]])
-        faces = jnp.array([[0, 1, 2], [0, 2, 3]])
-        original_fracs = jnp.array([0.5, 0.5])
-
-        energy_low = compute_log_barrier_area_energy(
-            uv, faces, original_fracs, barrier_weight=0.01
-        )
-        energy_high = compute_log_barrier_area_energy(
-            uv, faces, original_fracs, barrier_weight=1.0
-        )
-
-        # Higher barrier weight should increase energy for shrunk triangles
-        assert float(energy_high) > float(energy_low)
-
-
-class TestComputeBothEnergies:
-    """Tests for compute_both_energies (combined metric + area energy)."""
-
-    def test_returns_two_values(self, simple_quad_mesh, simple_quad_uv):
-        """Test that both energy values are returned."""
-        from autoflatten.flatten.energy import (
-            compute_both_energies,
-            prepare_metric_data,
-        )
-
-        vertices, faces = simple_quad_mesh
-        uv = jnp.array(simple_quad_uv)
-        faces_jax = jnp.array(faces)
-
-        # Create k-ring data (simple 1-ring)
-        k_rings = [
-            np.array([1, 2]),
-            np.array([0, 3]),
-            np.array([0, 3]),
-            np.array([1, 2]),
-        ]
-        target_distances = [
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-        ]
-
-        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
-        neighbors_jax = jnp.array(neighbors)
-        targets_jax = jnp.array(targets)
-        mask_jax = jnp.array(mask)
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        J_d, J_a = compute_both_energies(
-            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
-        )
-
-        assert np.isfinite(float(J_d))
-        assert np.isfinite(float(J_a))
-
-    def test_matches_individual_calls(self, simple_quad_mesh, simple_quad_uv):
-        """Test that combined call matches individual energy functions."""
-        from autoflatten.flatten.energy import (
-            compute_both_energies,
-            compute_metric_energy,
-            compute_area_energy,
-            prepare_metric_data,
-        )
-
-        vertices, faces = simple_quad_mesh
-        uv = jnp.array(simple_quad_uv)
-        faces_jax = jnp.array(faces)
-
-        k_rings = [
-            np.array([1, 2]),
-            np.array([0, 3]),
-            np.array([0, 3]),
-            np.array([1, 2]),
-        ]
-        target_distances = [
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-        ]
-
-        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
-        neighbors_jax = jnp.array(neighbors)
-        targets_jax = jnp.array(targets)
-        mask_jax = jnp.array(mask)
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        # Combined call
-        J_d_combined, J_a_combined = compute_both_energies(
-            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
-        )
-
-        # Individual calls
-        J_d_single = compute_metric_energy(uv, neighbors_jax, targets_jax, mask_jax)
-        J_a_single = compute_area_energy(uv, faces_jax, original_areas)
-
-        assert np.isclose(float(J_d_combined), float(J_d_single))
-        assert np.isclose(float(J_a_combined), float(J_a_single))
 
 
 # =============================================================================
@@ -2040,136 +1691,6 @@ class TestComputeVertexNormals:
         for i in range(1, len(normals)):
             dot = np.dot(normals[0], normals[i])
             assert np.isclose(abs(dot), 1.0, rtol=1e-5)
-
-
-# =============================================================================
-# Additional Tests: compute_total_energy
-# =============================================================================
-
-
-class TestComputeTotalEnergy:
-    """Tests for compute_total_energy function (weighted combination)."""
-
-    def test_returns_three_values(self, simple_quad_mesh, simple_quad_uv):
-        """Test that compute_total_energy returns total, J_d, and J_a."""
-        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
-
-        vertices, faces = simple_quad_mesh
-        uv = jnp.array(simple_quad_uv)
-        faces_jax = jnp.array(faces)
-
-        # Simple k-ring data
-        k_rings = [
-            np.array([1, 2]),
-            np.array([0, 3]),
-            np.array([0, 3]),
-            np.array([1, 2]),
-        ]
-        target_distances = [
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-        ]
-
-        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
-        neighbors_jax = jnp.array(neighbors)
-        targets_jax = jnp.array(targets)
-        mask_jax = jnp.array(mask)
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        total, J_d, J_a = compute_total_energy(
-            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
-        )
-
-        assert np.isfinite(float(total)), f"Total energy is not finite: {total}"
-        assert np.isfinite(float(J_d)), f"J_d is not finite: {J_d}"
-        assert np.isfinite(float(J_a)), f"J_a is not finite: {J_a}"
-
-    def test_weighted_sum_formula(self, simple_quad_mesh, simple_quad_uv):
-        """Test that total = lambda_d * J_d + lambda_a * J_a."""
-        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
-
-        vertices, faces = simple_quad_mesh
-        uv = jnp.array(simple_quad_uv)
-        faces_jax = jnp.array(faces)
-
-        k_rings = [
-            np.array([1, 2]),
-            np.array([0, 3]),
-            np.array([0, 3]),
-            np.array([1, 2]),
-        ]
-        target_distances = [
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-        ]
-
-        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
-        neighbors_jax = jnp.array(neighbors)
-        targets_jax = jnp.array(targets)
-        mask_jax = jnp.array(mask)
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        lambda_d, lambda_a = 2.0, 3.0
-        total, J_d, J_a = compute_total_energy(
-            uv,
-            neighbors_jax,
-            targets_jax,
-            mask_jax,
-            faces_jax,
-            original_areas,
-            lambda_d=lambda_d,
-            lambda_a=lambda_a,
-        )
-
-        expected_total = lambda_d * float(J_d) + lambda_a * float(J_a)
-        assert np.isclose(float(total), expected_total, rtol=1e-5), (
-            f"Expected total={expected_total}, got {float(total)}"
-        )
-
-    def test_default_weights_are_one(self, simple_quad_mesh, simple_quad_uv):
-        """Test that default lambda_d=1 and lambda_a=1."""
-        from autoflatten.flatten.energy import compute_total_energy, prepare_metric_data
-
-        vertices, faces = simple_quad_mesh
-        uv = jnp.array(simple_quad_uv)
-        faces_jax = jnp.array(faces)
-
-        k_rings = [
-            np.array([1, 2]),
-            np.array([0, 3]),
-            np.array([0, 3]),
-            np.array([1, 2]),
-        ]
-        target_distances = [
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-            np.array([1.0, 1.0]),
-        ]
-
-        neighbors, targets, mask = prepare_metric_data(k_rings, target_distances)
-        neighbors_jax = jnp.array(neighbors)
-        targets_jax = jnp.array(targets)
-        mask_jax = jnp.array(mask)
-
-        original_areas = jnp.array([0.5, 0.5])
-
-        # Default weights
-        total, J_d, J_a = compute_total_energy(
-            uv, neighbors_jax, targets_jax, mask_jax, faces_jax, original_areas
-        )
-
-        # With lambda_d=1, lambda_a=1, total should equal J_d + J_a
-        expected = float(J_d) + float(J_a)
-        assert np.isclose(float(total), expected, rtol=1e-5), (
-            f"With default weights, total should be J_d + J_a = {expected}, got {float(total)}"
-        )
 
 
 # =============================================================================
@@ -2367,23 +1888,20 @@ class TestFlippedTriangleMesh:
         self, mesh_with_flipped_triangle, simple_quad_mesh
     ):
         """Test that area energy is higher for mesh with flipped triangle."""
-        from autoflatten.flatten.energy import compute_area_energy
+        from autoflatten.flatten.energy import compute_area_energy_fs_v6
 
         # Good mesh (no flips)
         vertices_good, faces_good = simple_quad_mesh
         uv_good = jnp.array(vertices_good[:, :2])
         faces_good_jax = jnp.array(faces_good)
-        # Compute original 3D areas (both triangles have area 0.5)
-        original_areas_good = jnp.array([0.5, 0.5])
 
         # Bad mesh (one flip)
         vertices_bad, faces_bad = mesh_with_flipped_triangle
         uv_bad = jnp.array(vertices_bad[:, :2])
         faces_bad_jax = jnp.array(faces_bad)
-        original_areas_bad = jnp.array([0.5, 0.5])
 
-        energy_good = compute_area_energy(uv_good, faces_good_jax, original_areas_good)
-        energy_bad = compute_area_energy(uv_bad, faces_bad_jax, original_areas_bad)
+        energy_good = compute_area_energy_fs_v6(uv_good, faces_good_jax)
+        energy_bad = compute_area_energy_fs_v6(uv_bad, faces_bad_jax)
 
         assert float(energy_bad) > float(energy_good), (
             f"Flipped mesh should have higher area energy: "

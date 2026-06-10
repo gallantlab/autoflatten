@@ -591,7 +591,6 @@ def plot_patch(
     subject_dir,
     output_dir=None,
     surface="lh.inflated",
-    trim=True,
     overwrite=False,
 ):
     """
@@ -614,8 +613,6 @@ def plot_patch(
     surface : str, optional
         The surface file to use for face information (default is 'lh.inflated').
         This should be relative to `subject_dir`.
-    trim : bool, optional
-        Ignored (kept for backward compatibility).
     overwrite : bool
         Whether to overwrite existing output file (default False).
 
