@@ -8,7 +8,10 @@ provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jso
 
 - **Speed (validated, shippable):** a Tutte flip-free init removes the ~4-min initial NAR (§1), and
   stacked config levers (lean line search, sparser k-ring, fewer iters, capped smoothing) give a
-  combined **~3.6× speedup at near-baseline quality** (§7). This is the main practical win.
+  combined **~3.4× speedup** that is **not overfit** — confirmed across **9 hemispheres / 7 subjects**,
+  with the 5 held-out subjects matching the tuned one (§7, §12). On the *faithful* (global true-geodesic)
+  metric the fast config is in fact **slightly better** than baseline (−0.73pp), not worse; the earlier
+  "+0.37pp" was an artifact of the miscalibrated k-ring metric (§12). This is the main practical win.
 - **Quality / distance error:** the FreeSurfer-style multiscale line-search optimizer is **hard to
   beat** — optimizer swaps fold (§4), Adam can't span the multiscale step range (§6), spectral
   multigrid is elegant but not faster (§5).
@@ -181,6 +184,8 @@ smoothing cap 256), across **4 hemispheres / 2 subjects**:
 | **fast_ultimate (n=4)** | 15.10% | 237 | **194 s (−72%, 3.6×)** |
 
 +0.37pp distortion, flips still 0.06% of faces, and visually clean maps on both subjects.
+(**Update — see §12:** that +0.37pp is on the *miscalibrated* k-ring metric; on the faithful global
+true-geodesic metric the fast config is actually −0.73pp *better*, validated on 9 hemispheres.)
 
 **Takeaway:** the practical, low-risk path to a faster pipeline is not a new optimizer but
 (1) Tutte init, (2) a leaner line search, (3) a sparser k-ring, (4) fewer iters/level — each a small
@@ -355,6 +360,49 @@ now **exhausted**: the only consistently non-harmful operation is the distance-o
 (a 1-parameter minimization, ≥0 by construction, but small — `s*` ranges 0.995–1.020 across subjects), and
 the only remaining path to a *larger, robust* reduction is **long-range geodesic anchors in the energy**
 (a real energy change, not a config knob).
+
+## 12. Full-benchmark validation of the fast config — not overfit (corrects §7's quality claim)
+
+The §7 speed levers were tuned on a **single hemisphere** (`sub-022 lh`) and the stacked
+`fast_ultimate` config had only been confirmed on 4 hemispheres / 2 subjects — a real overfit risk.
+Re-validated across **all 9 manifest hemispheres** (`benchmark/validate_speed.py`), running baseline
+and fast back-to-back per hemisphere (so the speedup ratio is internally valid), and grouping by
+whether the hemisphere was used to tune the levers: **tuned** (`sub-022 lh`), **seen** (in the n=4
+stack), **held-out** (`sub-041/052/059/066/075 lh`, never used to tune anything).
+
+Quality is scored with the **energy-independent global true-geodesic** metric at each map's
+distance-optimal scale — *not* raw k-ring distortion, which is incomparable across n12 vs n6 (the §8
+trap). `dq` = fast − baseline (negative = fast better).
+
+| subject | group | base s | fast s | speedup | base q% | fast q% | dq (pp) | flips b/f |
+|---|---|---|---|---|---|---|---|---|
+| sub-022 lh | tuned | 641 | 187 | 3.42 | 11.76 | 10.88 | −0.89 | 25/33 |
+| sub-022 rh | seen | 667 | 185 | 3.60 | 11.46 | 10.94 | −0.52 | 37/129 |
+| sub-026 lh | seen | 626 | 195 | 3.21 | 11.96 | 11.20 | −0.76 | 36/41 |
+| sub-026 rh | seen | 696 | 211 | 3.31 | — | — | — | 23/34 |
+| sub-041 lh | held-out | 758 | 221 | 3.43 | 12.25 | 11.37 | −0.88 | 81/120 |
+| sub-052 lh | held-out | 561 | 180 | 3.12 | 12.22 | 11.20 | −1.02 | 39/44 |
+| sub-059 lh | held-out | 759 | 222 | 3.42 | 12.60 | 11.77 | −0.83 | 353/88 |
+| sub-066 lh | held-out | 699 | 208 | 3.37 | 11.71 | 11.27 | −0.44 | 54/55 |
+| sub-075 lh | held-out | 615 | 183 | 3.35 | 12.45 | 11.97 | −0.48 | 60/65 |
+
+**By group:** tuned 3.42× (dq −0.89); seen 3.37× [3.21–3.60] (dq −0.64); **held-out 3.34× [3.12–3.43]
+(dq −0.73)**. **Overall 9 hemis: 3.36× [3.12–3.60], dq −0.73pp.**
+
+**Takeaways.**
+1. **Not overfit.** The held-out group matches the tuned hemisphere on *both* axes — speedup 3.34×
+   vs 3.42×, quality −0.73 vs −0.89pp. The win generalizes across subjects.
+2. **§7's quality claim was a metric artifact, now corrected.** §7 reported fast as **+0.37pp worse**,
+   but that was the raw k-ring metric comparing n6 targets to n12 targets (incomparable; §8). On the
+   faithful global true-geodesic metric the fast config is **−0.73pp better** on every scored
+   hemisphere (8/8). The sparser k-ring/leaner schedule does not cost quality — if anything the Tutte
+   init + distance-optimal scoring helps. The honest headline is **~3.4× faster at equal-or-better
+   distance quality**.
+3. **Flips stay negligible.** Fast has slightly more flipped triangles on most hemispheres (max 129 on
+   `sub-022 rh`) but fewer on `sub-059` (353→88); all are <0.1% of faces either way — visually clean.
+
+This is the strongest single result for the paper: a 3.4× speedup with no quality cost, validated on
+held-out subjects. Logged as 10 ledger records (`exp:validate_speed:*`).
 
 ## Method note
 
