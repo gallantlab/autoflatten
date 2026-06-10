@@ -54,6 +54,18 @@ def build_config(args):
     for phase in cfg.phases:
         if phase.name in (args.skip_epoch or []):
             phase.enabled = False
+
+    # Speed levers (pure runtime; change the optimizer path, not the energy).
+    if args.n_coarse_steps is not None:
+        cfg.line_search.n_coarse_steps = args.n_coarse_steps  # fewer line-search points
+    if args.iters_per_level is not None:
+        for phase in cfg.phases:
+            phase.iters_per_level = args.iters_per_level
+    if args.max_smoothing is not None:
+        # Cap the expensive coarse smoothing levels (n_avg=1024 costs ~900ms/iter).
+        cap = args.max_smoothing
+        for phase in cfg.phases:
+            phase.smoothing_schedule = [n for n in phase.smoothing_schedule if n <= cap]
     return cfg
 
 
@@ -77,6 +89,24 @@ def main() -> int:
     )
     ap.add_argument("--k-ring", type=int, default=7)
     ap.add_argument("--n-neighbors", type=int, default=12)
+    ap.add_argument(
+        "--n-coarse-steps",
+        type=int,
+        default=None,
+        help="line-search points (default 15)",
+    )
+    ap.add_argument(
+        "--iters-per-level",
+        type=int,
+        default=None,
+        help="max iters per smoothing level (default 40)",
+    )
+    ap.add_argument(
+        "--max-smoothing",
+        type=int,
+        default=None,
+        help="cap n_avg in smoothing schedules (drops costly coarse levels)",
+    )
     ap.add_argument("--dev", action="store_true")
     ap.add_argument("--split", default=None, choices=["train", "holdout"])
     ap.add_argument("--subset", type=int, default=None)
@@ -106,6 +136,9 @@ def main() -> int:
         "skip_epoch": args.skip_epoch or [],
         "k_ring": args.k_ring,
         "n_neighbors": args.n_neighbors,
+        "n_coarse_steps": args.n_coarse_steps,
+        "iters_per_level": args.iters_per_level,
+        "max_smoothing": args.max_smoothing,
     }
     record = new_record(
         kind="experiment",
