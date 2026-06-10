@@ -97,6 +97,44 @@ def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def true_distortion_full(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
+    """Local (<=R), global (all pairs), and global-at-distance-optimal-scale distortion.
+
+    The local <=R metric is gameable (a conformal disk scores well locally while globally
+    catastrophic), so the *global* all-pairs metric is the faithful objective. Also reports
+    the single global scale ``s*`` that minimizes global distortion (the area-matched output
+    is generally not metric-optimal) and the distortion at ``s*``.
+    """
+    uv = np.asarray(uv, dtype=np.float64)
+    srcs = ref["srcs"]
+    geo = ref["geo"]
+    R = ref["R"]
+
+    d2_all, dg_all = [], []
+    for i, s in enumerate(srcs):
+        dg = geo[i]
+        m = dg > 1e-6
+        d2_all.append(np.linalg.norm(uv[m] - uv[s], axis=1))
+        dg_all.append(dg[m])
+    d2 = np.concatenate(d2_all)
+    dg = np.concatenate(dg_all)
+
+    rel = np.abs(d2 - dg) / dg
+    loc = dg <= R
+    # optimal global scale s* minimizing mean |s*d2 - dg|/dg over a fine grid
+    scales = np.linspace(0.90, 1.15, 51)
+    errs = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
+    j = int(np.argmin(errs))
+    return {
+        "true_local_mean": float(np.mean(rel[loc]) * 100.0),
+        "true_global_mean": float(np.mean(rel) * 100.0),
+        "true_global_p90": float(np.percentile(rel, 90) * 100.0),
+        "opt_scale": float(scales[j]),
+        "true_global_at_optscale": float(errs[j] * 100.0),
+        "n_pairs_global": int(rel.size),
+    }
+
+
 def true_distortion_banded(
     uv: np.ndarray, ref: dict[str, Any], bands=((0, 5), (5, 15), (15, 30))
 ) -> dict[str, float]:

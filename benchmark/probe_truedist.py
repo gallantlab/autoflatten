@@ -30,7 +30,12 @@ from .harness import build_flattener, load_manifest
 from .ledger import Ledger, new_record
 from .metrics import per_patch_metrics
 from .probe_tutte_init import make_flatten_fn
-from .truedist import load_truegeo, true_distortion, true_distortion_banded
+from .truedist import (
+    load_truegeo,
+    true_distortion,
+    true_distortion_banded,
+    true_distortion_full,
+)
 
 
 def main() -> int:
@@ -128,6 +133,7 @@ def main() -> int:
     kring_m = per_patch_metrics(uv, flattener)
     true_m = true_distortion(uv, ref)
     banded = true_distortion_banded(uv, ref)
+    full = true_distortion_full(uv, ref)
 
     artifact = None
     if args.save_uv:
@@ -142,6 +148,7 @@ def main() -> int:
         **{f"kring_{k}": v for k, v in kring_m.items()},
         **true_m,
         **banded,
+        **full,
         "opt_runtime_s": runtime,
     }
     record.per_subject = [
@@ -149,17 +156,20 @@ def main() -> int:
     ]
     record.status = "ok"
     record.decision["conclusion"] = (
-        f"{label}: TRUE mean {true_m['true_mean_distortion']:.2f}% "
-        f"(p90 {true_m['true_p90_distortion']:.2f}%); "
+        f"{label}: GLOBAL {full['true_global_mean']:.2f}% "
+        f"(s*={full['opt_scale']:.3f}->{full['true_global_at_optscale']:.2f}%); "
+        f"local<=30 {full['true_local_mean']:.2f}%; "
         f"k-ring {kring_m['mean_distortion']:.2f}%; "
         f"flips {kring_m['n_flipped']}; opt {runtime:.0f}s."
     )
     Ledger().append(record)
 
     print("\n=== metrics ===")
-    print(f"  TRUE mean distortion:   {true_m['true_mean_distortion']:.3f}%")
-    print(f"  TRUE p90 distortion:    {true_m['true_p90_distortion']:.3f}%")
-    print(f"  TRUE median distortion: {true_m['true_median_distortion']:.3f}%")
+    print(f"  GLOBAL true mean:       {full['true_global_mean']:.3f}%")
+    print(
+        f"  GLOBAL @opt scale:      {full['true_global_at_optscale']:.3f}%  (s*={full['opt_scale']:.3f})"
+    )
+    print(f"  local <=30 mean:        {full['true_local_mean']:.3f}%")
     print(f"  k-ring mean distortion: {kring_m['mean_distortion']:.3f}%")
     print(f"  flipped triangles:      {kring_m['n_flipped']}")
     print("  TRUE by band:           ", end="")
