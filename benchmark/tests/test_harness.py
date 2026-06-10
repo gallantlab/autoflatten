@@ -173,3 +173,22 @@ def test_scale_to_area_matches_target():
     faces = np.array([[0, 1, 2], [0, 2, 3]])
     scaled = scale_to_area(uv, faces, target_area=9.0)
     assert np.abs(_signed_areas(scaled, faces)).sum() == pytest.approx(9.0)
+
+
+# --- plot helpers -----------------------------------------------------------------
+def test_parse_subject_hemi():
+    from benchmark.plot import _parse_subject_hemi
+
+    assert _parse_subject_hemi("/runs/abc/sub-022.lh.flat.patch.3d") == (
+        "sub-022",
+        "lh",
+    )
+    assert _parse_subject_hemi("sub-005.rh.flat.patch.3d") == ("sub-005", "rh")
+
+
+def test_subtitle_formats_known_fields():
+    from benchmark.plot import _subtitle
+
+    assert _subtitle({}) == ""
+    s = _subtitle({"mean_distortion": 15.25, "n_flipped": 24, "runtime_s": 454.0})
+    assert "15.25% dist" in s and "24 flipped" in s and "454s" in s
