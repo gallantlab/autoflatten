@@ -69,6 +69,54 @@ optimization** or a proper **SLIM** local-global solver (symmetric-Dirichlet ene
 flip-preventing line search), not a drop-in optimizer swap. (`optax`/`jaxopt` are installed for
 this.)
 
+## 5. Spectral (manifold-harmonic) multigrid — elegant, flip-free, but not faster
+
+`benchmark/probe_multigrid.py`. Parametrize the flatmap in the lowest-`K` cotangent-Laplacian
+eigenvectors and optimize coarse-to-fine (add modes progressively). A band-limited map *cannot*
+make local folds, so this is **flip-free by construction**:
+
+| modes | distortion | flips | cumulative time |
+|---|---|---|---|
+| 20 | 26.89% | 12 | 13s |
+| 50 | 24.96% | 13 | 28s |
+| 100 | 23.78% | 13 | 44s |
+| 200 | 22.35% | 19 | 66s |
+
+So the coarse spectral solve is a genuinely nice **fast, flip-free approximate flattener** (66s, ~0
+flips) — contrast L-BFGS's 58025 flips. But it is **band-limited**: 200 smooth modes can't represent
+fine detail, so distortion floors at ~22%.
+
+Used as the coarse leg of a multigrid V-cycle (spectral init → full-resolution refine):
+- spectral coarse (22.35%) → full refine → **15.32% / 26 flips / 430s refine**.
+- Even with a *shortened* refine (half iters): 15.37% / 28 flips / 347s.
+
+It **matches** baseline quality but is **not faster**: the spectral overhead (eigsh ~75s one-time +
+coarse solve ~66s) plus the refine (~350–430s) totals ≈ 490s vs Tutte+pipeline's 454s. The better
+init (22% vs Tutte's 33%) doesn't shorten the refine enough to pay for the overhead, because the
+refinement runs a largely fixed schedule. A true win would need a **mesh-decimation** multigrid
+(each level full-DOF but few vertices) rather than a band-limited basis.
+
+## 6. Adam (and fixed-step methods) can't replace the line search
+
+Adam (optax) driving the same multi-level gradient smoothing as the baseline:
+- **Fixed lr**: lr=0.001 is stable but crawls (33.7%→31.5%, nowhere near 15%); lr≥0.01 reduces
+  distortion but folds, and **diverges at the finest smoothing level** (up to 175855 flips).
+- **Per-level lr schedule** (large→small with the smoothing level): still folds (76552 flips).
+
+Root cause: the optimal step size spans *orders of magnitude* across the smoothing schedule (large at
+coarse `n_avg`, tiny at fine). A fixed or simply-scheduled step is either too slow at coarse scales
+or unstable at fine scales. The baseline's **per-iteration line search** is precisely what adapts the
+step across scales — that, plus the gradient smoothing, is the load-bearing machinery.
+
+## Overall conclusion on the optimizer
+
+Across L-BFGS, CG, Adam, flip barriers, and a spectral multigrid, **nothing beats the FreeSurfer-style
+multiscale line-search GD** on the speed/quality/flip Pareto for this energy. Strong optimizers fold
+without the smoothing; fixed-step optimizers can't span the multiscale step range; the eigenbasis is
+flip-free but band-limited. The genuinely better directions remaining are a **mesh-decimation
+geometric multigrid** or a proper **SLIM** local-global solver — real reimplementations, not drop-in
+swaps. The one validated free win remains the **Tutte flip-free init** (§1).
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
