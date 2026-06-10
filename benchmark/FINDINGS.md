@@ -165,6 +165,41 @@ smoothing cap 256), across **4 hemispheres / 2 subjects**:
 config change, together a **~3.6× speedup** at near-baseline quality. (A spectral/low-rank
 acceleration of the coarse `smooth_gradient` is a deeper exact win if the coarse levels ever dominate.)
 
+## 8. Improving the energy (quality at the cost of speed)
+
+Built a **true geodesic distortion** yardstick (libigl heat method, 200 sampled sources, local
+≤30mm pairs) to score quality independently of the k-ring targets. It immediately showed the k-ring
+metric is **miscalibrated as an absolute number**: the Tutte init reads 33.7% on the k-ring metric
+but ~16% in true geodesic terms, and the metric even *mis-ranks* maps (Tutte better than the spectral
+map in true terms, opposite of the k-ring ranking). Calibration: the k-ring targets (Dijkstra ×
+1.207) are ~6–9% larger than true geodesics at the very local scale (mean ratio 1.094, median 1.059).
+
+**But recalibrating the correction does NOT improve quality — it hurts.** Optimizing from the Tutte
+init with correction ∈ {1.207, 1.10, 1.00} and scoring true distortion:
+
+| correction | k-ring metric | true geodesic | flips |
+|---|---|---|---|
+| **1.207 (default)** | 15.26% | **18.15%** | 30 |
+| 1.10 | 15.24% | 21.66% | 26 |
+| 1.00 | 15.26% | 26.88% | 35 |
+
+True distortion gets monotonically *worse* as the correction shrinks. Interpretation: the local
+Dijkstra/geodesic ratio (~1.09) does not represent the full range, and — more importantly — a
+flatmap intrinsically **compresses** medium-range distances (curvature; Gauss). The 1.207 factor acts
+as a useful global **pre-stretch** that compensates for that compression over the 0–30mm range, so a
+"locally accurate" smaller correction leaves the map too compact and worse overall. **The default
+1.207 is empirically near-optimal; recalibration is a dead end.** (The k-ring metric is still worth
+recalibrating for *interpretation*, since it overstates absolute distortion — but not for the search.)
+
+Also notable: the optimized maps (~18% true) are not better than the raw Tutte init (~16% true) on
+this medium-range metric — local k-ring fitting trades some medium-range geodesic accuracy. Which map
+is "best" depends on the distortion metric (local vs medium-range), a point worth making in the paper.
+
+**Remaining genuine lever (untested, heavier):** replace Dijkstra × constant with **actual per-edge
+geodesic targets** (heat/exact) in the energy — a constant can't capture the spatially-varying
+Dijkstra/geodesic ratio. That is the real "better energy at the cost of a slight slowdown," but it
+needs per-vertex geodesic computation (expensive) and is left as the next step.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
