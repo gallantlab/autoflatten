@@ -4,6 +4,28 @@ Curated conclusions from the autoresearch loop. The full, append-only record (ev
 provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jsonl`, rendered to
 `NOTEBOOK.md`. All numbers below are CPU-only on the public Narratives benchmark.
 
+## Executive summary
+
+- **Speed (validated, shippable):** a Tutte flip-free init removes the ~4-min initial NAR (§1), and
+  stacked config levers (lean line search, sparser k-ring, fewer iters, capped smoothing) give a
+  combined **~3.6× speedup at near-baseline quality** (§7). This is the main practical win.
+- **Quality / distance error:** the FreeSurfer-style multiscale line-search optimizer is **hard to
+  beat** — optimizer swaps fold (§4), Adam can't span the multiscale step range (§6), spectral
+  multigrid is elegant but not faster (§5).
+- **Metric caveat (important for the paper):** the k-ring energy metric is miscalibrated and a purely
+  **local** distance metric is *gameable* — a conformal Tutte disk wins it while being a degenerate
+  flatmap (§9c). Score distance distortion **globally** (all-pairs geodesics), not locally.
+- **Objective (grounded in Fischl 1999, but the code diverges from the paper):** the goal is **metric
+  (distance) distortion**; area is a *dependent byproduct*, not a separate objective (§9, §10). The
+  implemented area term is a pure fold barrier.
+- **Where the implementation drifts from that objective:** the `Dijkstra/1.207` target correction is
+  slightly too compact and `scale_to_area` is not distance-optimal (§9d) — but recalibrating the
+  correction is **not a robust default** (subject-specific optimum, unpredictable from local geometry;
+  §10–11). The only consistently-safe tweak is a distance-optimal output scale (small).
+- **Net:** the pipeline is well-tuned; config-lever gains on distance error are small and non-robust.
+  The one remaining path to a *larger robust* reduction is **long-range geodesic anchors in the energy**
+  (the paper's own argument) — a real energy change, left as future work.
+
 ## 1. Flip-free (Tutte) init is a validated win: equal quality, ~37% faster
 
 Replacing the FreeSurfer-style normal-projection + **initial** negative-area-removal (NAR) with a
@@ -339,9 +361,16 @@ the only remaining path to a *larger, robust* reduction is **long-range geodesic
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
 Compute is CPU-only (the box's GPUs are blocked by driver 440 / CUDA 10.2).
 
-## Next ideas (untested)
+## Next ideas
 
-- Reduce `k_ring` (7 → 5): attacks the dominant cost (k-ring geodesic computation, ~4 min + 237 MB
-  cache/hemi). Changes the cache key, so needs recompute.
-- Fewer epoch iterations from the better Tutte start.
-- Combine: Tutte init as the new default `initial_projection`, initial NAR off by default.
+Remaining, in priority order (config levers are exhausted — see §10–11):
+
+- **Long-range geodesic anchors in the energy** (the genuine open lever). Add a sparse set of
+  true-geodesic long-range distance constraints, up-weighted vs the local k-ring, to directly constrain
+  the global metric (Fischl 1999's own point that long-range distances are needed to unfold). Requires
+  modifying the energy/optimizer (not a config knob) and weight-tuning; validate with train/test-split
+  geodesic sources across subjects. Uncertain but the only path to a larger robust reduction.
+- **Distance-optimal output scale** (small, safe): replace `scale_to_area` with the scale that minimizes
+  distance distortion (a 1-parameter minimization, ≥0 by construction; `s*`≈0.995–1.02). Cheap to ship.
+- **Ship the validated speed defaults**: Tutte init as default `initial_projection` with initial NAR off
+  (§1), plus the §7 lean line-search / sparse k-ring levers.
