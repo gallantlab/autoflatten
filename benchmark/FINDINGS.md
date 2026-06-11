@@ -28,6 +28,12 @@ provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jso
 - **Net:** the pipeline is well-tuned; config-lever gains on distance error are small and non-robust.
   The one remaining path to a *larger robust* reduction is **long-range geodesic anchors in the energy**
   (the paper's own argument) — a real energy change, left as future work.
+- **Projection (Phase 1, validated):** the projection stage's only FreeSurfer dependency
+  (`mri_label2label`) is now reimplemented in pure Python (`union(push, pull)` KDTree on `sphere.reg`)
+  that reproduces FreeSurfer **vertex-for-vertex** (0 ID differences vs real `mri_label2label`;
+  bit-identical patch on **9/9** hemispheres incl. held-out) at **~0.3 s vs 36.6 s** for the mapping
+  step. Projection no longer requires FreeSurfer (§14). Phase 2 (cut-placement quality, scored by
+  downstream flatmap distortion) is next.
 
 ## 1. Flip-free (Tutte) init is a validated win: equal quality, ~37% faster
 
@@ -437,10 +443,66 @@ already cached to disk — the realistic steady state after a machine's first-ev
 cold-JIT adds ~7 s once per machine. Flips and quality are the validated fast-config values (the cache
 build is bit-identical and the flatten config unchanged), so no re-scoring was needed.
 
+# Projection phase
+
+The sections above optimize the *flattening* stage. The sections below apply the same
+benchmark-driven, ledgered process to the *projection* stage (mapping the fsaverage cut
+template onto each subject and turning it into a patch). Objective (user-chosen): Phase 1 —
+remove the FreeSurfer dependency at equal output; Phase 2 — improve cut placement scored by
+downstream flatmap distortion.
+
+## 14. Projection is now FreeSurfer-free, bit-identical, ~120× faster on the mapping step
+
+The projection phase's only FreeSurfer dependency is `core.map_cuts_to_subject` →
+`mri_label2label --regmethod surface`. Everything downstream (continuity, geodesic
+refinement, hole-fill, patch write) is already pure Python. That one call is, underneath,
+nearest-neighbour label transfer on the registered sphere (`{hemi}.sphere.reg`, on disk for
+every subject), so it is reproducible in pure Python.
+
+**The exact mapping convention** (`benchmark/projection.py:map_label_surface`) is the
+**union of two passes**:
+- *pull* (target-driven): for each target vertex, find its nearest source (fsaverage)
+  vertex on `sphere.reg`; include the target vertex if that source is in the label.
+- *push* (source-driven): for each source label vertex, include its nearest target vertex.
+
+The pull pass alone undercounts by ~5–15 vertices/cut (it drops boundary target vertices
+whose own nearest source falls just outside the label); the push pass recovers exactly
+those. A forward push *alone* is provably impossible here (124 source calcarine vertices
+can hit ≤124 unique targets, but FreeSurfer maps to 156) — individual surfaces (~204k verts)
+are denser than fsaverage (~164k), so the map must be target-driven plus a push patch.
+
+**Validation (three independent levels, all exact):**
+1. **vs real `mri_label2label` (FreeSurfer 6.0), vertex-for-vertex:** total vertex-ID
+   symmetric difference = **0** across all 6 cuts × 3 dev hemispheres
+   (`benchmark/validate_mapping_vs_freesurfer.py`). Not just counts — identical vertices.
+2. **End-to-end patch, full manifest:** the complete FS-free pipeline produces a patch with
+   an included-vertex set **bit-identical** to the cached FreeSurfer patch on **9/9
+   hemispheres**, including all 5 held-out subjects (`benchmark/validate_projection.py`).
+3. **Unit invariants** (no FreeSurfer): identity-sphere recovers the label exactly; union ⊇
+   both passes; determinism (`benchmark/tests/test_projection.py`).
+
+**Speed:** the mapping step drops from **36.6 s** (FreeSurfer subprocess; 44–46 s when
+including label I/O in the direct comparison) to **~0.3 s** (KDTree) — ~120× on that step.
+Full projection is ~33 s/hemi (manifest mean), now entirely the pre-existing pure-Python
+NetworkX geodesic refinement, with **no FreeSurfer required at all**.
+
+| stage | FreeSurfer | FS-free (Python) |
+| --- | ---: | ---: |
+| cut mapping (the FS call) | 36.6 s | 0.31 s |
+| full projection / hemi | (+ refinement) | ~33 s |
+| output patch | reference | **bit-identical (9/9)** |
+
+This both removes the install barrier (projection no longer needs FreeSurfer, only
+`sphere.reg` files, which datalad provides) and is the prerequisite that makes the Phase 2
+cut-placement search runnable on this box. Mapping is the validated baseline; the geodesic
+refinement (~33 s) is now the projection time sink and a future speed target.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
-Compute is CPU-only (the box's GPUs are blocked by driver 440 / CUDA 10.2).
+Flattening compute is CPU-only (the box's GPUs are blocked by driver 440 / CUDA 10.2).
+FreeSurfer is available (`~/bin/source_freesurfer*.sh`, 6.0 default) and was used only to
+*validate* the FS-free projection — the pipeline itself no longer calls it.
 
 ## Next ideas
 
