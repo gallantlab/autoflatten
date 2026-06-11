@@ -102,8 +102,19 @@ def get_k_ring(faces, n_vertices, k):
     return k_rings
 
 
-def _get_k_rings_numba(adj_flat, adj_offsets, k):
+def _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks):
     """Compute k-ring neighbors for all vertices in parallel using Numba.
+
+    Parallelism is over **chunks**, not vertices: the vertices are split into ``n_chunks``
+    contiguous blocks and the ``prange`` runs over chunks, so each iteration ``c`` owns its
+    own scratch row (no races) and the scratch (visited / BFS levels / touched list) is
+    allocated **once per chunk**, not per vertex. The previous version allocated three
+    O(n_vertices) arrays *inside* a per-vertex ``prange`` and collected results with an
+    O(n_vertices) scan per vertex; numba would not parallelise that (the per-iteration
+    allocations defeat the parallel analysis), so a fresh compile ran serially and was
+    O(n_vertices^2) -- ~16 min on a 193k-vertex mesh. This version is O(n_vertices * ring)
+    and parallelises. Output is identical: per-vertex neighbour indices sorted ascending,
+    excluding the source.
 
     Parameters
     ----------
@@ -113,6 +124,8 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
         Offsets into adj_flat for each vertex (length n_vertices + 1)
     k : int
         Number of rings
+    n_chunks : int
+        Number of parallel chunks (typically the thread count).
 
     Returns
     -------
@@ -122,34 +135,48 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
         Offsets into k_rings_flat for each vertex
     """
     n_vertices = len(adj_offsets) - 1
+    chunk_size = (n_vertices + n_chunks - 1) // n_chunks
+
+    # per-chunk scratch, allocated ONCE (not per vertex)
+    visited = np.zeros((n_chunks, n_vertices), dtype=np.bool_)
+    cur = np.empty((n_chunks, n_vertices), dtype=np.int64)
+    nxt = np.empty((n_chunks, n_vertices), dtype=np.int64)
+    touched = np.empty((n_chunks, n_vertices), dtype=np.int64)
+
+    sizes = np.zeros(n_vertices, dtype=np.int64)
 
     # First pass: compute sizes for each vertex
-    sizes = np.zeros(n_vertices, dtype=np.int64)
-    for v in prange(n_vertices):
-        visited = np.zeros(n_vertices, dtype=np.bool_)
-        visited[v] = True
-
-        current_level = np.empty(n_vertices, dtype=np.int64)
-        next_level = np.empty(n_vertices, dtype=np.int64)
-        current_size = 1
-        current_level[0] = v
-
-        for _ in range(k):
-            next_size = 0
-            for i in range(current_size):
-                u = current_level[i]
-                start = adj_offsets[u]
-                end = adj_offsets[u + 1]
-                for j in range(start, end):
-                    neighbor = adj_flat[j]
-                    if not visited[neighbor]:
-                        visited[neighbor] = True
-                        next_level[next_size] = neighbor
-                        next_size += 1
-            current_level, next_level = next_level, current_level
-            current_size = next_size
-
-        sizes[v] = np.sum(visited) - 1  # -1 to exclude source vertex
+    for c in prange(n_chunks):
+        vis = visited[c]
+        tch = touched[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n_vertices)
+        for v in range(v_start, v_end):
+            cl = cur[c]
+            nl = nxt[c]
+            nt = 0
+            vis[v] = True
+            tch[nt] = v
+            nt += 1
+            cl[0] = v
+            csz = 1
+            for _ in range(k):
+                nsz = 0
+                for i in range(csz):
+                    u = cl[i]
+                    for j in range(adj_offsets[u], adj_offsets[u + 1]):
+                        nb = adj_flat[j]
+                        if not vis[nb]:
+                            vis[nb] = True
+                            tch[nt] = nb
+                            nt += 1
+                            nl[nsz] = nb
+                            nsz += 1
+                cl, nl = nl, cl
+                csz = nsz
+            sizes[v] = nt - 1  # exclude source
+            for i in range(nt):
+                vis[tch[i]] = False
 
     # Build offsets for flat output
     offsets = np.zeros(n_vertices + 1, dtype=np.int64)
@@ -159,38 +186,46 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
     total_size = offsets[n_vertices]
     k_rings_flat = np.empty(total_size, dtype=np.int64)
 
-    # Second pass: fill k-rings
-    for v in prange(n_vertices):
-        visited = np.zeros(n_vertices, dtype=np.bool_)
-        visited[v] = True
-
-        current_level = np.empty(n_vertices, dtype=np.int64)
-        next_level = np.empty(n_vertices, dtype=np.int64)
-        current_size = 1
-        current_level[0] = v
-
-        for _ in range(k):
-            next_size = 0
-            for i in range(current_size):
-                u = current_level[i]
-                start = adj_offsets[u]
-                end = adj_offsets[u + 1]
-                for j in range(start, end):
-                    neighbor = adj_flat[j]
-                    if not visited[neighbor]:
-                        visited[neighbor] = True
-                        next_level[next_size] = neighbor
-                        next_size += 1
-            current_level, next_level = next_level, current_level
-            current_size = next_size
-
-        # Collect results
-        out_start = offsets[v]
-        idx = 0
-        for i in range(n_vertices):
-            if visited[i] and i != v:
-                k_rings_flat[out_start + idx] = i
-                idx += 1
+    # Second pass: fill k-rings (collect from the touched list, exclude source, sort)
+    for c in prange(n_chunks):
+        vis = visited[c]
+        tch = touched[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n_vertices)
+        for v in range(v_start, v_end):
+            cl = cur[c]
+            nl = nxt[c]
+            nt = 0
+            vis[v] = True
+            tch[nt] = v
+            nt += 1
+            cl[0] = v
+            csz = 1
+            for _ in range(k):
+                nsz = 0
+                for i in range(csz):
+                    u = cl[i]
+                    for j in range(adj_offsets[u], adj_offsets[u + 1]):
+                        nb = adj_flat[j]
+                        if not vis[nb]:
+                            vis[nb] = True
+                            tch[nt] = nb
+                            nt += 1
+                            nl[nsz] = nb
+                            nsz += 1
+                cl, nl = nl, cl
+                csz = nsz
+            out_start = offsets[v]
+            idx = 0
+            for i in range(nt):
+                x = tch[i]
+                if x != v:
+                    k_rings_flat[out_start + idx] = x
+                    idx += 1
+            # sort ascending to match the reference (pure-Python) output order
+            k_rings_flat[out_start : out_start + idx].sort()
+            for i in range(nt):
+                vis[tch[i]] = False
 
     return k_rings_flat, offsets
 
@@ -222,8 +257,9 @@ def get_k_ring_fast(faces, n_vertices, k):
     for i, a in enumerate(adj):
         adj_offsets[i + 1] = adj_offsets[i] + len(a)
 
-    # Compute k-rings in parallel
-    k_rings_flat, offsets = _get_k_rings_numba(adj_flat, adj_offsets, k)
+    # Compute k-rings in parallel (one scratch buffer per chunk)
+    n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
+    k_rings_flat, offsets = _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks)
 
     # Convert back to list of arrays
     k_rings = []
