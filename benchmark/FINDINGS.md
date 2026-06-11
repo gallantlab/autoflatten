@@ -417,6 +417,26 @@ cold JIT). This is pure performance with no numerical change, so it needs no re-
 flatmap. It mostly eliminates the first-run penalty for a new subject (the 180–220 s steady-state
 flatten is JAX and unaffected); the warm-cache flatten is unchanged.
 
+**Authoritative end-to-end measurement (4 hemispheres, cold cache).** Timed the full per-hemisphere
+pipeline with the shippable fast config — geometry I/O → cold k-ring cache build (parallel kernel) →
+fast JAX flatten — into a temp cache so the validated caches were untouched:
+
+| subject·hemi | I/O (s) | cache build (s) | flatten (s) | total (s) |
+|---|---|---|---|---|
+| sub-022 lh | 2.0 | 10.4 | 188.5 | 200.9 |
+| sub-022 rh | 1.8 | 10.3 | 184.6 | 196.8 |
+| sub-026 lh | 1.9 | 11.1 | 188.6 | 201.6 |
+| sub-026 rh | 1.9 | 11.5 | 207.4 | 220.8 |
+| **mean** | 1.9 | **10.8** | **192.3** | **205.0 (3.4 min)** |
+
+Against the §12 baseline on the *same* 4 hemispheres (flatten mean 657.5 s) plus the serial cache
+build (~230 s), end-to-end per hemisphere goes from **~887 s (~14.8 min) → 205 s (~3.4 min), ~4.3×**
+cold-cache (~3.4× warm). The measured total matches the component-sum estimate to the second. Note the
+cache build read 10.8 s here (not the ~17 s cold-JIT figure) because numba's compiled kernel was
+already cached to disk — the realistic steady state after a machine's first-ever run; the one-time
+cold-JIT adds ~7 s once per machine. Flips and quality are the validated fast-config values (the cache
+build is bit-identical and the flatten config unchanged), so no re-scoring was needed.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
