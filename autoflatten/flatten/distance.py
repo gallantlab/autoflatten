@@ -110,10 +110,10 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks):
     own scratch row (no races) and the scratch (visited / BFS levels / touched list) is
     allocated **once per chunk**, not per vertex. The previous version allocated three
     O(n_vertices) arrays *inside* a per-vertex ``prange`` and collected results with an
-    O(n_vertices) scan per vertex; numba would not parallelise that (the per-iteration
+    O(n_vertices) scan per vertex; numba would not parallelize that (the per-iteration
     allocations defeat the parallel analysis), so a fresh compile ran serially and was
     O(n_vertices^2) -- ~16 min on a 193k-vertex mesh. This version is O(n_vertices * ring)
-    and parallelises. Output is identical: per-vertex neighbour indices sorted ascending,
+    and parallelizes. Output is identical: per-vertex neighbor indices sorted ascending,
     excluding the source.
 
     Parameters
@@ -249,17 +249,7 @@ def get_k_ring_fast(faces, n_vertices, k):
     list of ndarray
         k_ring[i] contains indices of vertices within k edges of vertex i
     """
-    # Build adjacency list and flatten for Numba
-    adj = igl.adjacency_list(faces.astype(np.int64))
-
-    adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
-    adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
-    for i, a in enumerate(adj):
-        adj_offsets[i + 1] = adj_offsets[i] + len(a)
-
-    # Compute k-rings in parallel (one scratch buffer per chunk)
-    n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
-    k_rings_flat, offsets = _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks)
+    k_rings_flat, offsets = get_k_ring_fast_flat(faces, n_vertices, k)
 
     # Convert back to list of arrays
     k_rings = []
@@ -269,6 +259,23 @@ def get_k_ring_fast(faces, n_vertices, k):
         k_rings.append(k_rings_flat[start:end])
 
     return k_rings
+
+
+def get_k_ring_fast_flat(faces, n_vertices, k):
+    """k-ring neighbors in flat (concatenated) form: ``(k_rings_flat, offsets)``.
+
+    Same computation as :func:`get_k_ring_fast` but returns the flat arrays directly so
+    callers that also compute per-vertex distances can avoid rebuilding the layout.
+    """
+    adj = igl.adjacency_list(faces.astype(np.int64))
+    adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
+    adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
+    for i, a in enumerate(adj):
+        adj_offsets[i + 1] = adj_offsets[i] + len(a)
+
+    # Compute k-rings in parallel (one scratch buffer per chunk)
+    n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
+    return _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks)
 
 
 # =============================================================================
@@ -436,6 +443,107 @@ def _limited_dijkstra(v, k_ring, graph, correction):
     return np.array([found.get(idx, np.inf) / correction for idx in k_ring])
 
 
+@njit(parallel=True, cache=True)
+def _kring_distances_kernel(
+    indptr, indices, data, rings_flat, offsets, correction, n_chunks
+):
+    """Parallel limited-Dijkstra k-ring distances, in the flat ``rings_flat`` layout.
+
+    For every vertex, computes the corrected graph distance to each of its k-ring targets.
+    Parallelizes over chunks: each chunk owns scratch (dist / visited / target / heap)
+    allocated once and resets only the touched entries between vertices. A naive parallel
+    port of ``_limited_dijkstra_numba`` allocated five O(n_vertices) arrays per call inside
+    the prange, which melts the allocator across threads; this avoids that. Output matches
+    the serial ``_limited_dijkstra_numba`` (same correction, same heap discipline).
+    """
+    nv = len(indptr) - 1
+    n = offsets.shape[0] - 1
+    INF = np.inf
+
+    dist = np.full((n_chunks, nv), INF)
+    visited = np.zeros((n_chunks, nv), dtype=np.bool_)
+    is_target = np.zeros((n_chunks, nv), dtype=np.bool_)
+    touched = np.empty((n_chunks, nv), dtype=np.int64)
+    heap_d = np.empty((n_chunks, nv), dtype=np.float64)
+    heap_v = np.empty((n_chunks, nv), dtype=np.int64)
+    out = np.empty(offsets[n], dtype=np.float64)
+
+    chunk_size = (n + n_chunks - 1) // n_chunks
+
+    for c in prange(n_chunks):
+        d_t = dist[c]
+        vis = visited[c]
+        tgt = is_target[c]
+        tch = touched[c]
+        hd = heap_d[c]
+        hv = heap_v[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n)
+
+        for v in range(v_start, v_end):
+            s = offsets[v]
+            e = offsets[v + 1]
+            m = e - s
+            if m == 0:
+                continue
+
+            for j in range(m):
+                tgt[rings_flat[s + j]] = True
+
+            nt = 0
+            d_t[v] = 0.0
+            tch[nt] = v
+            nt += 1
+            hd[0] = 0.0
+            hv[0] = v
+            hsize = 1
+            found = 0
+
+            while hsize > 0 and found < m:
+                mi = 0
+                md = hd[0]
+                for i in range(1, hsize):
+                    if hd[i] < md:
+                        md = hd[i]
+                        mi = i
+                du = hd[mi]
+                u = hv[mi]
+                hsize -= 1
+                if mi < hsize:
+                    hd[mi] = hd[hsize]
+                    hv[mi] = hv[hsize]
+                if vis[u]:
+                    continue
+                vis[u] = True
+                if tgt[u]:
+                    found += 1
+                for p in range(indptr[u], indptr[u + 1]):
+                    w = indices[p]
+                    if not vis[w]:
+                        ndist = du + data[p]
+                        if ndist < d_t[w]:
+                            if d_t[w] == INF:
+                                tch[nt] = w
+                                nt += 1
+                            d_t[w] = ndist
+                            if hsize < nv:
+                                hd[hsize] = ndist
+                                hv[hsize] = w
+                                hsize += 1
+
+            for j in range(m):
+                out[s + j] = d_t[rings_flat[s + j]] / correction
+
+            for i in range(nt):
+                x = tch[i]
+                d_t[x] = INF
+                vis[x] = False
+            for j in range(m):
+                tgt[rings_flat[s + j]] = False
+
+    return out
+
+
 def compute_kring_geodesic_distances(
     vertices, faces, k, correction=None, use_numba=True, n_threads=None, tqdm_position=0
 ):
@@ -483,36 +591,36 @@ def compute_kring_geodesic_distances(
     # Build mesh graph
     graph = build_mesh_graph(vertices, faces)
 
-    # Get k-ring neighbors (Numba version is ~20x faster)
     if use_numba:
-        k_rings = get_k_ring_fast(faces, n_vertices, k)
-    else:
-        k_rings = get_k_ring(faces, n_vertices, k)
+        # Fully parallel path: build k-rings and distances in flat form with per-chunk
+        # scratch, then reconstruct the per-vertex lists. ~Ncore faster than the previous
+        # serial per-vertex Dijkstra loop.
+        rings_flat, offsets = get_k_ring_fast_flat(faces, n_vertices, k)
+        n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
+        dist_flat = _kring_distances_kernel(
+            graph.indptr,
+            graph.indices,
+            graph.data,
+            rings_flat,
+            offsets,
+            correction,
+            n_chunks,
+        )
+        k_rings = [rings_flat[offsets[v] : offsets[v + 1]] for v in range(n_vertices)]
+        distances = [dist_flat[offsets[v] : offsets[v + 1]] for v in range(n_vertices)]
+        return k_rings, distances
 
-    # Compute distances (Numba version is ~8x faster)
-    if use_numba:
-        distances = [
-            _limited_dijkstra_numba(
-                graph.indptr, graph.indices, graph.data, v, k_rings[v], correction
-            )
-            for v in tqdm(
-                range(n_vertices),
-                desc="Computing k-ring distances",
-                position=tqdm_position,
-                leave=True,
-            )
-        ]
-    else:
-        distances = [
-            _limited_dijkstra(v, k_rings[v], graph, correction)
-            for v in tqdm(
-                range(n_vertices),
-                desc="Computing k-ring distances",
-                position=tqdm_position,
-                leave=True,
-            )
-        ]
-
+    # Pure-Python fallback
+    k_rings = get_k_ring(faces, n_vertices, k)
+    distances = [
+        _limited_dijkstra(v, k_rings[v], graph, correction)
+        for v in tqdm(
+            range(n_vertices),
+            desc="Computing k-ring distances",
+            position=tqdm_position,
+            leave=True,
+        )
+    ]
     return k_rings, distances
 
 
