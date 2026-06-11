@@ -1416,6 +1416,98 @@ class TestSelectAngularSamples:
         assert len(selected) == 0, f"Expected empty array, got {len(selected)} elements"
 
 
+class TestAngularKernelParity:
+    """The parallel Numba k-ring kernel must match the NumPy/serial path bit-for-bit."""
+
+    def test_njit_sampler_matches_numpy(self):
+        from autoflatten.flatten.distance import (
+            _select_angular_samples_njit,
+            select_angular_samples,
+        )
+
+        rng = np.random.default_rng(0)
+        for n_samples in (6, 8):
+            for m in (0, 1, 5, 6, 7, 20, 100):
+                angles = rng.uniform(-np.pi, np.pi, size=m)
+                exp = select_angular_samples(angles, n_samples=n_samples)
+                got = _select_angular_samples_njit(angles, n_samples)
+                assert np.array_equal(np.asarray(exp), np.asarray(got)), (
+                    f"m={m} n={n_samples}: {exp} vs {got}"
+                )
+
+    def _small_mesh(self):
+        # A subdivided plane with a little z-relief so tangent frames are nontrivial.
+        n = 12
+        xs, ys = np.meshgrid(np.linspace(0, 1, n), np.linspace(0, 1, n))
+        zs = 0.05 * np.sin(4 * xs) * np.cos(4 * ys)
+        verts = np.stack([xs.ravel(), ys.ravel(), zs.ravel()], axis=1).astype(
+            np.float64
+        )
+        faces = []
+        for i in range(n - 1):
+            for j in range(n - 1):
+                a = i * n + j
+                b = a + 1
+                c = a + n
+                d = c + 1
+                faces.append([a, b, d])
+                faces.append([a, d, c])
+        return verts, np.asarray(faces, dtype=np.int64)
+
+    def test_numba_kernel_matches_reference(self):
+        """Kernel == the original serial loop over the SAME (discovery-order) rings.
+
+        The ``use_numba=False`` fallback sorts each ring, so it intentionally differs; the
+        meaningful guarantee is that the parallel kernel reproduces the original numba
+        production path (``get_rings_by_level_fast`` + serial sampling) bit-for-bit.
+        """
+        from autoflatten.flatten.distance import (
+            GRAPH_DISTANCE_CORRECTION,
+            _limited_dijkstra_numba,
+            build_mesh_graph,
+            compute_kring_geodesic_distances_angular as ang,
+            compute_vertex_normals,
+            get_rings_by_level_fast,
+            project_to_tangent_plane,
+            select_angular_samples,
+        )
+
+        verts, faces = self._small_mesh()
+        k, nspr = 4, 6
+        kr_n, td_n = ang(verts, faces, k, n_samples_per_ring=nspr, use_numba=True)
+
+        # Reference: the original numba-path loop (discovery-order rings).
+        graph = build_mesh_graph(verts, faces)
+        rings = get_rings_by_level_fast(faces, verts.shape[0], k)
+        normals = compute_vertex_normals(verts.astype(np.float64), faces)
+        for v in range(verts.shape[0]):
+            nb = []
+            for level in range(k):
+                ring = rings[v][level]
+                if len(ring) == 0:
+                    continue
+                xy = project_to_tangent_plane(verts[v], normals[v], verts[ring])
+                ang_ = np.arctan2(xy[:, 1], xy[:, 0])
+                idx = select_angular_samples(ang_, nspr)
+                if len(idx) > 0:
+                    nb.extend(ring[idx])
+            nb = np.array(nb, dtype=np.int64)
+            d = (
+                _limited_dijkstra_numba(
+                    graph.indptr,
+                    graph.indices,
+                    graph.data,
+                    v,
+                    nb,
+                    GRAPH_DISTANCE_CORRECTION,
+                )
+                if len(nb) > 0
+                else np.array([])
+            )
+            assert np.array_equal(np.asarray(kr_n[v]), nb), v
+            assert np.array_equal(np.asarray(td_n[v], dtype=np.float64), d), v
+
+
 class TestThreadConfig:
     """Tests for set_num_threads and get_num_threads."""
 

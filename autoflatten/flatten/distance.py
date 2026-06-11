@@ -799,6 +799,141 @@ def get_num_threads():
     return numba.get_num_threads()
 
 
+@njit(cache=True)
+def _select_angular_samples_njit(angles, n_samples):
+    """Numba port of :func:`select_angular_samples` (bit-identical selection).
+
+    Returns indices into ``angles`` (length ``<= n_samples``) chosen one per angular
+    sector, closest-to-center, deduplicated, with the same ``< sector_width`` gate and the
+    same first-min (``argmin``) tie-breaking as the NumPy version.
+    """
+    m = angles.shape[0]
+    if m == 0:
+        return np.empty(0, dtype=np.int64)
+    if m <= n_samples:
+        out = np.empty(m, dtype=np.int64)
+        for i in range(m):
+            out[i] = i
+        return out
+
+    two_pi = 2.0 * np.pi
+    sector_width = two_pi / n_samples
+    amod = np.empty(m, dtype=np.float64)
+    for i in range(m):
+        amod[i] = angles[i] % two_pi
+
+    sel = np.empty(n_samples, dtype=np.int64)
+    nsel = 0
+    for c in range(n_samples):
+        center = c * sector_width
+        best_idx = 0
+        best_val = np.inf
+        for i in range(m):
+            d = abs(amod[i] - center)
+            d2 = two_pi - d
+            if d2 < d:
+                d = d2
+            if d < best_val:  # strict '<' => first-min, matches np.argmin
+                best_val = d
+                best_idx = i
+        if best_val < sector_width:
+            found = False
+            for j in range(nsel):
+                if sel[j] == best_idx:
+                    found = True
+                    break
+            if not found:
+                sel[nsel] = best_idx
+                nsel += 1
+    return sel[:nsel]
+
+
+@njit(parallel=True, cache=True)
+def _angular_kring_kernel(
+    vertices,
+    normals,
+    rings_flat,
+    level_offsets,
+    indptr,
+    indices,
+    data,
+    k,
+    n_samples,
+    correction,
+    max_nb,
+):
+    """Fused, parallel per-vertex angular sampling + limited Dijkstra.
+
+    Reproduces the serial loop of :func:`compute_kring_geodesic_distances_angular`
+    bit-for-bit (tangent-plane projection -> per-ring angular sampling -> limited
+    Dijkstra) but over a ``prange`` so all CPU cores are used. Each ``prange`` iteration
+    writes only its own output row, so there are no races and the result is deterministic.
+
+    Returns dense ``(n_vertices, max_nb)`` neighbor/distance arrays plus a per-vertex count;
+    the caller slices each row to ``count`` to rebuild the ragged lists.
+    """
+    n_vertices = vertices.shape[0]
+    out_nb = np.full((n_vertices, max_nb), -1, dtype=np.int64)
+    out_dist = np.zeros((n_vertices, max_nb), dtype=np.float64)
+    out_count = np.zeros(n_vertices, dtype=np.int64)
+
+    for v in prange(n_vertices):
+        cx = vertices[v, 0]
+        cy = vertices[v, 1]
+        cz = vertices[v, 2]
+        nx = normals[v, 0]
+        ny = normals[v, 1]
+        nz = normals[v, 2]
+
+        # Local tangent frame (matches project_to_tangent_plane exactly).
+        if abs(nx) < 0.9:
+            rx, ry, rz = 1.0, 0.0, 0.0
+        else:
+            rx, ry, rz = 0.0, 1.0, 0.0
+        ux = ny * rz - nz * ry
+        uy = nz * rx - nx * rz
+        uz = nx * ry - ny * rx
+        un = np.sqrt(ux * ux + uy * uy + uz * uz)
+        ux /= un
+        uy /= un
+        uz /= un
+        vx = ny * uz - nz * uy
+        vy = nz * ux - nx * uz
+        vz = nx * uy - ny * ux
+
+        count = 0
+        for level in range(k):
+            start = level_offsets[v, level]
+            end = level_offsets[v, level + 1]
+            m = end - start
+            if m == 0:
+                continue
+            angles = np.empty(m, dtype=np.float64)
+            for i in range(m):
+                idx = rings_flat[start + i]
+                px = vertices[idx, 0] - cx
+                py = vertices[idx, 1] - cy
+                pz = vertices[idx, 2] - cz
+                xx = px * ux + py * uy + pz * uz
+                yy = px * vx + py * vy + pz * vz
+                angles[i] = np.arctan2(yy, xx)
+            sel = _select_angular_samples_njit(angles, n_samples)
+            for s in range(sel.shape[0]):
+                out_nb[v, count] = rings_flat[start + sel[s]]
+                count += 1
+
+        out_count[v] = count
+        if count > 0:
+            targets = out_nb[v, :count].copy()
+            dists = _limited_dijkstra_numba(
+                indptr, indices, data, v, targets, correction
+            )
+            for i in range(count):
+                out_dist[v, i] = dists[i]
+
+    return out_nb, out_dist, out_count
+
+
 def compute_kring_geodesic_distances_angular(
     vertices,
     faces,
@@ -853,65 +988,81 @@ def compute_kring_geodesic_distances_angular(
     # Build mesh graph for distance computation
     graph = build_mesh_graph(vertices, faces)
 
-    # Get rings organized by level (Numba version is ~20x faster)
-    print(f"Computing {k}-ring neighbors by level...")
-    if use_numba:
-        rings_by_level = get_rings_by_level_fast(faces, n_vertices, k)
-    else:
-        rings_by_level = get_rings_by_level(faces, n_vertices, k)
-
     # Compute vertex normals for tangent plane projection
     print("Computing vertex normals...")
     normals = compute_vertex_normals(vertices.astype(np.float64), faces)
 
-    # For each vertex, sample from each ring level
     print(f"Angular sampling ({n_samples_per_ring} per ring)...")
-    sampled_neighbors = []
-    sampled_distances = []
+    if use_numba:
+        # Fused parallel path: build flat rings, then run the prange kernel over all
+        # vertices (tangent projection + angular sampling + limited Dijkstra). Output is
+        # bit-identical to the serial loop below but uses all cores.
+        print(f"Computing {k}-ring neighbors by level...")
+        adj = igl.adjacency_list(faces.astype(np.int64))
+        adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
+        adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
+        for i, a in enumerate(adj):
+            adj_offsets[i + 1] = adj_offsets[i] + len(a)
+        rings_flat, level_offsets = _get_rings_by_level_numba(adj_flat, adj_offsets, k)
 
-    for v in tqdm(
-        range(n_vertices), desc="Sampling neighbors", position=tqdm_position, leave=True
-    ):
-        v_neighbors = []
+        verts64 = np.ascontiguousarray(vertices, dtype=np.float64)
+        norms64 = np.ascontiguousarray(normals, dtype=np.float64)
+        out_nb, out_dist, out_count = _angular_kring_kernel(
+            verts64,
+            norms64,
+            rings_flat,
+            level_offsets,
+            graph.indptr,
+            graph.indices,
+            graph.data,
+            k,
+            n_samples_per_ring,
+            correction,
+            k * n_samples_per_ring,
+        )
+        sampled_neighbors = [
+            out_nb[v, : out_count[v]].copy() for v in range(n_vertices)
+        ]
+        sampled_distances = [
+            out_dist[v, : out_count[v]].copy() for v in range(n_vertices)
+        ]
+    else:
+        # Serial fallback (kept for parity / debugging).
+        print(f"Computing {k}-ring neighbors by level...")
+        rings_by_level = get_rings_by_level(faces, n_vertices, k)
+        sampled_neighbors = []
+        sampled_distances = []
 
-        center = vertices[v]
-        normal = normals[v]
+        for v in tqdm(
+            range(n_vertices),
+            desc="Sampling neighbors",
+            position=tqdm_position,
+            leave=True,
+        ):
+            v_neighbors = []
+            center = vertices[v]
+            normal = normals[v]
 
-        for level in range(k):
-            ring = rings_by_level[v][level]
-            if len(ring) == 0:
-                continue
+            for level in range(k):
+                ring = rings_by_level[v][level]
+                if len(ring) == 0:
+                    continue
+                ring_pos = vertices[ring]
+                xy = project_to_tangent_plane(center, normal, ring_pos)
+                angles = np.arctan2(xy[:, 1], xy[:, 0])
+                sample_idx = select_angular_samples(angles, n_samples_per_ring)
+                if len(sample_idx) > 0:
+                    selected = ring[sample_idx]
+                    v_neighbors.extend(selected)
 
-            # Get positions of ring neighbors
-            ring_pos = vertices[ring]
-
-            # Project to tangent plane
-            xy = project_to_tangent_plane(center, normal, ring_pos)
-
-            # Compute angles
-            angles = np.arctan2(xy[:, 1], xy[:, 0])
-
-            # Select angularly-spaced samples
-            sample_idx = select_angular_samples(angles, n_samples_per_ring)
-
-            if len(sample_idx) > 0:
-                selected = ring[sample_idx]
-                v_neighbors.extend(selected)
-
-        # Compute distances to all selected neighbors
-        v_neighbors = np.array(v_neighbors, dtype=np.int64)
-        if len(v_neighbors) > 0:
-            if use_numba:
-                v_distances = _limited_dijkstra_numba(
-                    graph.indptr, graph.indices, graph.data, v, v_neighbors, correction
-                )
-            else:
+            v_neighbors = np.array(v_neighbors, dtype=np.int64)
+            if len(v_neighbors) > 0:
                 v_distances = _limited_dijkstra(v, v_neighbors, graph, correction)
-        else:
-            v_distances = np.array([])
+            else:
+                v_distances = np.array([])
 
-        sampled_neighbors.append(v_neighbors)
-        sampled_distances.append(v_distances)
+            sampled_neighbors.append(v_neighbors)
+            sampled_distances.append(v_distances)
 
     # Summary stats
     total_neighbors = sum(len(n) for n in sampled_neighbors)
