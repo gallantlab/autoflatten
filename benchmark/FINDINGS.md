@@ -404,6 +404,19 @@ trap). `dq` = fast − baseline (negative = fast better).
 This is the strongest single result for the paper: a 3.4× speedup with no quality cost, validated on
 held-out subjects. Logged as 10 ledger records (`exp:validate_speed:*`).
 
+## 13. K-ring cache build parallelized (~26×) — removes the first-run penalty
+
+The one-time k-ring cache build (the "Sampling neighbors" pass, ~4 min/hemi) was a **serial
+Python loop** over all ~200–400k vertices while 31 of 32 cores idled. Folded the per-vertex work
+(tangent-plane projection → per-ring angular sampling → limited Dijkstra) into a single
+`@njit(parallel=True)` `prange` kernel (`_angular_kring_kernel` + an njit port of the angular
+sampler). **Output is bit-identical** to the previous numba path — verified against the existing
+`sub-022 lh` cache (0/193174 neighbor-set mismatches, 0 distance mismatches) and pinned by a
+regression test. Steady-state runtime on `sub-022 lh` dropped **~230 s → 8.7 s (~26×)** (≈17 s with
+cold JIT). This is pure performance with no numerical change, so it needs no re-validation of any
+flatmap. It mostly eliminates the first-run penalty for a new subject (the 180–220 s steady-state
+flatten is JAX and unaffected); the warm-cache flatten is unchanged.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
