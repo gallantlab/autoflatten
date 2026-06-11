@@ -32,8 +32,13 @@ provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jso
   (`mri_label2label`) is now reimplemented in pure Python (`union(push, pull)` KDTree on `sphere.reg`)
   that reproduces FreeSurfer **vertex-for-vertex** (0 ID differences vs real `mri_label2label`;
   bit-identical patch on **9/9** hemispheres incl. held-out) at **~0.3 s vs 36.6 s** for the mapping
-  step. Projection no longer requires FreeSurfer (§14). Phase 2 (cut-placement quality, scored by
-  downstream flatmap distortion) is next.
+  step. Projection no longer requires FreeSurfer (§14).
+- **Projection (Phase 2 — refinement ablation, 6 hemis):** with the 5 cuts fixed in their current
+  positions, the **geodesic cut refinement hurts** the flatmap — `continuity_only` (connect cut
+  components but don't thin them) beats the shipped geodesic refinement by **−0.28 pp** distortion
+  with fewer flips on 4/6 hemispheres; a curvature-routed geodesic (c) was *worse* (flips exploded).
+  The harm is the **thinning** (thick relief band → jagged 1-wide path), not the routing metric.
+  Shippable: default projection to geodesic-refinement-**off** (§15).
 
 ## 1. Flip-free (Tutte) init is a validated win: equal quality, ~37% faster
 
@@ -496,6 +501,46 @@ This both removes the install barrier (projection no longer needs FreeSurfer, on
 `sphere.reg` files, which datalad provides) and is the prerequisite that makes the Phase 2
 cut-placement search runnable on this box. Mapping is the validated baseline; the geodesic
 refinement (~33 s) is now the projection time sink and a future speed target.
+
+## 15. The geodesic cut refinement HURTS the flatmap — keep continuity, drop the thinning
+
+With the template fixed (5 cuts, current anatomical positions — a hard requirement), the only
+projection lever is the **refinement** that turns raw mapped cuts into the patch:
+`ensure_continuous_cuts` (connect disconnected mapped-cut components) and
+`refine_cuts_with_geodesic` (replace each thick mapped cut with a thin Euclidean-shortest
+geodesic between heuristic endpoints). Ablation across **6 hemispheres**, scoring each
+variant's patch by the downstream fast-flatten + global true-geodesic metric (fresh k-ring +
+truegeo per variant; `benchmark/probe_refinement.py`):
+
+| variant | mean global@opt % | flips behaviour |
+| --- | ---: | --- |
+| `geodesic` (shipped) | 11.12 | worst/tied-worst; inflates flips (129, 120 on two hemis) |
+| **`continuity_only`** | **10.84** | **best distortion, moderate flips** |
+| `mapped_only` (no continuity) | 11.12 | ties shipped — continuity is what helps, not thinning |
+| `geodesic_curv` (c) | 11.24 | **worst**; flips explode (424 on sub-022 rh) |
+
+**The geodesic refinement does not help and slightly hurts** — `continuity_only` beats it on
+4/6 hemispheres (−0.28 pp mean) with fewer flips. The win is the **continuity** step
+(connecting cut components); the **thinning** to a 1-vertex-wide geodesic is the harm.
+
+**Mechanism.** Replacing a thick mapped-cut *band* with a thin path (a) removes the strain
+relief the band provided and (b) leaves a jagged cut boundary. Both raise distortion and
+flips. The shipped step compounds (b) with bad endpoint heuristics (start = farthest-from-mwall,
+end = max-clearance-from-mwall — actively routing the cut *away* from where it should anchor).
+
+**(c), the principled fix that failed (and why that's informative).** Hypothesis: route the
+cut along sulcal fundi (weight graph edges `length·exp(-α·sulc)`, α=0.1, monkeypatched into
+`refine_cuts_with_geodesic` so only the path weighting changes). Result: **worse on average
+(11.24%) and flips exploded** (sub-022 rh: 424 vs 129). Sulci meander, so curvature-routing
+makes the cut boundary *more* tortuous — exactly the (b) failure mode, amplified. This
+confirms the core problem is the **thinning**, not the routing metric: no path that thins the
+cut to one vertex wide will beat keeping the thick band, straight or curvy.
+
+**Shippable recommendation:** default projection to **continuity-on, geodesic-refinement-off**
+(i.e. make `--no-refine-geodesic` the default). ~0.28 pp lower distortion, fewer flips, and
+faster projection (the geodesic refinement is also the ~33 s/hemi time sink, §14). Open
+follow-on if more is wanted: a refinement that keeps the cut *thick* but cleans its boundary
+(smooth/widen rather than thin) — untested.
 
 ## Method note
 

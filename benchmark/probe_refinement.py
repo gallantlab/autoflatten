@@ -42,11 +42,31 @@ from .validate_speed import fast_config
 
 from autoflatten.flatten.algorithm import count_boundary_loops
 
-# (label, continuity, refine_geodesic)
 VARIANTS = [
-    ("geodesic", True, True),  # shipped pipeline
-    ("continuity_only", True, False),  # thick mapped cuts, no geodesic thinning
-    ("mapped_only", False, False),  # raw mapped cuts (may be topologically invalid)
+    # shipped pipeline (Euclidean-shortest geodesic refinement)
+    {"label": "geodesic", "continuity": True, "refine": True, "weight": "euclidean"},
+    # thick mapped cuts, no geodesic thinning
+    {
+        "label": "continuity_only",
+        "continuity": True,
+        "refine": False,
+        "weight": "euclidean",
+    },
+    # raw mapped cuts (no continuity, no refinement)
+    {
+        "label": "mapped_only",
+        "continuity": False,
+        "refine": False,
+        "weight": "euclidean",
+    },
+    # (c) curvature-weighted geodesic: route cut paths along sulcal fundi
+    {
+        "label": "geodesic_curv",
+        "continuity": True,
+        "refine": True,
+        "weight": "curvature",
+        "alpha": 0.1,
+    },
 ]
 
 SURF = "fiducial"
@@ -56,15 +76,18 @@ def _surface_path(subject, hemi, subjects_dir):
     return f"{subjects_dir}/{subject}/surf/{hemi}.{SURF}"
 
 
-def run_variant(subject, hemi, label, continuity, refine_geodesic, subjects_dir):
+def run_variant(subject, hemi, spec, subjects_dir):
+    label = spec["label"]
     out_patch = str(paths.RUNS_DIR / f"refine_{label}_{subject}_{hemi}.patch.3d")
     with contextlib.redirect_stdout(io.StringIO()):
         proj = project_python(
             subject,
             hemi,
             subjects_dir=subjects_dir,
-            continuity=continuity,
-            refine_geodesic=refine_geodesic,
+            continuity=spec["continuity"],
+            refine_geodesic=spec["refine"],
+            refine_weight=spec.get("weight", "euclidean"),
+            curv_alpha=spec.get("alpha", 0.1),
             out_patch=out_patch,
         )
     n_patch = len(proj["patch_vertices"])
@@ -105,7 +128,7 @@ def run_variant(subject, hemi, label, continuity, refine_geodesic, subjects_dir)
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--hemis", nargs="*", default=["sub-022:lh"])
-    ap.add_argument("--variants", nargs="*", default=[v[0] for v in VARIANTS])
+    ap.add_argument("--variants", nargs="*", default=[v["label"] for v in VARIANTS])
     ap.add_argument(
         "--subjects-dir",
         default="/data2/projects/idem/exps/narratives/datalad-narratives/derivatives/freesurfer",
@@ -113,7 +136,7 @@ def main() -> int:
     args = ap.parse_args()
 
     paths.ensure_output_dirs()
-    variants = [v for v in VARIANTS if v[0] in set(args.variants)]
+    variants = [v for v in VARIANTS if v["label"] in set(args.variants)]
     ledger = Ledger()
 
     print(
@@ -122,9 +145,10 @@ def main() -> int:
     )
     for spec in args.hemis:
         subject, hemi = spec.split(":")
-        for label, cont, refine in variants:
+        for vspec in variants:
+            label = vspec["label"]
             try:
-                r = run_variant(subject, hemi, label, cont, refine, args.subjects_dir)
+                r = run_variant(subject, hemi, vspec, args.subjects_dir)
             except Exception as e:  # noqa: BLE001 - record the failure, keep going
                 print(f"{subject + ' ' + hemi:11} {label:16} FAILED: {e}")
                 rec = new_record(
@@ -153,8 +177,10 @@ def main() -> int:
                 method={
                     "name": "refinement_ablation",
                     "variant": label,
-                    "continuity": cont,
-                    "refine_geodesic": refine,
+                    "continuity": vspec["continuity"],
+                    "refine_geodesic": vspec["refine"],
+                    "refine_weight": vspec.get("weight", "euclidean"),
+                    "curv_alpha": vspec.get("alpha"),
                     "flatten": "fast_ultimate+tutte",
                 },
                 repro_command=f"python -m benchmark.probe_refinement --hemis {spec} --variants {label}",

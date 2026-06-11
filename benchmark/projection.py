@@ -26,6 +26,7 @@ import nibabel as nib
 import numpy as np
 from scipy.spatial import cKDTree
 
+import autoflatten.core as _core
 from autoflatten.core import (
     ensure_continuous_cuts,
     fill_holes_in_patch,
@@ -137,6 +138,39 @@ def map_cuts_to_subject_python(
     return mapped
 
 
+def _curvature_weighted_graph_builder(subject, hemi, subjects_dir, alpha, morph="sulc"):
+    """Factory for a ``(pts, polys) -> nx.Graph`` builder with curvature-weighted edges.
+
+    Phase 2 hypothesis (c): the shipped geodesic refinement routes cuts along the
+    *Euclidean-shortest* path, which is curvature-blind and pulls cuts off the sulcal fundi
+    they should track. Reweighting edges by ``length * exp(-alpha * sulc_edge)`` makes the
+    shortest path *prefer deep sulci* (high ``sulc``) and avoid gyral crowns. The returned
+    builder matches ``core._build_surface_graph``'s signature so it can be monkeypatched in
+    for the refinement call only (every endpoint/trapped-vertex heuristic stays identical;
+    only the path's edge weights change).
+    """
+    import networkx as nx
+
+    sulc = nib.freesurfer.read_morph_data(
+        os.path.join(subjects_dir, subject, "surf", f"{hemi}.{morph}")
+    )
+
+    def build(pts, polys):
+        polys = np.asarray(polys)
+        edges = np.vstack([polys[:, [0, 1]], polys[:, [0, 2]], polys[:, [1, 2]]])
+        length = np.linalg.norm(pts[edges[:, 0]] - pts[edges[:, 1]], axis=1)
+        s_edge = 0.5 * (sulc[edges[:, 0]] + sulc[edges[:, 1]])
+        weights = length * np.exp(-alpha * s_edge)  # high sulc -> low cost
+        G = nx.Graph()
+        G.add_nodes_from(range(len(pts)))
+        G.add_weighted_edges_from(
+            zip(edges[:, 0].tolist(), edges[:, 1].tolist(), weights.tolist())
+        )
+        return G
+
+    return build
+
+
 def _load_template_vertex_dict(hemi, template_file=None):
     """Load fsaverage cut/mwall labels for a hemisphere from the JSON template."""
     if template_file is None:
@@ -159,6 +193,9 @@ def project_python(
     template_file=None,
     continuity=True,
     refine_geodesic=True,
+    refine_weight="euclidean",
+    curv_alpha=0.1,
+    curv_morph="sulc",
     out_patch=None,
     verbose=False,
 ):
@@ -191,9 +228,24 @@ def project_python(
         else dict(mapped)
     )
     if refine_geodesic:
-        fixed = refine_cuts_with_geodesic(
-            fixed, subject, hemi, medial_wall_vertices=fixed.get("mwall")
-        )
+        if refine_weight == "curvature":
+            # Route cut paths along sulcal fundi by monkeypatching the graph builder
+            # used inside refine_cuts_with_geodesic (endpoint/trapped logic unchanged).
+            builder = _curvature_weighted_graph_builder(
+                subject, hemi, subjects_dir, curv_alpha, curv_morph
+            )
+            orig = _core._build_surface_graph
+            _core._build_surface_graph = builder
+            try:
+                fixed = refine_cuts_with_geodesic(
+                    fixed, subject, hemi, medial_wall_vertices=fixed.get("mwall")
+                )
+            finally:
+                _core._build_surface_graph = orig
+        else:
+            fixed = refine_cuts_with_geodesic(
+                fixed, subject, hemi, medial_wall_vertices=fixed.get("mwall")
+            )
 
     pts, polys = load_surface(subject, "inflated", hemi)
     excluded = set()
