@@ -157,6 +157,7 @@ def project_python(
     hemi,
     subjects_dir=None,
     template_file=None,
+    continuity=True,
     refine_geodesic=True,
     out_patch=None,
     verbose=False,
@@ -166,6 +167,10 @@ def project_python(
     Mirrors ``autoflatten.cli.cmd_project`` (map -> continuity -> geodesic refine ->
     hole fill -> patch) but swaps the ``mri_label2label`` mapping for the validated
     Python KDTree mapper. Every downstream step is already pure Python.
+
+    The ``continuity`` and ``refine_geodesic`` toggles exist for the Phase 2 refinement
+    ablation (are these steps necessary / do they improve downstream distortion?). Both
+    default to True (the shipped pipeline).
 
     Returns
     -------
@@ -180,7 +185,11 @@ def project_python(
         vertex_dict, subject, hemi, subjects_dir=subjects_dir
     )
 
-    fixed = ensure_continuous_cuts(dict(mapped), subject, hemi)
+    fixed = (
+        ensure_continuous_cuts(dict(mapped), subject, hemi)
+        if continuity
+        else dict(mapped)
+    )
     if refine_geodesic:
         fixed = refine_cuts_with_geodesic(
             fixed, subject, hemi, medial_wall_vertices=fixed.get("mwall")
