@@ -36,9 +36,11 @@ provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jso
 - **Projection (Phase 2 — refinement ablation, 6 hemis):** with the 5 cuts fixed in their current
   positions, the **geodesic cut refinement hurts** the flatmap — `continuity_only` (connect cut
   components but don't thin them) beats the shipped geodesic refinement by **−0.28 pp** distortion
-  with fewer flips on 4/6 hemispheres; a curvature-routed geodesic (c) was *worse* (flips exploded).
-  The harm is the **thinning** (thick relief band → jagged 1-wide path), not the routing metric.
-  Shippable: default projection to geodesic-refinement-**off** (§15).
+  with fewer flips on 4/6 hemispheres. Two "smarter" refinements were then tested and **both fail to
+  beat plain `continuity_only`**: a curvature-routed geodesic (c) is *worse* (flips exploded), and
+  boundary smoothing (2) cuts flips but not distortion. The robust answer is the simplest: connect
+  the cut components, **don't thin, don't smooth**. Shippable: default projection to
+  geodesic-refinement-**off** (§15).
 
 ## 1. Flip-free (Tutte) init is a validated win: equal quality, ~37% faster
 
@@ -518,6 +520,8 @@ truegeo per variant; `benchmark/probe_refinement.py`):
 | **`continuity_only`** | **10.84** | **best distortion, moderate flips** |
 | `mapped_only` (no continuity) | 11.12 | ties shipped — continuity is what helps, not thinning |
 | `geodesic_curv` (c) | 11.24 | **worst**; flips explode (424 on sub-022 rh) |
+| `thick_close1` (2) | 11.01 | between; *reduces* worst flips (59→33) but distortion mixed |
+| `thick_close2` (2) | 10.99 | between; same — helps flips, hurts sub-026 lh by +1 pp |
 
 **The geodesic refinement does not help and slightly hurts** — `continuity_only` beats it on
 4/6 hemispheres (−0.28 pp mean) with fewer flips. The win is the **continuity** step
@@ -528,19 +532,32 @@ relief the band provided and (b) leaves a jagged cut boundary. Both raise distor
 flips. The shipped step compounds (b) with bad endpoint heuristics (start = farthest-from-mwall,
 end = max-clearance-from-mwall — actively routing the cut *away* from where it should anchor).
 
-**(c), the principled fix that failed (and why that's informative).** Hypothesis: route the
-cut along sulcal fundi (weight graph edges `length·exp(-α·sulc)`, α=0.1, monkeypatched into
-`refine_cuts_with_geodesic` so only the path weighting changes). Result: **worse on average
-(11.24%) and flips exploded** (sub-022 rh: 424 vs 129). Sulci meander, so curvature-routing
-makes the cut boundary *more* tortuous — exactly the (b) failure mode, amplified. This
-confirms the core problem is the **thinning**, not the routing metric: no path that thins the
-cut to one vertex wide will beat keeping the thick band, straight or curvy.
+**Two "smarter refinement" ideas were tested; both fail to beat plain `continuity_only`:**
+
+- **(c) curvature-routed geodesic.** Hypothesis: route the cut along sulcal fundi (weight graph
+  edges `length·exp(-α·sulc)`, α=0.1, monkeypatched into `refine_cuts_with_geodesic` so only the
+  path weighting changes). Result: **worse on average (11.24%) and flips exploded** (sub-022 rh:
+  424 vs 129). Sulci meander, so curvature-routing makes the cut boundary *more* tortuous —
+  exactly failure mode (b), amplified. Confirms the core problem is the **thinning**, not the
+  routing metric: no path that thins the cut to one vertex wide beats the thick band.
+- **(2) thick-but-smoothed cut.** Keep the thick `continuity_only` cut but morphologically
+  *close* its boundary (dilate `n` rings then erode `n`, `_morphological_close_cuts`) to fill the
+  ragged notches where flips concentrate. Result: **partial** — it *does* cut the worst flip
+  counts (sub-022 rh 59→33, sub-041 lh 96→86), validating the "ragged boundary → flips" mechanism,
+  **but it does not lower distortion** (mean 10.99–11.01% vs `continuity_only` 10.84%). It helps on
+  some hemispheres and *hurts* on others (sub-026 lh +1 pp — dilation occasionally pushes a cut
+  into a worse spot). Coverage cost is negligible (the 5 cuts exclude ~530 verts; closing adds
+  <150, i.e. <0.1% of the surface — the medial wall, ~11k verts, dominates exclusion regardless).
+
+**Conclusion — the simplest refinement is the best.** Across the ablation the robust winner is
+`continuity_only`: connect the disconnected mapped-cut components, but **do not thin and do not
+smooth** them. Neither a curvature-aware path nor boundary smoothing beats it on distortion.
 
 **Shippable recommendation:** default projection to **continuity-on, geodesic-refinement-off**
 (i.e. make `--no-refine-geodesic` the default). ~0.28 pp lower distortion, fewer flips, and
-faster projection (the geodesic refinement is also the ~33 s/hemi time sink, §14). Open
-follow-on if more is wanted: a refinement that keeps the cut *thick* but cleans its boundary
-(smooth/widen rather than thin) — untested.
+faster projection (the geodesic refinement is also the ~33 s/hemi time sink, §14). Boundary
+smoothing (2) is available (`project_python(morph_close=n)`) and trades a small distortion cost
+for fewer flips if a flip-free patch is ever needed, but is not the default.
 
 ## Method note
 

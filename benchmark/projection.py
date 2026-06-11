@@ -171,6 +171,33 @@ def _curvature_weighted_graph_builder(subject, hemi, subjects_dir, alpha, morph=
     return build
 
 
+def _morphological_close_cuts(fixed, polys, n_iter, exclude_keys=("mwall",)):
+    """Smooth each cut's boundary by morphological closing on the mesh (keep it thick).
+
+    Phase 2 follow-on: the ablation showed the *thick* continuity-only cut beats the thinned
+    geodesic, but the raw mapped blob has a lumpy boundary (notches, 1-vertex spikes) where
+    downstream flips concentrate. Closing = dilate ``n_iter`` rings then erode ``n_iter`` rings
+    on the surface adjacency: it fills concave notches and bridges gaps while leaving the band
+    roughly the same width -- a smoother cut boundary without re-thinning. Returns a new dict.
+    """
+    if n_iter <= 0:
+        return fixed
+    import igl
+
+    adj = igl.adjacency_list(np.asarray(polys, dtype=np.int64))
+    out = dict(fixed)
+    for key, verts in fixed.items():
+        if key in exclude_keys or key.startswith("_") or len(verts) == 0:
+            continue
+        S = set(int(v) for v in verts)
+        for _ in range(n_iter):  # dilate
+            S |= {nb for v in list(S) for nb in adj[v]}
+        for _ in range(n_iter):  # erode (drop vertices touching outside S)
+            S = {v for v in S if all(nb in S for nb in adj[v])}
+        out[key] = np.array(sorted(S))
+    return out
+
+
 def _load_template_vertex_dict(hemi, template_file=None):
     """Load fsaverage cut/mwall labels for a hemisphere from the JSON template."""
     if template_file is None:
@@ -196,6 +223,7 @@ def project_python(
     refine_weight="euclidean",
     curv_alpha=0.1,
     curv_morph="sulc",
+    morph_close=0,
     out_patch=None,
     verbose=False,
 ):
@@ -248,6 +276,8 @@ def project_python(
             )
 
     pts, polys = load_surface(subject, "inflated", hemi)
+    if morph_close > 0:
+        fixed = _morphological_close_cuts(fixed, polys, morph_close)
     excluded = set()
     for vertices in fixed.values():
         excluded.update(int(v) for v in vertices)

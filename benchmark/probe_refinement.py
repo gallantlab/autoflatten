@@ -67,6 +67,9 @@ VARIANTS = [
         "weight": "curvature",
         "alpha": 0.1,
     },
+    # (2) keep cuts thick but smooth their boundary (morphological close)
+    {"label": "thick_close1", "continuity": True, "refine": False, "morph_close": 1},
+    {"label": "thick_close2", "continuity": True, "refine": False, "morph_close": 2},
 ]
 
 SURF = "fiducial"
@@ -76,7 +79,7 @@ def _surface_path(subject, hemi, subjects_dir):
     return f"{subjects_dir}/{subject}/surf/{hemi}.{SURF}"
 
 
-def run_variant(subject, hemi, spec, subjects_dir):
+def run_variant(subject, hemi, spec, subjects_dir, save_flat=False):
     label = spec["label"]
     out_patch = str(paths.RUNS_DIR / f"refine_{label}_{subject}_{hemi}.patch.3d")
     with contextlib.redirect_stdout(io.StringIO()):
@@ -88,6 +91,7 @@ def run_variant(subject, hemi, spec, subjects_dir):
             refine_geodesic=spec["refine"],
             refine_weight=spec.get("weight", "euclidean"),
             curv_alpha=spec.get("alpha", 0.1),
+            morph_close=spec.get("morph_close", 0),
             out_patch=out_patch,
         )
     n_patch = len(proj["patch_vertices"])
@@ -108,6 +112,13 @@ def run_variant(subject, hemi, spec, subjects_dir):
     n_loops, _ = count_boundary_loops(fl.faces)
     uv = np.asarray(make_flatten_fn("tutte", refine=True)(fl))
     rt = time.time() - t0
+
+    if save_flat:
+        flat_path = str(
+            paths.RUNS_DIR / f"refine_{label}_{subject}_{hemi}.flat.patch.3d"
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            fl.save_result(uv, flat_path)
 
     m = per_patch_metrics(uv, fl)
     ref = compute_truegeo(fl)
@@ -133,6 +144,9 @@ def main() -> int:
         "--subjects-dir",
         default="/data2/projects/idem/exps/narratives/datalad-narratives/derivatives/freesurfer",
     )
+    ap.add_argument(
+        "--save-flat", action="store_true", help="save flat patches for visualization"
+    )
     args = ap.parse_args()
 
     paths.ensure_output_dirs()
@@ -148,7 +162,9 @@ def main() -> int:
         for vspec in variants:
             label = vspec["label"]
             try:
-                r = run_variant(subject, hemi, vspec, args.subjects_dir)
+                r = run_variant(
+                    subject, hemi, vspec, args.subjects_dir, save_flat=args.save_flat
+                )
             except Exception as e:  # noqa: BLE001 - record the failure, keep going
                 print(f"{subject + ' ' + hemi:11} {label:16} FAILED: {e}")
                 rec = new_record(
