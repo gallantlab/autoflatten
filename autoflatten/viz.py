@@ -203,39 +203,35 @@ def compute_kring_distortion(
     if verbose:
         print("Computing per-vertex distortion...")
 
-    # Compute per-vertex distortion
-    vertex_distortion = np.zeros(n_patch_vertices)
-    total_abs_error = 0.0
-    total_target = 0.0
-
-    for v in range(n_patch_vertices):
-        neighbors = k_rings[v]
-        targets = target_distances[v]
-
-        if len(neighbors) == 0:
-            vertex_distortion[v] = 0.0
-            continue
-
-        # Compute 2D Euclidean distances to neighbors
-        d_2d = np.linalg.norm(xy[neighbors] - xy[v], axis=1)
-
-        # Compute per-vertex distortion: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
-        mean_target = np.mean(targets)
-        if mean_target > 0.0:
-            abs_errors = np.abs(d_2d - targets)
-            vertex_distortion[v] = 100.0 * np.mean(abs_errors) / mean_target
-
-            # Accumulate for global mean
-            total_abs_error += np.sum(abs_errors)
-            total_target += np.sum(targets)
-        else:
-            # If all target distances are zero, define local distortion as zero
-            vertex_distortion[v] = 0.0
-
-    # Global mean distortion (same formula as autoflatten)
-    mean_distortion = (
-        100.0 * total_abs_error / total_target if total_target > 0 else 0.0
+    # Compute per-vertex distortion (vectorized over the flattened neighbor lists).
+    # Per-vertex: 100 * mean(|d_2D - d_3D|) / mean(d_3D) == 100 * sum_abs / sum_target,
+    # since the per-vertex neighbor count cancels.
+    counts = np.fromiter(
+        (len(r) for r in k_rings), dtype=np.int64, count=n_patch_vertices
     )
+    src = np.repeat(np.arange(n_patch_vertices), counts)
+    nbr = (
+        np.concatenate(k_rings).astype(np.int64)
+        if counts.sum()
+        else np.empty(0, np.int64)
+    )
+    tgt = (
+        np.concatenate(target_distances)
+        if counts.sum()
+        else np.empty(0, dtype=np.float64)
+    )
+
+    d_2d = np.linalg.norm(xy[nbr] - xy[src], axis=1)
+    abs_err = np.abs(d_2d - tgt)
+    sum_abs = np.bincount(src, weights=abs_err, minlength=n_patch_vertices)
+    sum_tgt = np.bincount(src, weights=tgt, minlength=n_patch_vertices)
+
+    vertex_distortion = np.zeros(n_patch_vertices)
+    valid = sum_tgt > 0.0
+    vertex_distortion[valid] = 100.0 * sum_abs[valid] / sum_tgt[valid]
+
+    total_target = sum_tgt.sum()
+    mean_distortion = 100.0 * sum_abs.sum() / total_target if total_target > 0 else 0.0
 
     return vertex_distortion, mean_distortion
 
