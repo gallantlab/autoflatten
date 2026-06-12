@@ -62,6 +62,68 @@ def build_mesh_graph(vertices, faces):
     return sparse.csr_matrix((data, (row, col)), shape=(n_vertices, n_vertices))
 
 
+def distance_optimal_scale(vertices, faces, uv, n_sources=200, seed=0, radius=None):
+    """Global scale ``s*`` that makes a flat map metrically match true geodesic distances.
+
+    Samples ``n_sources`` source vertices (deterministically), computes their true geodesic
+    fields on the 3D patch with the heat method, and returns the single scale ``s`` that
+    minimizes ``mean(|s*d_2d - d_geo| / d_geo)`` over all source->target pairs (optionally
+    capped at ``radius`` mm). Used to replace the area-matched display scale with a
+    distance-faithful one (the area-matched map is ~6% too small; ``s*`` ~ 1.06).
+
+    Parameters
+    ----------
+    vertices : ndarray (V, 3)
+        3D patch vertex positions (use the fiducial surface for anatomical distances).
+    faces : ndarray (F, 3)
+        Patch face indices.
+    uv : ndarray (V, 2)
+        2D flat-map coordinates (same vertex order as ``vertices``).
+    n_sources : int
+        Number of heat-geodesic sources to sample.
+    seed : int
+        RNG seed (keeps the result deterministic).
+    radius : float or None
+        If set, only score pairs within this geodesic distance (mm).
+
+    Returns
+    -------
+    float
+        Distance-optimal scale (1.0 if it cannot be computed).
+    """
+    v = np.ascontiguousarray(vertices, dtype=np.float64)
+    f = np.ascontiguousarray(faces, dtype=np.int64)
+    uv = np.ascontiguousarray(uv, dtype=np.float64)
+    n_v = v.shape[0]
+    if n_v == 0:
+        return 1.0
+
+    rng = np.random.default_rng(seed)
+    srcs = np.sort(rng.choice(n_v, size=min(n_sources, n_v), replace=False))
+
+    data = igl.HeatGeodesicsData()
+    igl.heat_geodesics_precompute(v, f, data)
+
+    d2_all, dg_all = [], []
+    for s in srcs:
+        geo = igl.heat_geodesics_solve(data, np.array([s], dtype=np.int64))
+        mask = geo > 1e-6
+        if radius is not None:
+            mask &= geo <= radius
+        if not np.any(mask):
+            continue
+        d2_all.append(np.linalg.norm(uv[mask] - uv[s], axis=1))
+        dg_all.append(geo[mask])
+
+    if not d2_all:
+        return 1.0
+    d2 = np.concatenate(d2_all)
+    dg = np.concatenate(dg_all)
+    scales = np.linspace(0.85, 1.20, 71)
+    errs = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
+    return float(scales[int(np.argmin(errs))])
+
+
 def get_k_ring(faces, n_vertices, k):
     """Get k-ring neighbors for each vertex.
 

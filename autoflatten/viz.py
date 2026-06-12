@@ -435,16 +435,18 @@ def plot_flatmap(
             "Must be 'fast' or 'pyflatten'."
         )
 
-    vertex_dist, mean_dist, opt_scale = compute_kring_distortion(
+    # The flattener now applies the distance-optimal scale at generation, so the saved
+    # flat map is already metrically faithful -- score at its true scale (no local
+    # re-normalization, which uses the gameable local k-ring optimum and points the wrong
+    # way). Pass optimal_scale=True only to diagnose an old, un-rescaled patch.
+    vertex_dist, mean_dist = compute_kring_distortion(
         xy,
         base_vertices,
         base_faces,
         orig_indices,
         k=k,
         n_samples_per_ring=n_samples,
-        optimal_scale=True,
         signed=signed,
-        return_opt_scale=True,
         verbose=True,
     )
 
@@ -560,12 +562,12 @@ def plot_flatmap(
         vmin, vmax = -vlim, vlim
         cmap = "RdBu_r"
         cbar_label = "Signed distortion (%)  (+ stretched / − compressed)"
-        center_title = f"Signed Distortion ({k}-ring, ×{opt_scale:.3f})"
+        center_title = f"Signed Distortion ({k}-ring)"
     else:
         vmin, vmax = 0, 100
         cmap = distortion_cmap
         cbar_label = "Distortion (%)"
-        center_title = f"Metric Distortion ({k}-ring, ×{opt_scale:.3f})"
+        center_title = f"Metric Distortion ({k}-ring)"
 
     # Use tripcolor with vertex values for smooth interpolation
     tpc = ax.tripcolor(

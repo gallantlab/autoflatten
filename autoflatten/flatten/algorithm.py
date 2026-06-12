@@ -22,6 +22,7 @@ from .config import (
 from .distance import (
     compute_kring_geodesic_distances,
     compute_kring_geodesic_distances_angular,
+    distance_optimal_scale,
 )
 from .energy import (
     compute_2d_areas,
@@ -1836,6 +1837,28 @@ class SurfaceFlattener:
                 verbose=verbose,
                 snapshot_callback=_wrap_callback(snapshot_callback, "smoothing"),
             )
+
+        # Distance-optimal output scale: replace the area-matched display scale with the
+        # single global scale that minimizes true-geodesic distance distortion, so the saved
+        # flat map is metrically faithful (surface and flat map are directly comparable).
+        dos = config.distance_optimal_scale
+        if dos.enabled:
+            ref_vertices = (
+                self.fiducial_vertices
+                if self.fiducial_vertices is not None
+                else self.vertices
+            )
+            s_opt = distance_optimal_scale(
+                ref_vertices,
+                self.faces,
+                uv,
+                n_sources=dos.n_sources,
+                seed=dos.seed,
+            )
+            centroid = uv.mean(axis=0)
+            uv = (uv - centroid) * s_opt + centroid
+            if verbose:
+                print(f"Distance-optimal output scale: x{s_opt:.4f}")
 
         # Final stats
         uv_jax = jnp.asarray(uv)

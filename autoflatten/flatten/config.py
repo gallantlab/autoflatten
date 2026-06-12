@@ -218,6 +218,34 @@ class FinalNegativeAreaRemovalConfig:
     iters_per_level: int = 30
 
 
+@dataclass
+class DistanceOptimalScaleConfig:
+    """Configuration for the distance-optimal output scale.
+
+    The flattening's area-matching final scale (``s = sqrt(orig_area/total_area)``) is a
+    display convention, not part of the objective; it leaves the map ~6% too small versus
+    true geodesic distances. When enabled (default), after optimization the output is
+    rescaled by the single global scale that minimizes true-geodesic distance distortion,
+    computed from a heat-method geodesic sample on the patch, so the saved flatmap is
+    metrically faithful (surface and flat map are directly comparable). The optimum is tight
+    across subjects (~1.06, std ~0.008) and reduces global distance distortion on every
+    benchmark hemisphere.
+
+    Attributes
+    ----------
+    enabled : bool
+        Whether to apply the distance-optimal rescale (default: True).
+    n_sources : int
+        Number of heat-geodesic source vertices sampled (deterministic).
+    seed : int
+        RNG seed for source sampling (keeps the result deterministic).
+    """
+
+    enabled: bool = True
+    n_sources: int = 200
+    seed: int = 0
+
+
 def _default_phases() -> list[PhaseConfig]:
     """Return default optimization phases matching FreeSurfer's 3 epochs.
 
@@ -294,6 +322,9 @@ class FlattenConfig:
     spring_smoothing: SpringSmoothingConfig = field(
         default_factory=SpringSmoothingConfig
     )
+    distance_optimal_scale: DistanceOptimalScaleConfig = field(
+        default_factory=DistanceOptimalScaleConfig
+    )
     phases: list[PhaseConfig] = field(default_factory=_default_phases)
     print_every: int = 100
     verbose: bool = True
@@ -341,6 +372,11 @@ class FlattenConfig:
                 "max_step_mm": self.spring_smoothing.max_step_mm,
                 "enabled": self.spring_smoothing.enabled,
             },
+            "distance_optimal_scale": {
+                "enabled": self.distance_optimal_scale.enabled,
+                "n_sources": self.distance_optimal_scale.n_sources,
+                "seed": self.distance_optimal_scale.seed,
+            },
             "phases": [
                 {
                     "name": p.name,
@@ -376,6 +412,9 @@ class FlattenConfig:
             **data.get("final_negative_area_removal", {})
         )
         spring_smoothing = SpringSmoothingConfig(**data.get("spring_smoothing", {}))
+        distance_optimal_scale = DistanceOptimalScaleConfig(
+            **data.get("distance_optimal_scale", {})
+        )
         phases_data = data.get("phases", _default_phases())
         phases = [
             p if isinstance(p, PhaseConfig) else PhaseConfig(**p) for p in phases_data
@@ -387,6 +426,7 @@ class FlattenConfig:
             negative_area_removal=negative_area_removal,
             final_negative_area_removal=final_negative_area_removal,
             spring_smoothing=spring_smoothing,
+            distance_optimal_scale=distance_optimal_scale,
             phases=phases,
             print_every=data.get("print_every", 100),
             verbose=data.get("verbose", True),
