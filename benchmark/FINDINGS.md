@@ -24,7 +24,8 @@ provenance) is the ledger at `/data2/projects/autoflatten/ledger/experiments.jso
 - **Where the implementation drifts from that objective:** the `Dijkstra/1.207` target correction is
   slightly too compact and `scale_to_area` is not distance-optimal (§9d) — but recalibrating the
   correction is **not a robust default** (subject-specific optimum, unpredictable from local geometry;
-  §10–11). The only consistently-safe tweak is a distance-optimal output scale (small).
+  §10–11). The only consistently-safe tweak is a distance-optimal output scale — now **shipped as
+  the default** (§16: true-geodesic `s*≈1.06`, multi-hemi validated).
 - **Net:** the pipeline is well-tuned; config-lever gains on distance error are small and non-robust.
   The one remaining path to a *larger robust* reduction is **long-range geodesic anchors in the energy**
   (the paper's own argument) — a real energy change, left as future work.
@@ -559,6 +560,30 @@ faster projection (the geodesic refinement is also the ~33 s/hemi time sink, §1
 smoothing (2) is available (`project_python(morph_close=n)`) and trades a small distortion cost
 for fewer flips if a flip-free patch is ever needed, but is not the default.
 
+## 16. Distance-optimal output scale — shipped as the default
+
+§9d found the area-matched final scale (`s = √(orig_area/total_area)`) is a display
+convention that leaves the map metrically off; §9 left "distance-optimal output scale" as a
+small, safe, unshipped lever. Now validated multi-hemi and shipped.
+
+**Multi-hemi validation** (true-geodesic optimum on 6 hemispheres, fresh heat-method ref per
+hemi): the area-matched map is consistently **~6% too small** — opt scale **1.063 ± 0.008**
+(range 1.050–1.075, *expand*), tight across subjects (so **not** subject-specific in a way that
+would make a single correction unsafe), and it lowers global true distortion on **every**
+hemisphere. (Note: §9's single-hemi estimate was ~1.04; the broader sample lands at ~1.06.)
+
+**Important sign correction:** the *local k-ring* optimum points the **wrong way** (~0.95–0.98,
+*shrink*) because of the `Dijkstra/1.207` target compaction (§9a/§10). The faithful (true
+geodesic) optimum is *expand*. The flatmap viz was briefly normalizing by the local optimum —
+fixed to score at the true output scale instead.
+
+**Shipped:** `DistanceOptimalScaleConfig` (enabled by default), `distance.distance_optimal_scale()`
+(deterministic heat-method sample, fixed seed), applied in `SurfaceFlattener.run()` after the
+final NAR/smoothing. End-to-end on sub-022 lh: `s=1.055`, true global distortion 13.87% → 13.23%
+(−0.64 pp), deterministic on rerun. The saved flat map is now directly comparable to the surface
+(the use case: viewing inflated + flattened together). Disable with
+`config.distance_optimal_scale.enabled = False`.
+
 ## Method note
 
 Determinism confirmed bit-identical across reruns, so a single run per experiment is sound.
@@ -575,7 +600,7 @@ Remaining, in priority order (config levers are exhausted — see §10–11):
   the global metric (Fischl 1999's own point that long-range distances are needed to unfold). Requires
   modifying the energy/optimizer (not a config knob) and weight-tuning; validate with train/test-split
   geodesic sources across subjects. Uncertain but the only path to a larger robust reduction.
-- **Distance-optimal output scale** (small, safe): replace `scale_to_area` with the scale that minimizes
-  distance distortion (a 1-parameter minimization, ≥0 by construction; `s*`≈0.995–1.02). Cheap to ship.
+- ~~**Distance-optimal output scale**~~ — **SHIPPED** (§16): distance-optimal scale (true-geodesic,
+  `s*≈1.06`, default on) now replaces the area-matched display scale; multi-hemi validated.
 - **Ship the validated speed defaults**: Tutte init as default `initial_projection` with initial NAR off
   (§1), plus the §7 lean line-search / sparse k-ring levers.
