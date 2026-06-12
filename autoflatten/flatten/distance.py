@@ -62,6 +62,68 @@ def build_mesh_graph(vertices, faces):
     return sparse.csr_matrix((data, (row, col)), shape=(n_vertices, n_vertices))
 
 
+def distance_optimal_scale(vertices, faces, uv, n_sources=200, seed=0, radius=None):
+    """Global scale ``s*`` that makes a flat map metrically match true geodesic distances.
+
+    Samples ``n_sources`` source vertices (deterministically), computes their true geodesic
+    fields on the 3D patch with the heat method, and returns the single scale ``s`` that
+    minimizes ``mean(|s*d_2d - d_geo| / d_geo)`` over all source->target pairs (optionally
+    capped at ``radius`` mm). Used to replace the area-matched display scale with a
+    distance-faithful one (the area-matched map is ~6% too small; ``s*`` ~ 1.06).
+
+    Parameters
+    ----------
+    vertices : ndarray (V, 3)
+        3D patch vertex positions (use the fiducial surface for anatomical distances).
+    faces : ndarray (F, 3)
+        Patch face indices.
+    uv : ndarray (V, 2)
+        2D flat-map coordinates (same vertex order as ``vertices``).
+    n_sources : int
+        Number of heat-geodesic sources to sample.
+    seed : int
+        RNG seed (keeps the result deterministic).
+    radius : float or None
+        If set, only score pairs within this geodesic distance (mm).
+
+    Returns
+    -------
+    float
+        Distance-optimal scale (1.0 if it cannot be computed).
+    """
+    v = np.ascontiguousarray(vertices, dtype=np.float64)
+    f = np.ascontiguousarray(faces, dtype=np.int64)
+    uv = np.ascontiguousarray(uv, dtype=np.float64)
+    n_v = v.shape[0]
+    if n_v == 0:
+        return 1.0
+
+    rng = np.random.default_rng(seed)
+    srcs = np.sort(rng.choice(n_v, size=min(n_sources, n_v), replace=False))
+
+    data = igl.HeatGeodesicsData()
+    igl.heat_geodesics_precompute(v, f, data)
+
+    d2_all, dg_all = [], []
+    for s in srcs:
+        geo = igl.heat_geodesics_solve(data, np.array([s], dtype=np.int64))
+        mask = geo > 1e-6
+        if radius is not None:
+            mask &= geo <= radius
+        if not np.any(mask):
+            continue
+        d2_all.append(np.linalg.norm(uv[mask] - uv[s], axis=1))
+        dg_all.append(geo[mask])
+
+    if not d2_all:
+        return 1.0
+    d2 = np.concatenate(d2_all)
+    dg = np.concatenate(dg_all)
+    scales = np.linspace(0.85, 1.20, 71)
+    errs = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
+    return float(scales[int(np.argmin(errs))])
+
+
 def get_k_ring(faces, n_vertices, k):
     """Get k-ring neighbors for each vertex.
 
@@ -102,8 +164,19 @@ def get_k_ring(faces, n_vertices, k):
     return k_rings
 
 
-def _get_k_rings_numba(adj_flat, adj_offsets, k):
+def _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks):
     """Compute k-ring neighbors for all vertices in parallel using Numba.
+
+    Parallelism is over **chunks**, not vertices: the vertices are split into ``n_chunks``
+    contiguous blocks and the ``prange`` runs over chunks, so each iteration ``c`` owns its
+    own scratch row (no races) and the scratch (visited / BFS levels / touched list) is
+    allocated **once per chunk**, not per vertex. The previous version allocated three
+    O(n_vertices) arrays *inside* a per-vertex ``prange`` and collected results with an
+    O(n_vertices) scan per vertex; numba would not parallelize that (the per-iteration
+    allocations defeat the parallel analysis), so a fresh compile ran serially and was
+    O(n_vertices^2) -- ~16 min on a 193k-vertex mesh. This version is O(n_vertices * ring)
+    and parallelizes. Output is identical: per-vertex neighbor indices sorted ascending,
+    excluding the source.
 
     Parameters
     ----------
@@ -113,6 +186,8 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
         Offsets into adj_flat for each vertex (length n_vertices + 1)
     k : int
         Number of rings
+    n_chunks : int
+        Number of parallel chunks (typically the thread count).
 
     Returns
     -------
@@ -122,34 +197,48 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
         Offsets into k_rings_flat for each vertex
     """
     n_vertices = len(adj_offsets) - 1
+    chunk_size = (n_vertices + n_chunks - 1) // n_chunks
+
+    # per-chunk scratch, allocated ONCE (not per vertex)
+    visited = np.zeros((n_chunks, n_vertices), dtype=np.bool_)
+    cur = np.empty((n_chunks, n_vertices), dtype=np.int64)
+    nxt = np.empty((n_chunks, n_vertices), dtype=np.int64)
+    touched = np.empty((n_chunks, n_vertices), dtype=np.int64)
+
+    sizes = np.zeros(n_vertices, dtype=np.int64)
 
     # First pass: compute sizes for each vertex
-    sizes = np.zeros(n_vertices, dtype=np.int64)
-    for v in prange(n_vertices):
-        visited = np.zeros(n_vertices, dtype=np.bool_)
-        visited[v] = True
-
-        current_level = np.empty(n_vertices, dtype=np.int64)
-        next_level = np.empty(n_vertices, dtype=np.int64)
-        current_size = 1
-        current_level[0] = v
-
-        for _ in range(k):
-            next_size = 0
-            for i in range(current_size):
-                u = current_level[i]
-                start = adj_offsets[u]
-                end = adj_offsets[u + 1]
-                for j in range(start, end):
-                    neighbor = adj_flat[j]
-                    if not visited[neighbor]:
-                        visited[neighbor] = True
-                        next_level[next_size] = neighbor
-                        next_size += 1
-            current_level, next_level = next_level, current_level
-            current_size = next_size
-
-        sizes[v] = np.sum(visited) - 1  # -1 to exclude source vertex
+    for c in prange(n_chunks):
+        vis = visited[c]
+        tch = touched[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n_vertices)
+        for v in range(v_start, v_end):
+            cl = cur[c]
+            nl = nxt[c]
+            nt = 0
+            vis[v] = True
+            tch[nt] = v
+            nt += 1
+            cl[0] = v
+            csz = 1
+            for _ in range(k):
+                nsz = 0
+                for i in range(csz):
+                    u = cl[i]
+                    for j in range(adj_offsets[u], adj_offsets[u + 1]):
+                        nb = adj_flat[j]
+                        if not vis[nb]:
+                            vis[nb] = True
+                            tch[nt] = nb
+                            nt += 1
+                            nl[nsz] = nb
+                            nsz += 1
+                cl, nl = nl, cl
+                csz = nsz
+            sizes[v] = nt - 1  # exclude source
+            for i in range(nt):
+                vis[tch[i]] = False
 
     # Build offsets for flat output
     offsets = np.zeros(n_vertices + 1, dtype=np.int64)
@@ -159,38 +248,46 @@ def _get_k_rings_numba(adj_flat, adj_offsets, k):
     total_size = offsets[n_vertices]
     k_rings_flat = np.empty(total_size, dtype=np.int64)
 
-    # Second pass: fill k-rings
-    for v in prange(n_vertices):
-        visited = np.zeros(n_vertices, dtype=np.bool_)
-        visited[v] = True
-
-        current_level = np.empty(n_vertices, dtype=np.int64)
-        next_level = np.empty(n_vertices, dtype=np.int64)
-        current_size = 1
-        current_level[0] = v
-
-        for _ in range(k):
-            next_size = 0
-            for i in range(current_size):
-                u = current_level[i]
-                start = adj_offsets[u]
-                end = adj_offsets[u + 1]
-                for j in range(start, end):
-                    neighbor = adj_flat[j]
-                    if not visited[neighbor]:
-                        visited[neighbor] = True
-                        next_level[next_size] = neighbor
-                        next_size += 1
-            current_level, next_level = next_level, current_level
-            current_size = next_size
-
-        # Collect results
-        out_start = offsets[v]
-        idx = 0
-        for i in range(n_vertices):
-            if visited[i] and i != v:
-                k_rings_flat[out_start + idx] = i
-                idx += 1
+    # Second pass: fill k-rings (collect from the touched list, exclude source, sort)
+    for c in prange(n_chunks):
+        vis = visited[c]
+        tch = touched[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n_vertices)
+        for v in range(v_start, v_end):
+            cl = cur[c]
+            nl = nxt[c]
+            nt = 0
+            vis[v] = True
+            tch[nt] = v
+            nt += 1
+            cl[0] = v
+            csz = 1
+            for _ in range(k):
+                nsz = 0
+                for i in range(csz):
+                    u = cl[i]
+                    for j in range(adj_offsets[u], adj_offsets[u + 1]):
+                        nb = adj_flat[j]
+                        if not vis[nb]:
+                            vis[nb] = True
+                            tch[nt] = nb
+                            nt += 1
+                            nl[nsz] = nb
+                            nsz += 1
+                cl, nl = nl, cl
+                csz = nsz
+            out_start = offsets[v]
+            idx = 0
+            for i in range(nt):
+                x = tch[i]
+                if x != v:
+                    k_rings_flat[out_start + idx] = x
+                    idx += 1
+            # sort ascending to match the reference (pure-Python) output order
+            k_rings_flat[out_start : out_start + idx].sort()
+            for i in range(nt):
+                vis[tch[i]] = False
 
     return k_rings_flat, offsets
 
@@ -214,16 +311,7 @@ def get_k_ring_fast(faces, n_vertices, k):
     list of ndarray
         k_ring[i] contains indices of vertices within k edges of vertex i
     """
-    # Build adjacency list and flatten for Numba
-    adj = igl.adjacency_list(faces.astype(np.int64))
-
-    adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
-    adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
-    for i, a in enumerate(adj):
-        adj_offsets[i + 1] = adj_offsets[i] + len(a)
-
-    # Compute k-rings in parallel
-    k_rings_flat, offsets = _get_k_rings_numba(adj_flat, adj_offsets, k)
+    k_rings_flat, offsets = get_k_ring_fast_flat(faces, n_vertices, k)
 
     # Convert back to list of arrays
     k_rings = []
@@ -233,6 +321,23 @@ def get_k_ring_fast(faces, n_vertices, k):
         k_rings.append(k_rings_flat[start:end])
 
     return k_rings
+
+
+def get_k_ring_fast_flat(faces, n_vertices, k):
+    """k-ring neighbors in flat (concatenated) form: ``(k_rings_flat, offsets)``.
+
+    Same computation as :func:`get_k_ring_fast` but returns the flat arrays directly so
+    callers that also compute per-vertex distances can avoid rebuilding the layout.
+    """
+    adj = igl.adjacency_list(faces.astype(np.int64))
+    adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
+    adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
+    for i, a in enumerate(adj):
+        adj_offsets[i + 1] = adj_offsets[i] + len(a)
+
+    # Compute k-rings in parallel (one scratch buffer per chunk)
+    n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
+    return _get_k_rings_numba(adj_flat, adj_offsets, k, n_chunks)
 
 
 # =============================================================================
@@ -400,6 +505,107 @@ def _limited_dijkstra(v, k_ring, graph, correction):
     return np.array([found.get(idx, np.inf) / correction for idx in k_ring])
 
 
+@njit(parallel=True, cache=True)
+def _kring_distances_kernel(
+    indptr, indices, data, rings_flat, offsets, correction, n_chunks
+):
+    """Parallel limited-Dijkstra k-ring distances, in the flat ``rings_flat`` layout.
+
+    For every vertex, computes the corrected graph distance to each of its k-ring targets.
+    Parallelizes over chunks: each chunk owns scratch (dist / visited / target / heap)
+    allocated once and resets only the touched entries between vertices. A naive parallel
+    port of ``_limited_dijkstra_numba`` allocated five O(n_vertices) arrays per call inside
+    the prange, which melts the allocator across threads; this avoids that. Output matches
+    the serial ``_limited_dijkstra_numba`` (same correction, same heap discipline).
+    """
+    nv = len(indptr) - 1
+    n = offsets.shape[0] - 1
+    INF = np.inf
+
+    dist = np.full((n_chunks, nv), INF)
+    visited = np.zeros((n_chunks, nv), dtype=np.bool_)
+    is_target = np.zeros((n_chunks, nv), dtype=np.bool_)
+    touched = np.empty((n_chunks, nv), dtype=np.int64)
+    heap_d = np.empty((n_chunks, nv), dtype=np.float64)
+    heap_v = np.empty((n_chunks, nv), dtype=np.int64)
+    out = np.empty(offsets[n], dtype=np.float64)
+
+    chunk_size = (n + n_chunks - 1) // n_chunks
+
+    for c in prange(n_chunks):
+        d_t = dist[c]
+        vis = visited[c]
+        tgt = is_target[c]
+        tch = touched[c]
+        hd = heap_d[c]
+        hv = heap_v[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n)
+
+        for v in range(v_start, v_end):
+            s = offsets[v]
+            e = offsets[v + 1]
+            m = e - s
+            if m == 0:
+                continue
+
+            for j in range(m):
+                tgt[rings_flat[s + j]] = True
+
+            nt = 0
+            d_t[v] = 0.0
+            tch[nt] = v
+            nt += 1
+            hd[0] = 0.0
+            hv[0] = v
+            hsize = 1
+            found = 0
+
+            while hsize > 0 and found < m:
+                mi = 0
+                md = hd[0]
+                for i in range(1, hsize):
+                    if hd[i] < md:
+                        md = hd[i]
+                        mi = i
+                du = hd[mi]
+                u = hv[mi]
+                hsize -= 1
+                if mi < hsize:
+                    hd[mi] = hd[hsize]
+                    hv[mi] = hv[hsize]
+                if vis[u]:
+                    continue
+                vis[u] = True
+                if tgt[u]:
+                    found += 1
+                for p in range(indptr[u], indptr[u + 1]):
+                    w = indices[p]
+                    if not vis[w]:
+                        ndist = du + data[p]
+                        if ndist < d_t[w]:
+                            if d_t[w] == INF:
+                                tch[nt] = w
+                                nt += 1
+                            d_t[w] = ndist
+                            if hsize < nv:
+                                hd[hsize] = ndist
+                                hv[hsize] = w
+                                hsize += 1
+
+            for j in range(m):
+                out[s + j] = d_t[rings_flat[s + j]] / correction
+
+            for i in range(nt):
+                x = tch[i]
+                d_t[x] = INF
+                vis[x] = False
+            for j in range(m):
+                tgt[rings_flat[s + j]] = False
+
+    return out
+
+
 def compute_kring_geodesic_distances(
     vertices, faces, k, correction=None, use_numba=True, n_threads=None, tqdm_position=0
 ):
@@ -447,36 +653,36 @@ def compute_kring_geodesic_distances(
     # Build mesh graph
     graph = build_mesh_graph(vertices, faces)
 
-    # Get k-ring neighbors (Numba version is ~20x faster)
     if use_numba:
-        k_rings = get_k_ring_fast(faces, n_vertices, k)
-    else:
-        k_rings = get_k_ring(faces, n_vertices, k)
+        # Fully parallel path: build k-rings and distances in flat form with per-chunk
+        # scratch, then reconstruct the per-vertex lists. ~Ncore faster than the previous
+        # serial per-vertex Dijkstra loop.
+        rings_flat, offsets = get_k_ring_fast_flat(faces, n_vertices, k)
+        n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
+        dist_flat = _kring_distances_kernel(
+            graph.indptr,
+            graph.indices,
+            graph.data,
+            rings_flat,
+            offsets,
+            correction,
+            n_chunks,
+        )
+        k_rings = [rings_flat[offsets[v] : offsets[v + 1]] for v in range(n_vertices)]
+        distances = [dist_flat[offsets[v] : offsets[v + 1]] for v in range(n_vertices)]
+        return k_rings, distances
 
-    # Compute distances (Numba version is ~8x faster)
-    if use_numba:
-        distances = [
-            _limited_dijkstra_numba(
-                graph.indptr, graph.indices, graph.data, v, k_rings[v], correction
-            )
-            for v in tqdm(
-                range(n_vertices),
-                desc="Computing k-ring distances",
-                position=tqdm_position,
-                leave=True,
-            )
-        ]
-    else:
-        distances = [
-            _limited_dijkstra(v, k_rings[v], graph, correction)
-            for v in tqdm(
-                range(n_vertices),
-                desc="Computing k-ring distances",
-                position=tqdm_position,
-                leave=True,
-            )
-        ]
-
+    # Pure-Python fallback
+    k_rings = get_k_ring(faces, n_vertices, k)
+    distances = [
+        _limited_dijkstra(v, k_rings[v], graph, correction)
+        for v in tqdm(
+            range(n_vertices),
+            desc="Computing k-ring distances",
+            position=tqdm_position,
+            leave=True,
+        )
+    ]
     return k_rings, distances
 
 
@@ -799,6 +1005,141 @@ def get_num_threads():
     return numba.get_num_threads()
 
 
+@njit(cache=True)
+def _select_angular_samples_njit(angles, n_samples):
+    """Numba port of :func:`select_angular_samples` (bit-identical selection).
+
+    Returns indices into ``angles`` (length ``<= n_samples``) chosen one per angular
+    sector, closest-to-center, deduplicated, with the same ``< sector_width`` gate and the
+    same first-min (``argmin``) tie-breaking as the NumPy version.
+    """
+    m = angles.shape[0]
+    if m == 0:
+        return np.empty(0, dtype=np.int64)
+    if m <= n_samples:
+        out = np.empty(m, dtype=np.int64)
+        for i in range(m):
+            out[i] = i
+        return out
+
+    two_pi = 2.0 * np.pi
+    sector_width = two_pi / n_samples
+    amod = np.empty(m, dtype=np.float64)
+    for i in range(m):
+        amod[i] = angles[i] % two_pi
+
+    sel = np.empty(n_samples, dtype=np.int64)
+    nsel = 0
+    for c in range(n_samples):
+        center = c * sector_width
+        best_idx = 0
+        best_val = np.inf
+        for i in range(m):
+            d = abs(amod[i] - center)
+            d2 = two_pi - d
+            if d2 < d:
+                d = d2
+            if d < best_val:  # strict '<' => first-min, matches np.argmin
+                best_val = d
+                best_idx = i
+        if best_val < sector_width:
+            found = False
+            for j in range(nsel):
+                if sel[j] == best_idx:
+                    found = True
+                    break
+            if not found:
+                sel[nsel] = best_idx
+                nsel += 1
+    return sel[:nsel]
+
+
+@njit(parallel=True, cache=True)
+def _angular_kring_kernel(
+    vertices,
+    normals,
+    rings_flat,
+    level_offsets,
+    indptr,
+    indices,
+    data,
+    k,
+    n_samples,
+    correction,
+    max_nb,
+):
+    """Fused, parallel per-vertex angular sampling + limited Dijkstra.
+
+    Reproduces the serial loop of :func:`compute_kring_geodesic_distances_angular`
+    bit-for-bit (tangent-plane projection -> per-ring angular sampling -> limited
+    Dijkstra) but over a ``prange`` so all CPU cores are used. Each ``prange`` iteration
+    writes only its own output row, so there are no races and the result is deterministic.
+
+    Returns dense ``(n_vertices, max_nb)`` neighbor/distance arrays plus a per-vertex count;
+    the caller slices each row to ``count`` to rebuild the ragged lists.
+    """
+    n_vertices = vertices.shape[0]
+    out_nb = np.full((n_vertices, max_nb), -1, dtype=np.int64)
+    out_dist = np.zeros((n_vertices, max_nb), dtype=np.float64)
+    out_count = np.zeros(n_vertices, dtype=np.int64)
+
+    for v in prange(n_vertices):
+        cx = vertices[v, 0]
+        cy = vertices[v, 1]
+        cz = vertices[v, 2]
+        nx = normals[v, 0]
+        ny = normals[v, 1]
+        nz = normals[v, 2]
+
+        # Local tangent frame (matches project_to_tangent_plane exactly).
+        if abs(nx) < 0.9:
+            rx, ry, rz = 1.0, 0.0, 0.0
+        else:
+            rx, ry, rz = 0.0, 1.0, 0.0
+        ux = ny * rz - nz * ry
+        uy = nz * rx - nx * rz
+        uz = nx * ry - ny * rx
+        un = np.sqrt(ux * ux + uy * uy + uz * uz)
+        ux /= un
+        uy /= un
+        uz /= un
+        vx = ny * uz - nz * uy
+        vy = nz * ux - nx * uz
+        vz = nx * uy - ny * ux
+
+        count = 0
+        for level in range(k):
+            start = level_offsets[v, level]
+            end = level_offsets[v, level + 1]
+            m = end - start
+            if m == 0:
+                continue
+            angles = np.empty(m, dtype=np.float64)
+            for i in range(m):
+                idx = rings_flat[start + i]
+                px = vertices[idx, 0] - cx
+                py = vertices[idx, 1] - cy
+                pz = vertices[idx, 2] - cz
+                xx = px * ux + py * uy + pz * uz
+                yy = px * vx + py * vy + pz * vz
+                angles[i] = np.arctan2(yy, xx)
+            sel = _select_angular_samples_njit(angles, n_samples)
+            for s in range(sel.shape[0]):
+                out_nb[v, count] = rings_flat[start + sel[s]]
+                count += 1
+
+        out_count[v] = count
+        if count > 0:
+            targets = out_nb[v, :count].copy()
+            dists = _limited_dijkstra_numba(
+                indptr, indices, data, v, targets, correction
+            )
+            for i in range(count):
+                out_dist[v, i] = dists[i]
+
+    return out_nb, out_dist, out_count
+
+
 def compute_kring_geodesic_distances_angular(
     vertices,
     faces,
@@ -853,65 +1194,81 @@ def compute_kring_geodesic_distances_angular(
     # Build mesh graph for distance computation
     graph = build_mesh_graph(vertices, faces)
 
-    # Get rings organized by level (Numba version is ~20x faster)
-    print(f"Computing {k}-ring neighbors by level...")
-    if use_numba:
-        rings_by_level = get_rings_by_level_fast(faces, n_vertices, k)
-    else:
-        rings_by_level = get_rings_by_level(faces, n_vertices, k)
-
     # Compute vertex normals for tangent plane projection
     print("Computing vertex normals...")
     normals = compute_vertex_normals(vertices.astype(np.float64), faces)
 
-    # For each vertex, sample from each ring level
     print(f"Angular sampling ({n_samples_per_ring} per ring)...")
-    sampled_neighbors = []
-    sampled_distances = []
+    if use_numba:
+        # Fused parallel path: build flat rings, then run the prange kernel over all
+        # vertices (tangent projection + angular sampling + limited Dijkstra). Output is
+        # bit-identical to the serial loop below but uses all cores.
+        print(f"Computing {k}-ring neighbors by level...")
+        adj = igl.adjacency_list(faces.astype(np.int64))
+        adj_flat = np.concatenate([np.array(a, dtype=np.int64) for a in adj])
+        adj_offsets = np.zeros(n_vertices + 1, dtype=np.int64)
+        for i, a in enumerate(adj):
+            adj_offsets[i + 1] = adj_offsets[i] + len(a)
+        rings_flat, level_offsets = _get_rings_by_level_numba(adj_flat, adj_offsets, k)
 
-    for v in tqdm(
-        range(n_vertices), desc="Sampling neighbors", position=tqdm_position, leave=True
-    ):
-        v_neighbors = []
+        verts64 = np.ascontiguousarray(vertices, dtype=np.float64)
+        norms64 = np.ascontiguousarray(normals, dtype=np.float64)
+        out_nb, out_dist, out_count = _angular_kring_kernel(
+            verts64,
+            norms64,
+            rings_flat,
+            level_offsets,
+            graph.indptr,
+            graph.indices,
+            graph.data,
+            k,
+            n_samples_per_ring,
+            correction,
+            k * n_samples_per_ring,
+        )
+        sampled_neighbors = [
+            out_nb[v, : out_count[v]].copy() for v in range(n_vertices)
+        ]
+        sampled_distances = [
+            out_dist[v, : out_count[v]].copy() for v in range(n_vertices)
+        ]
+    else:
+        # Serial fallback (kept for parity / debugging).
+        print(f"Computing {k}-ring neighbors by level...")
+        rings_by_level = get_rings_by_level(faces, n_vertices, k)
+        sampled_neighbors = []
+        sampled_distances = []
 
-        center = vertices[v]
-        normal = normals[v]
+        for v in tqdm(
+            range(n_vertices),
+            desc="Sampling neighbors",
+            position=tqdm_position,
+            leave=True,
+        ):
+            v_neighbors = []
+            center = vertices[v]
+            normal = normals[v]
 
-        for level in range(k):
-            ring = rings_by_level[v][level]
-            if len(ring) == 0:
-                continue
+            for level in range(k):
+                ring = rings_by_level[v][level]
+                if len(ring) == 0:
+                    continue
+                ring_pos = vertices[ring]
+                xy = project_to_tangent_plane(center, normal, ring_pos)
+                angles = np.arctan2(xy[:, 1], xy[:, 0])
+                sample_idx = select_angular_samples(angles, n_samples_per_ring)
+                if len(sample_idx) > 0:
+                    selected = ring[sample_idx]
+                    v_neighbors.extend(selected)
 
-            # Get positions of ring neighbors
-            ring_pos = vertices[ring]
-
-            # Project to tangent plane
-            xy = project_to_tangent_plane(center, normal, ring_pos)
-
-            # Compute angles
-            angles = np.arctan2(xy[:, 1], xy[:, 0])
-
-            # Select angularly-spaced samples
-            sample_idx = select_angular_samples(angles, n_samples_per_ring)
-
-            if len(sample_idx) > 0:
-                selected = ring[sample_idx]
-                v_neighbors.extend(selected)
-
-        # Compute distances to all selected neighbors
-        v_neighbors = np.array(v_neighbors, dtype=np.int64)
-        if len(v_neighbors) > 0:
-            if use_numba:
-                v_distances = _limited_dijkstra_numba(
-                    graph.indptr, graph.indices, graph.data, v, v_neighbors, correction
-                )
-            else:
+            v_neighbors = np.array(v_neighbors, dtype=np.int64)
+            if len(v_neighbors) > 0:
                 v_distances = _limited_dijkstra(v, v_neighbors, graph, correction)
-        else:
-            v_distances = np.array([])
+            else:
+                v_distances = np.array([])
 
-        sampled_neighbors.append(v_neighbors)
-        sampled_distances.append(v_distances)
+            sampled_neighbors.append(v_neighbors)
+            sampled_distances.append(v_distances)
 
     # Summary stats
     total_neighbors = sum(len(n) for n in sampled_neighbors)
