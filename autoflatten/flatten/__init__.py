@@ -23,6 +23,7 @@ Example:
 from .algorithm import (
     SurfaceFlattener,
     TopologyError,
+    align_to_freesurfer_orientation,
     count_flipped_triangles,
     freesurfer_projection,
     remove_isolated_vertices,
@@ -83,6 +84,7 @@ __all__ = [
     # Mesh utilities
     "count_flipped_triangles",
     "freesurfer_projection",
+    "align_to_freesurfer_orientation",
     "remove_isolated_vertices",
     "validate_topology",
     # Distance computation

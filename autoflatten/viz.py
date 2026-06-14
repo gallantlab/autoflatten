@@ -118,6 +118,9 @@ def compute_kring_distortion(
     orig_indices,
     k=2,
     n_samples_per_ring=None,
+    optimal_scale=False,
+    signed=False,
+    return_opt_scale=False,
     verbose=True,
 ):
     """Compute per-vertex metric distortion using k-ring geodesic distances.
@@ -145,15 +148,26 @@ def compute_kring_distortion(
     n_samples_per_ring : int or None
         Angular samples per ring. If None, use all neighbors without angular
         sampling (default: None, faster). Use 12 for pyflatten-style sampling.
+    optimal_scale : bool
+        If True, rescale the flatmap by the global scale that minimizes distortion
+        before scoring, so a global scale offset does not inflate the per-vertex map
+        (default: False, preserves the raw-scale metric).
+    signed : bool
+        If True, return signed relative distortion per vertex (+ stretched, - compressed)
+        instead of magnitude (default: False).
+    return_opt_scale : bool
+        If True, also return the optimal scale as a third value (default: False).
     verbose : bool
         Print progress messages
 
     Returns
     -------
     vertex_distortion : ndarray of shape (N,)
-        Percentage distortion at each vertex
+        Per-vertex distortion (magnitude %, or signed % if ``signed``)
     mean_distortion : float
-        Overall mean percentage distortion (same formula as autoflatten)
+        Overall mean magnitude distortion (same formula as autoflatten)
+    opt_scale : float
+        Distance-optimal scale (only if ``return_opt_scale``)
     """
     n_patch_vertices = len(xy)
 
@@ -203,40 +217,66 @@ def compute_kring_distortion(
     if verbose:
         print("Computing per-vertex distortion...")
 
-    # Compute per-vertex distortion
-    vertex_distortion = np.zeros(n_patch_vertices)
-    total_abs_error = 0.0
-    total_target = 0.0
-
-    for v in range(n_patch_vertices):
-        neighbors = k_rings[v]
-        targets = target_distances[v]
-
-        if len(neighbors) == 0:
-            vertex_distortion[v] = 0.0
-            continue
-
-        # Compute 2D Euclidean distances to neighbors
-        d_2d = np.linalg.norm(xy[neighbors] - xy[v], axis=1)
-
-        # Compute per-vertex distortion: 100 * mean(|d_2D - d_3D|) / mean(d_3D)
-        mean_target = np.mean(targets)
-        if mean_target > 0.0:
-            abs_errors = np.abs(d_2d - targets)
-            vertex_distortion[v] = 100.0 * np.mean(abs_errors) / mean_target
-
-            # Accumulate for global mean
-            total_abs_error += np.sum(abs_errors)
-            total_target += np.sum(targets)
-        else:
-            # If all target distances are zero, define local distortion as zero
-            vertex_distortion[v] = 0.0
-
-    # Global mean distortion (same formula as autoflatten)
-    mean_distortion = (
-        100.0 * total_abs_error / total_target if total_target > 0 else 0.0
+    # Compute per-vertex distortion (vectorized over the flattened neighbor lists).
+    # Per-vertex: 100 * mean(|d_2D - d_3D|) / mean(d_3D) == 100 * sum_abs / sum_target,
+    # since the per-vertex neighbor count cancels.
+    counts = np.fromiter(
+        (len(r) for r in k_rings), dtype=np.int64, count=n_patch_vertices
+    )
+    src = np.repeat(np.arange(n_patch_vertices), counts)
+    nbr = (
+        np.concatenate(k_rings).astype(np.int64)
+        if counts.sum()
+        else np.empty(0, np.int64)
+    )
+    tgt = (
+        np.concatenate(target_distances)
+        if counts.sum()
+        else np.empty(0, dtype=np.float64)
     )
 
+    d_2d = np.linalg.norm(xy[nbr] - xy[src], axis=1)
+
+    # Optional: rescale the flatmap by the single global scale s* that minimizes distortion
+    # (the distance-optimal scale), so a global scale offset does not inflate every vertex
+    # and the map shows true local shape distortion.
+    opt_scale = 1.0
+    if optimal_scale and d_2d.size:
+        pos = tgt > 0
+        if pos.any():
+            d, t = d_2d[pos], tgt[pos]
+            scales = np.linspace(0.85, 1.20, 71)
+            errs = np.array([np.mean(np.abs(s * d - t) / t) for s in scales])
+            opt_scale = float(scales[int(np.argmin(errs))])
+    d_scaled = opt_scale * d_2d
+
+    sum_tgt = np.bincount(src, weights=tgt, minlength=n_patch_vertices)
+    sum_abs = np.bincount(
+        src, weights=np.abs(d_scaled - tgt), minlength=n_patch_vertices
+    )
+    valid = sum_tgt > 0.0
+
+    # Summary mean is always the magnitude distortion (for the figure subtitle). Restrict
+    # the numerator to valid vertices (sum_tgt > 0) so vertices whose only contributions are
+    # zero-length targets don't inflate it -- matches the old per-vertex loop exactly.
+    total_target = sum_tgt[valid].sum()
+    mean_distortion = (
+        100.0 * sum_abs[valid].sum() / total_target if total_target > 0 else 0.0
+    )
+
+    vertex_distortion = np.zeros(n_patch_vertices)
+    if signed:
+        # Signed relative distortion: + = flatmap stretched (2D longer than 3D),
+        # - = compressed. Same tgt-weighting as the magnitude metric.
+        sum_d = np.bincount(src, weights=d_scaled, minlength=n_patch_vertices)
+        vertex_distortion[valid] = (
+            100.0 * (sum_d[valid] - sum_tgt[valid]) / sum_tgt[valid]
+        )
+    else:
+        vertex_distortion[valid] = 100.0 * sum_abs[valid] / sum_tgt[valid]
+
+    if return_opt_scale:
+        return vertex_distortion, mean_distortion, opt_scale
     return vertex_distortion, mean_distortion
 
 
@@ -312,6 +352,7 @@ def plot_flatmap(
     show_boundary=True,
     distortion_cmap="viridis",
     distance_method="fast",
+    signed=True,
     dpi=150,
 ):
     """
@@ -398,6 +439,10 @@ def plot_flatmap(
             "Must be 'fast' or 'pyflatten'."
         )
 
+    # The flattener now applies the distance-optimal scale at generation, so the saved
+    # flat map is already metrically faithful -- score at its true scale (no local
+    # re-normalization, which uses the gameable local k-ring optimum and points the wrong
+    # way). Pass optimal_scale=True only to diagnose an old, un-rescaled patch.
     vertex_dist, mean_dist = compute_kring_distortion(
         xy,
         base_vertices,
@@ -405,6 +450,7 @@ def plot_flatmap(
         orig_indices,
         k=k,
         n_samples_per_ring=n_samples,
+        signed=signed,
         verbose=True,
     )
 
@@ -510,27 +556,40 @@ def plot_flatmap(
     # Center plot: Per-vertex metric distortion (percentage)
     ax = axes[1]
 
-    # Fixed color limits: 0-100%
-    vmin = 0
-    vmax = 100
+    # Signed -> diverging colormap with symmetric limits (robust 98th pct of |value|);
+    # magnitude -> fixed 0-100% with the sequential colormap.
+    if signed:
+        vlim = (
+            float(np.percentile(np.abs(vertex_dist), 98)) if vertex_dist.size else 1.0
+        )
+        vlim = max(vlim, 1.0)
+        vmin, vmax = -vlim, vlim
+        cmap = "RdBu_r"
+        cbar_label = "Signed distortion (%)  (+ stretched / − compressed)"
+        center_title = f"Signed Distortion ({k}-ring)"
+    else:
+        vmin, vmax = 0, 100
+        cmap = distortion_cmap
+        cbar_label = "Distortion (%)"
+        center_title = f"Metric Distortion ({k}-ring)"
 
     # Use tripcolor with vertex values for smooth interpolation
     tpc = ax.tripcolor(
         triang,
         vertex_dist,
         shading="gouraud",
-        cmap=distortion_cmap,
+        cmap=cmap,
         vmin=vmin,
         vmax=vmax,
     )
 
     # Create colorbar
-    fig.colorbar(tpc, ax=ax, label="Distortion (%)", shrink=0.8)
+    fig.colorbar(tpc, ax=ax, label=cbar_label, shrink=0.8)
 
     ax.set_aspect("equal")
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
-    ax.set_title(f"Metric Distortion ({k}-ring)")
+    ax.set_title(center_title)
 
     # Right plot: Histogram of distortion distribution
     ax = axes[2]
@@ -541,35 +600,57 @@ def plot_flatmap(
     hist, bin_edges = np.histogram(vertex_dist_clipped, bins=n_bins, range=(vmin, vmax))
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-    # Color bars by distortion value using same colormap
+    # Color bars by distortion value using same colormap as the map panel
     norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap_obj = plt.colormaps[distortion_cmap]
+    cmap_obj = plt.colormaps[cmap]
     colors = cmap_obj(norm(bin_centers))
 
     ax.bar(
         bin_centers, hist, width=np.diff(bin_edges)[0], color=colors, edgecolor="none"
     )
 
-    # Add mean and median lines (use weighted mean_dist from compute_kring_distortion)
-    median_dist = np.median(vertex_dist)
-    ax.axvline(
-        x=mean_dist,
-        color="black",
-        linestyle="--",
-        linewidth=2,
-        label=f"Mean: {mean_dist:.1f}%",
-    )
-    ax.axvline(
-        x=median_dist,
-        color="gray",
-        linestyle=":",
-        linewidth=1.5,
-        label=f"Median: {median_dist:.1f}%",
-    )
+    if signed:
+        # 0 reference + mean signed; the magnitude mean is reported in the subtitle.
+        mean_signed = float(np.mean(vertex_dist))
+        ax.axvline(x=0.0, color="black", linewidth=1.0)
+        ax.axvline(
+            x=mean_signed,
+            color="black",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean_signed:+.1f}%",
+        )
+        ax.axvline(
+            x=float(np.median(vertex_dist)),
+            color="gray",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"Median: {np.median(vertex_dist):+.1f}%",
+        )
+        xlabel = "Signed distortion (%)"
+        dist_title = f"Signed Distortion ({k}-ring)"
+    else:
+        median_dist = np.median(vertex_dist)
+        ax.axvline(
+            x=mean_dist,
+            color="black",
+            linestyle="--",
+            linewidth=2,
+            label=f"Mean: {mean_dist:.1f}%",
+        )
+        ax.axvline(
+            x=median_dist,
+            color="gray",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"Median: {median_dist:.1f}%",
+        )
+        xlabel = "Distortion (%)"
+        dist_title = f"Distortion Distribution ({k}-ring)"
 
-    ax.set_xlabel("Distortion (%)")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("Vertex Count")
-    ax.set_title(f"Distortion Distribution ({k}-ring)")
+    ax.set_title(dist_title)
     ax.legend(loc="upper right", fontsize=8)
     ax.set_xlim(vmin, vmax)
 

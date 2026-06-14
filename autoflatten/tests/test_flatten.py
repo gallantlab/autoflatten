@@ -1416,6 +1416,98 @@ class TestSelectAngularSamples:
         assert len(selected) == 0, f"Expected empty array, got {len(selected)} elements"
 
 
+class TestAngularKernelParity:
+    """The parallel Numba k-ring kernel must match the NumPy/serial path bit-for-bit."""
+
+    def test_njit_sampler_matches_numpy(self):
+        from autoflatten.flatten.distance import (
+            _select_angular_samples_njit,
+            select_angular_samples,
+        )
+
+        rng = np.random.default_rng(0)
+        for n_samples in (6, 8):
+            for m in (0, 1, 5, 6, 7, 20, 100):
+                angles = rng.uniform(-np.pi, np.pi, size=m)
+                exp = select_angular_samples(angles, n_samples=n_samples)
+                got = _select_angular_samples_njit(angles, n_samples)
+                assert np.array_equal(np.asarray(exp), np.asarray(got)), (
+                    f"m={m} n={n_samples}: {exp} vs {got}"
+                )
+
+    def _small_mesh(self):
+        # A subdivided plane with a little z-relief so tangent frames are nontrivial.
+        n = 12
+        xs, ys = np.meshgrid(np.linspace(0, 1, n), np.linspace(0, 1, n))
+        zs = 0.05 * np.sin(4 * xs) * np.cos(4 * ys)
+        verts = np.stack([xs.ravel(), ys.ravel(), zs.ravel()], axis=1).astype(
+            np.float64
+        )
+        faces = []
+        for i in range(n - 1):
+            for j in range(n - 1):
+                a = i * n + j
+                b = a + 1
+                c = a + n
+                d = c + 1
+                faces.append([a, b, d])
+                faces.append([a, d, c])
+        return verts, np.asarray(faces, dtype=np.int64)
+
+    def test_numba_kernel_matches_reference(self):
+        """Kernel == the original serial loop over the SAME (discovery-order) rings.
+
+        The ``use_numba=False`` fallback sorts each ring, so it intentionally differs; the
+        meaningful guarantee is that the parallel kernel reproduces the original numba
+        production path (``get_rings_by_level_fast`` + serial sampling) bit-for-bit.
+        """
+        from autoflatten.flatten.distance import (
+            GRAPH_DISTANCE_CORRECTION,
+            _limited_dijkstra_numba,
+            build_mesh_graph,
+            compute_kring_geodesic_distances_angular as ang,
+            compute_vertex_normals,
+            get_rings_by_level_fast,
+            project_to_tangent_plane,
+            select_angular_samples,
+        )
+
+        verts, faces = self._small_mesh()
+        k, nspr = 4, 6
+        kr_n, td_n = ang(verts, faces, k, n_samples_per_ring=nspr, use_numba=True)
+
+        # Reference: the original numba-path loop (discovery-order rings).
+        graph = build_mesh_graph(verts, faces)
+        rings = get_rings_by_level_fast(faces, verts.shape[0], k)
+        normals = compute_vertex_normals(verts.astype(np.float64), faces)
+        for v in range(verts.shape[0]):
+            nb = []
+            for level in range(k):
+                ring = rings[v][level]
+                if len(ring) == 0:
+                    continue
+                xy = project_to_tangent_plane(verts[v], normals[v], verts[ring])
+                ang_ = np.arctan2(xy[:, 1], xy[:, 0])
+                idx = select_angular_samples(ang_, nspr)
+                if len(idx) > 0:
+                    nb.extend(ring[idx])
+            nb = np.array(nb, dtype=np.int64)
+            d = (
+                _limited_dijkstra_numba(
+                    graph.indptr,
+                    graph.indices,
+                    graph.data,
+                    v,
+                    nb,
+                    GRAPH_DISTANCE_CORRECTION,
+                )
+                if len(nb) > 0
+                else np.array([])
+            )
+            assert np.array_equal(np.asarray(kr_n[v]), nb), v
+            assert np.array_equal(np.asarray(td_n[v], dtype=np.float64), d), v
+
+
 class TestThreadConfig:
     """Tests for set_num_threads and get_num_threads."""
 
@@ -2025,3 +2117,127 @@ class TestIsolatedVertexMesh:
         assert np.isclose(float(neg_area), 0.0), (
             f"Expected no negative area, got {float(neg_area)}"
         )
+
+
+def _grid_patch(n=8):
+    """A planar n x n triangulated grid patch: (V,3) vertices, (F,3) faces."""
+    xs, ys = np.meshgrid(np.arange(n), np.arange(n))
+    verts = np.c_[xs.ravel(), ys.ravel(), np.zeros(n * n)].astype(float)
+    faces = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            b = i * n + j + 1
+            c = (i + 1) * n + j
+            d = (i + 1) * n + j + 1
+            faces += [[a, b, c], [b, d, c]]
+    return verts, np.array(faces, dtype=np.int64)
+
+
+class TestPerfFidelityAdditions:
+    """Performance + metric-fidelity additions: parallel k-ring kernel parity,
+    distance-optimal output scale, orientation alignment, vectorized distortion."""
+
+    def test_numba_kernel_matches_pure_python(self):
+        """Non-angular k-ring distance kernel (numba heap) == pure-Python reference."""
+        from autoflatten.flatten.distance import compute_kring_geodesic_distances
+
+        verts, faces = _grid_patch(8)
+        nb_n, nb_d = compute_kring_geodesic_distances(verts, faces, k=3, use_numba=True)
+        py_n, py_d = compute_kring_geodesic_distances(
+            verts, faces, k=3, use_numba=False
+        )
+        assert len(nb_n) == len(py_n) == len(verts)
+        for i in range(len(verts)):
+            a = dict(zip(np.asarray(nb_n[i]).tolist(), np.asarray(nb_d[i]).tolist()))
+            b = dict(zip(np.asarray(py_n[i]).tolist(), np.asarray(py_d[i]).tolist()))
+            assert set(a) == set(b)
+            for key in a:
+                assert a[key] == pytest.approx(b[key], abs=1e-9)
+
+    def test_distance_optimal_scale_recovers_known_scale(self):
+        """Optimal scale ~1 when the flat map is already isometric; larger when shrunk."""
+        from autoflatten.flatten.distance import distance_optimal_scale
+
+        verts, faces = _grid_patch(10)
+        uv = verts[:, :2].copy()  # flat map isometric to the (planar) patch
+        s = distance_optimal_scale(verts, faces, uv, n_sources=20, seed=0)
+        assert s == pytest.approx(1.0, abs=0.05)
+        # a flat map shrunk by half needs a larger scale to match the geodesics
+        s_shrunk = distance_optimal_scale(verts, faces, uv * 0.5, n_sources=20, seed=0)
+        assert s_shrunk > s
+
+    def test_distance_optimal_scale_degenerate_returns_one(self):
+        """Empty patch returns a safe 1.0 (no crash)."""
+        from autoflatten.flatten.distance import distance_optimal_scale
+
+        s = distance_optimal_scale(
+            np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64), np.zeros((0, 2))
+        )
+        assert s == 1.0
+
+    def test_align_orientation_is_isometry(self):
+        """Alignment is a pure rotation/reflection: recenters, preserves pairwise distances."""
+        from autoflatten.flatten.algorithm import align_to_freesurfer_orientation
+
+        verts, faces = _grid_patch(8)
+        rot = np.array([[0.6, -0.8], [0.8, 0.6]])
+        uv = verts[:, :2] @ rot + np.array([3.0, -2.0])
+        aligned = align_to_freesurfer_orientation(uv, verts, faces)
+        assert np.allclose(aligned.mean(axis=0), 0.0, atol=1e-9)
+
+        def pdist(x):
+            d = x[:, None, :] - x[None, :, :]
+            return np.sqrt((d**2).sum(-1))
+
+        # orthogonal transform => all pairwise distances unchanged (no scale/shear)
+        assert np.allclose(pdist(aligned), pdist(uv), atol=1e-6)
+
+    def test_flip_count_invariant_to_alignment(self):
+        """The minority-sign (flipped) triangle count is invariant under alignment --
+        this is why run() measures the final flip count before the (possibly reflecting)
+        alignment, so a flip-free map is never reported as fully flipped."""
+        from autoflatten.flatten.algorithm import align_to_freesurfer_orientation
+
+        verts, faces = _grid_patch(6)
+        uv = verts[:, :2].copy()
+        aligned = align_to_freesurfer_orientation(uv, verts, faces)
+
+        def signed_areas(x):
+            a, b, c = x[faces[:, 0]], x[faces[:, 1]], x[faces[:, 2]]
+            return 0.5 * (
+                (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+                - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
+            )
+
+        def minority(s):
+            return int(min((s > 0).sum(), (s < 0).sum()))
+
+        assert minority(signed_areas(uv)) == minority(signed_areas(aligned))
+
+    def test_compute_kring_distortion_signed_and_optscale(self):
+        """Vectorized distortion: magnitude, signed, and optimal-scale paths all run."""
+        from autoflatten.viz import compute_kring_distortion
+
+        verts, faces = _grid_patch(8)
+        xy = verts[:, :2].copy()
+        orig = np.arange(len(verts))
+        vd, md = compute_kring_distortion(xy, verts, faces, orig, k=2, verbose=False)
+        assert vd.shape == (len(verts),)
+        assert md >= 0.0
+        vds, _ = compute_kring_distortion(
+            xy, verts, faces, orig, k=2, signed=True, verbose=False
+        )
+        assert vds.shape == (len(verts),)
+        out = compute_kring_distortion(
+            xy,
+            verts,
+            faces,
+            orig,
+            k=2,
+            optimal_scale=True,
+            return_opt_scale=True,
+            verbose=False,
+        )
+        assert len(out) == 3
+        assert out[2] > 0.0
