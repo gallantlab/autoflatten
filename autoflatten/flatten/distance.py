@@ -102,6 +102,7 @@ def get_k_ring(faces, n_vertices, k):
     return k_rings
 
 
+@njit(parallel=True, cache=True)
 def _get_k_rings_numba(adj_flat, adj_offsets, k):
     """Compute k-ring neighbors for all vertices in parallel using Numba.
 
