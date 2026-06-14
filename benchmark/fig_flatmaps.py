@@ -68,21 +68,26 @@ def _per_vertex_distortion(flat_path: Path, base_path: Path):
     from autoflatten.viz import compute_kring_distortion
 
     coords, orig_idx, _border = fs.read_patch(str(flat_path))
-    xy = np.asarray(coords[:, :2], dtype=np.float64)
+    xy = np.ascontiguousarray(coords[:, :2], dtype=np.float64)
     surf = fs.read_surface(str(base_path))
-    bv, bf = surf[0], surf[1]
-    dist = compute_kring_distortion(
+    bv = np.ascontiguousarray(surf[0], dtype=np.float64)
+    bf = np.ascontiguousarray(
+        surf[1], dtype=np.int64
+    )  # cast big-endian -> native int64
+    orig = np.ascontiguousarray(orig_idx, dtype=np.int64)
+    # compute_kring_distortion returns (vertex_distortion, mean_distortion)
+    vertex_dist, _mean = compute_kring_distortion(
         xy,
-        np.asarray(bv),
-        np.asarray(bf),
-        np.asarray(orig_idx),
+        bv,
+        bf,
+        orig,
         k=KRING_K,
         n_samples_per_ring=KRING_N,
         optimal_scale=True,
         signed=False,
         verbose=False,
     )
-    return xy, np.asarray(dist, dtype=np.float64)
+    return xy, np.asarray(vertex_dist, dtype=np.float64)
 
 
 def render_hemi(
