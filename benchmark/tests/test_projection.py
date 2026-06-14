@@ -1,0 +1,103 @@
+"""Tests for the FreeSurfer-free cut projection (benchmark.projection).
+
+The mapper-logic tests are self-contained (no FreeSurfer, no real data). The end-to-end
+exact-match test is gated on the narratives derivatives tree being present.
+"""
+
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pytest
+
+from benchmark.projection import (
+    DEFAULT_SUBJECTS_DIR,
+    map_cuts_to_subject_python,
+    map_label_surface,
+)
+
+
+def _fib_sphere(n, radius=100.0, seed=0):
+    """Deterministic ~evenly spread points on a sphere (Fibonacci lattice)."""
+    i = np.arange(n) + 0.5
+    phi = np.arccos(1 - 2 * i / n)
+    golden = np.pi * (1 + 5**0.5)
+    theta = golden * i
+    xyz = np.stack(
+        [np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=1
+    )
+    return xyz * radius
+
+
+# --- mapper logic (no FreeSurfer) -------------------------------------------------
+def test_identity_sphere_recovers_label_exactly():
+    """src_sphere == trg_sphere: union(push, pull) of a label must return the label."""
+    sphere = _fib_sphere(500)
+    label = np.array([3, 7, 42, 128, 499])
+    mapped = map_label_surface(sphere, sphere, label)
+    assert set(mapped.tolist()) == set(label.tolist())
+
+
+def test_empty_label_maps_to_empty():
+    sphere = _fib_sphere(200)
+    assert map_label_surface(sphere, sphere, np.array([], dtype=int)).size == 0
+
+
+def test_union_superset_of_both_passes():
+    """The union map must contain every vertex from the pull-only and push-only passes."""
+    from scipy.spatial import cKDTree
+
+    src = _fib_sphere(300, seed=1)
+    trg = _fib_sphere(450, seed=2)  # denser target
+    label = np.arange(0, 300, 7)
+
+    # pull-only
+    _, nearest_src = cKDTree(src).query(trg, k=1)
+    in_label = np.zeros(len(src), bool)
+    in_label[label] = True
+    pull = set(np.nonzero(in_label[nearest_src])[0].tolist())
+    # push-only
+    _, push_idx = cKDTree(trg).query(src[label], k=1)
+    push = set(push_idx.tolist())
+
+    mapped = set(map_label_surface(src, trg, label).tolist())
+    assert pull <= mapped and push <= mapped
+    assert mapped == (pull | push)
+
+
+def test_mapper_is_deterministic():
+    src = _fib_sphere(300, seed=1)
+    trg = _fib_sphere(400, seed=2)
+    vd = {"cut": np.arange(0, 300, 5), "mwall": np.arange(100, 200)}
+    a = map_cuts_to_subject_python(vd, "x", "lh", src_sphere=src, trg_sphere=trg)
+    b = map_cuts_to_subject_python(vd, "x", "lh", src_sphere=src, trg_sphere=trg)
+    for k in vd:
+        assert np.array_equal(a[k], b[k])
+
+
+# --- end-to-end exact match (gated on real data) ----------------------------------
+_HAS_NARRATIVES = os.path.isdir(os.path.join(DEFAULT_SUBJECTS_DIR, "fsaverage", "surf"))
+
+
+@pytest.mark.skipif(
+    not _HAS_NARRATIVES, reason="narratives derivatives tree not present"
+)
+def test_end_to_end_patch_matches_cached_freesurfer():
+    """Full FS-free projection reproduces the cached FreeSurfer patch exactly."""
+    from autoflatten.freesurfer import read_patch
+    from benchmark.projection import project_python
+
+    subject, hemi = "sub-022", "lh"
+    cached = os.path.join(
+        DEFAULT_SUBJECTS_DIR, subject, "surf", f"{hemi}.autoflatten.patch.3d"
+    )
+    if not os.path.exists(cached):
+        pytest.skip("cached patch not present")
+
+    res = project_python(
+        subject, hemi, out_patch=f"/tmp/test_{subject}_{hemi}.patch.3d"
+    )
+    _, py_idx, _ = read_patch(res["patch_file"])
+    _, fs_idx, _ = read_patch(cached)
+    assert set(int(i) for i in py_idx) == set(int(i) for i in fs_idx)
