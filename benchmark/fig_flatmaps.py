@@ -40,6 +40,16 @@ MLABEL = {
     "tutte_default": "AutoFlatten\n(tutte_default)",
     "freesurfer6": "FreeSurfer 6",
 }
+MCOL = {
+    "robust_fast": "#2e6f95",  # blue
+    "tutte_default": "#8a4f9e",  # purple
+    "freesurfer6": "#d1495b",  # red
+}
+MLEG = {
+    "robust_fast": "AutoFlatten (robust_fast)",
+    "tutte_default": "AutoFlatten (tutte_default)",
+    "freesurfer6": "FreeSurfer 6",
+}
 
 
 def _flat_path(cores_dir: Path, subject: str, hemi: str, method: str) -> Path | None:
@@ -109,20 +119,20 @@ def render_hemi(
     # Shared scales across the (available) methods within this hemi.
     alld = np.concatenate([d for _, d in panels.values()])
     vmax = float(np.percentile(alld, 98))
-    bins = np.linspace(0, vmax, 41)
+    bins = np.linspace(0, vmax, 61)
 
     present = [m for m in METHODS if m in panels]
-    fig, axes = plt.subplots(
-        2,
-        len(present),
-        figsize=(2.5 * len(present), 4.6),
-        gridspec_kw={"height_ratios": [2.2, 1.0]},
-        squeeze=False,
+    fig = plt.figure(figsize=(2.5 * len(present), 4.9))
+    gs = fig.add_gridspec(
+        2, len(present), height_ratios=[2.4, 1.35], hspace=0.28, wspace=0.08
     )
+
+    # --- top row: spatial distortion map per method (shared color scale) ---
+    top_axes = []
     sc = None
     for j, m in enumerate(present):
         xy, dist = panels[m]
-        ax = axes[0][j]
+        ax = fig.add_subplot(gs[0, j])
         sc = ax.scatter(
             xy[:, 0],
             xy[:, 1],
@@ -136,25 +146,46 @@ def render_hemi(
         )
         ax.set_aspect("equal")
         ax.axis("off")
-        ax.set_title(
-            f"{MLABEL[m]}\nmean {np.mean(dist):.1f}%  p90 {np.percentile(dist, 90):.1f}%",
-            fontsize=7,
-        )
-        axh = axes[1][j]
-        axh.hist(dist, bins=bins, color="0.35", edgecolor="none")
-        axh.set_xlim(0, vmax)
-        axh.set_xlabel("distortion (%)", fontsize=7)
-        if j == 0:
-            axh.set_ylabel("# vertices", fontsize=7)
-        axh.spines["top"].set_visible(False)
-        axh.spines["right"].set_visible(False)
-
+        ax.set_title(MLABEL[m], fontsize=7.5, color=MCOL[m])
+        top_axes.append(ax)
     if sc is not None:
-        cbar = fig.colorbar(sc, ax=axes[0].tolist(), fraction=0.025, pad=0.01)
+        cbar = fig.colorbar(sc, ax=top_axes, fraction=0.022, pad=0.01)
         cbar.set_label("metric distortion (%)", fontsize=7)
+
+    # --- bottom: all method histograms overlaid on one axis (% of vertices) ---
+    axh = fig.add_subplot(gs[1, :])
+    for m in present:
+        dist = panels[m][1]
+        w = np.full(len(dist), 100.0 / len(dist))  # -> % of vertices (fair across N)
+        mean, p90 = float(np.mean(dist)), float(np.percentile(dist, 90))
+        axh.hist(
+            dist,
+            bins=bins,
+            weights=w,
+            histtype="stepfilled",
+            color=MCOL[m],
+            alpha=0.18,
+            linewidth=0,
+        )
+        axh.hist(
+            dist,
+            bins=bins,
+            weights=w,
+            histtype="step",
+            color=MCOL[m],
+            linewidth=1.6,
+            label=f"{MLEG[m]}  (mean {mean:.1f}%, p90 {p90:.1f}%)",
+        )
+        axh.axvline(mean, color=MCOL[m], lw=0.8, ls="--", alpha=0.7)
+    axh.set_xlim(0, vmax)
+    axh.set_xlabel("metric distortion (%)", fontsize=8)
+    axh.set_ylabel("% of vertices", fontsize=8)
+    axh.legend(loc="upper right", frameon=False, fontsize=6.5)
+    axh.spines["top"].set_visible(False)
+    axh.spines["right"].set_visible(False)
+
     fig.suptitle(
-        f"{subject} {hemi} -- per-vertex metric distortion "
-        f"(k={KRING_K}, optimal scale)",
+        f"{subject} {hemi} -- per-vertex metric distortion (k={KRING_K}, optimal scale)",
         fontsize=9,
     )
 
