@@ -22,6 +22,7 @@ from .config import (
 from .distance import (
     compute_kring_geodesic_distances,
     compute_kring_geodesic_distances_angular,
+    distance_optimal_scale,
 )
 from .energy import (
     compute_2d_areas,
@@ -393,6 +394,42 @@ def freesurfer_projection(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray
     uv = rotated[:, :2]
 
     return uv
+
+
+def align_to_freesurfer_orientation(
+    uv: np.ndarray, vertices: np.ndarray, faces: np.ndarray
+) -> np.ndarray:
+    """Orthogonally align a flat map to FreeSurfer's average-normal projection orientation.
+
+    A flip-free initialization (Tutte/LSCM) maps the patch boundary to a circle in an
+    *arbitrary* rotation/reflection, so the resulting flat map's orientation is undefined
+    relative to the convention downstream tools assume. That convention is set by
+    FreeSurfer's normal-axis initial projection (:func:`freesurfer_projection`) -- the
+    pipeline historically inherited it because the optimizer started from that projection.
+
+    This rotates and (if needed) reflects the final map -- no scaling, no shear -- to best
+    match the FreeSurfer projection of the same patch, so the output orientation is
+    consistent regardless of which initialization produced it. Determined purely from the
+    patch geometry; FreeSurfer is not invoked.
+
+    Args:
+        uv: (V, 2) final flat coordinates.
+        vertices: (V, 3) patch vertices (same array the projection init uses).
+        faces: (F, 3) patch faces.
+
+    Returns:
+        (V, 2) flat coordinates, centered at the origin and rotated/reflected to the
+        FreeSurfer-projection orientation. Scale is preserved.
+    """
+    ref = freesurfer_projection(np.asarray(vertices), np.asarray(faces))
+    uv = np.asarray(uv, dtype=float)
+    uc = uv - uv.mean(axis=0)
+    rc = ref - ref.mean(axis=0)
+    # Orthogonal Procrustes (reflection allowed): R minimizes ||uc @ R - rc||_F.
+    cross = uc.T @ rc
+    u_mat, _, vt = np.linalg.svd(cross)
+    rot = u_mat @ vt
+    return uc @ rot
 
 
 @jax.jit
@@ -1837,9 +1874,59 @@ class SurfaceFlattener:
                 snapshot_callback=_wrap_callback(snapshot_callback, "smoothing"),
             )
 
+        # Flipped-triangle count is a property of the optimization result and is invariant
+        # under the rigid orientation alignment + uniform scale applied below. Measure it
+        # here, BEFORE alignment: alignment may apply a reflection (det < 0) to match the
+        # FreeSurfer chirality, which flips every triangle's signed area and would corrupt
+        # count_flipped_triangles (it keys on area <= 0), reporting a flip-free map as fully
+        # flipped.
+        n_flipped_final = int(count_flipped_triangles(jnp.asarray(uv), self.faces_jax))
+
+        # Orientation: a flip-free init (Tutte/LSCM) leaves the map's rotation/reflection
+        # arbitrary; align it to FreeSurfer's normal-projection orientation so downstream
+        # tools (which assume that convention) keep working. No-op-ish for projection init.
+        if getattr(config, "align_orientation", True):
+            uv = align_to_freesurfer_orientation(uv, self.vertices, self.faces)
+            if verbose:
+                print("Aligned output to FreeSurfer-projection orientation")
+
+        # Distance-optimal output scale: replace the area-matched display scale with the
+        # single global scale that minimizes true-geodesic distance distortion, so the saved
+        # flat map is metrically faithful (surface and flat map are directly comparable).
+        # Runs igl's heat method at the very end of a long optimization, so a failure here
+        # must never discard the result -- fall back to the unscaled map on any error or a
+        # non-finite scale.
+        dos = config.distance_optimal_scale
+        if dos.enabled:
+            ref_vertices = (
+                self.fiducial_vertices
+                if self.fiducial_vertices is not None
+                else self.vertices
+            )
+            try:
+                s_opt = distance_optimal_scale(
+                    ref_vertices,
+                    self.faces,
+                    uv,
+                    n_sources=dos.n_sources,
+                    seed=dos.seed,
+                )
+            except Exception as exc:  # noqa: BLE001 - never lose the flatten over a rescale
+                s_opt = 1.0
+                if verbose:
+                    print(
+                        f"Distance-optimal output scale failed ({exc}); leaving unscaled"
+                    )
+            if not np.isfinite(s_opt) or s_opt <= 0:
+                s_opt = 1.0
+            if s_opt != 1.0:
+                centroid = uv.mean(axis=0)
+                uv = (uv - centroid) * s_opt + centroid
+            if verbose:
+                print(f"Distance-optimal output scale: x{s_opt:.4f}")
+
         # Final stats
         uv_jax = jnp.asarray(uv)
-        n_flipped_final = int(count_flipped_triangles(uv_jax, self.faces_jax))
         mean_pct_error = float(
             _compute_distance_error_jit(
                 uv_jax, self.neighbors_jax, self.targets_jax, self.mask_jax

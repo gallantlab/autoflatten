@@ -33,6 +33,10 @@ jobs:
         uv pip install -e ".[test]"
 
     - name: Test with pytest
+      # NUMBA_DISABLE_JIT lets coverage.py trace the @njit kernels (k-ring / Dijkstra),
+      # which are exercised by the tests but invisible to coverage when JIT-compiled.
+      env:
+        NUMBA_DISABLE_JIT: 1
       run: |
         uv run pytest --cov=autoflatten --cov-report=xml
 
