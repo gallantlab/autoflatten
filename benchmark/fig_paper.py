@@ -135,6 +135,31 @@ def _box(ax, x, vals, color, width=0.5):
     )
 
 
+def _fs6_e2e_perbrain(subjects=None):
+    """FreeSurfer 6 per-brain mris_flatten time (min): lh+rh summed per subject.
+
+    From the existing fs6_compare/timing.csv (OMP mris_flatten, never re-run). If ``subjects``
+    is given, restrict to those (paired to the AutoFlatten subjects).
+    """
+    rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "timing.csv")
+    by_sub = defaultdict(dict)
+    for r in rows:
+        by_sub[r["subject"]][r["hemi"]] = _f(r.get("runtime_s"))
+    keep = set(subjects) if subjects else None
+    out = []
+    for s, hemis in by_sub.items():
+        if keep is not None and s not in keep:
+            continue
+        if (
+            "lh" in hemis
+            and "rh" in hemis
+            and np.isfinite(hemis["lh"])
+            and np.isfinite(hemis["rh"])
+        ):
+            out.append((hemis["lh"] + hemis["rh"]) / 60.0)
+    return out
+
+
 # =================================================================================
 # Figure 1: end-to-end runtime @16 cores (group-level)
 # =================================================================================
@@ -156,29 +181,48 @@ def fig_runtime_e2e(e2e_dir: Path, configs, out_dir: Path, ts: str) -> None:
         print("  [fig_runtime_e2e] no e2e data, skipping")
         return
 
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(6.4, 3.0))
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(6.6, 3.1))
 
-    # --- Panel A: per-brain total runtime (minutes), one point per subject ---
-    for i, cfg in enumerate(configs):
-        totals_min = [sum(v.values()) / 60.0 for v in data[cfg].values()]
-        _box(axA, i, totals_min, COL[cfg], width=0.5)
-        _strip(axA, i, totals_min, COL[cfg], seed=i)
-        if totals_min:
-            med = float(np.median(totals_min))
+    # --- Panel A: per-brain total runtime (min, log) -- AutoFlatten vs FreeSurfer 6 ---
+    af_subjects = sorted({s for cfg in configs for s in data.get(cfg, {})})
+    fs6_perbrain = _fs6_e2e_perbrain(af_subjects)  # min, paired to the same subjects
+    cats = list(configs) + (["freesurfer6"] if fs6_perbrain else [])
+    cat_vals = {
+        **{
+            cfg: [sum(v.values()) / 60.0 for v in data[cfg].values()] for cfg in configs
+        },
+        "freesurfer6": fs6_perbrain,
+    }
+    for i, cat in enumerate(cats):
+        vals = cat_vals.get(cat, [])
+        _box(axA, i, vals, COL[cat], width=0.5)
+        _strip(axA, i, vals, COL[cat], seed=i)
+        if vals:
+            med = float(np.median(vals))
+            top = float(np.max(vals))
+            txt = f"{med:.0f} min" if med >= 30 else f"{med:.1f} min"
             axA.annotate(
-                f"{med:.1f} min",
-                (i, med),
-                color=COL[cfg],
-                fontsize=7,
-                xytext=(8, 0),
+                txt,
+                (i, top),
+                color=COL[cat],
+                fontsize=6.5,
+                xytext=(0, 5),
                 textcoords="offset points",
-                va="center",
+                ha="center",
+                va="bottom",
             )
-    axA.set_xticks(range(len(configs)))
-    axA.set_xticklabels([LABEL[c].replace("AutoFlatten ", "AF\n") for c in configs])
-    axA.set_xlim(-0.6, len(configs) - 0.4)
+    axA.set_yscale("log")
+    axA.set_xticks(range(len(cats)))
+    axA.set_xticklabels(
+        [
+            LABEL[c]
+            .replace("AutoFlatten ", "AF\n")
+            .replace("FreeSurfer 6", "FreeSurfer 6")
+            for c in cats
+        ]
+    )
+    axA.set_xlim(-0.6, len(cats) - 0.4)
     axA.set_ylabel("per-brain wall-clock (min)")
-    axA.set_ylim(bottom=0)
     axA.set_title("Time to flatten one brain\n(both hemispheres, 16 cores)", fontsize=8)
 
     # --- Panel B: per-stage runtime distribution (log s), grouped by config ---
@@ -207,7 +251,18 @@ def fig_runtime_e2e(e2e_dir: Path, configs, out_dir: Path, ts: str) -> None:
     ]
     axB.legend(handles=handles, loc="upper left", frameon=False, fontsize=6.5)
 
-    fig.suptitle("End-to-end AutoFlatten runtime @ 16 cores", fontsize=9.5)
+    axB.set_title("Where the time goes (AutoFlatten)", fontsize=8)
+    axA.text(
+        0.5,
+        -0.32,
+        "FreeSurfer 6 = mris_flatten (flatten only, OMP)",
+        transform=axA.transAxes,
+        ha="center",
+        va="top",
+        fontsize=5.5,
+        color="0.4",
+    )
+    fig.suptitle("End-to-end AutoFlatten runtime vs FreeSurfer 6", fontsize=9.5)
     _save(fig, out_dir, "fig_runtime_e2e", ts)
 
 
