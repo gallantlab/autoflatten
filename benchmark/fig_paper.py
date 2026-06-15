@@ -49,6 +49,7 @@ plt.rcParams.update(
         "savefig.dpi": 300,
         "pdf.fonttype": 42,  # editable text in vector PDF
         "font.family": "sans-serif",
+        "figure.constrained_layout.use": True,  # auto-space titles/labels, no overlap
     }
 )
 
@@ -81,18 +82,64 @@ def _f(x, default=np.nan):
 
 def _save(fig, out_dir: Path, name: str, ts: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig.text(0.005, 0.005, f"{name}  TS={ts}", fontsize=4.5, color="0.5")
+    # timestamp stamp in the top-right corner (empty space, clear of all labels)
+    fig.text(
+        0.995,
+        0.995,
+        f"{name}  TS={ts}",
+        fontsize=4.5,
+        color="0.6",
+        ha="right",
+        va="top",
+    )
     for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"{name}_{ts}.{ext}", bbox_inches="tight")
+        fig.savefig(
+            out_dir / f"{name}_{ts}.{ext}", bbox_inches="tight", pad_inches=0.12
+        )
     plt.close(fig)
     print(f"  wrote {name}_{ts}.pdf / .png")
 
 
+def _strip(ax, x, vals, color, half_width=0.16, seed=0, size=11):
+    """Jittered strip of points centred on category position ``x``."""
+    vals = [v for v in vals if np.isfinite(v)]
+    if not vals:
+        return
+    jit = (np.random.default_rng(seed).random(len(vals)) - 0.5) * 2 * half_width
+    ax.scatter(
+        np.full(len(vals), x) + jit,
+        vals,
+        s=size,
+        color=color,
+        alpha=0.75,
+        linewidths=0,
+        zorder=3,
+    )
+
+
+def _box(ax, x, vals, color, width=0.5):
+    """Translucent box (no fliers) for a category, coloured by method."""
+    vals = [v for v in vals if np.isfinite(v)]
+    if not vals:
+        return
+    ax.boxplot(
+        [vals],
+        positions=[x],
+        widths=width,
+        showfliers=False,
+        patch_artist=True,
+        boxprops=dict(facecolor=color, alpha=0.30, linewidth=0.6),
+        medianprops=dict(color=color, linewidth=1.4),
+        whiskerprops=dict(linewidth=0.6),
+        capprops=dict(linewidth=0.6),
+    )
+
+
 # =================================================================================
-# Figure 1: end-to-end per-subject runtime @16 cores
+# Figure 1: end-to-end runtime @16 cores (group-level)
 # =================================================================================
 def fig_runtime_e2e(e2e_dir: Path, configs, out_dir: Path, ts: str) -> None:
-    # per-subject per-config stage totals (sum over hemis)
+    # per-subject per-config stage totals (sum over both hemispheres)
     data = {}  # config -> subject -> {projection,prep,flatten}
     for cfg in configs:
         rows = _read_csv(e2e_dir / "e2e" / f"{cfg}_{ts}.csv")
@@ -105,73 +152,62 @@ def fig_runtime_e2e(e2e_dir: Path, configs, out_dir: Path, ts: str) -> None:
             per_sub[s]["prep"] += _f(r["prep_s"], 0)
             per_sub[s]["flatten"] += _f(r["flatten_s"], 0)
         data[cfg] = dict(per_sub)
-    subjects = sorted({s for cfg in configs for s in data.get(cfg, {})})
-    if not subjects:
+    if not any(data.values()):
         print("  [fig_runtime_e2e] no e2e data, skipping")
         return
 
-    n_cfg = len(configs)
-    fig, ax = plt.subplots(figsize=(min(7.0, 0.45 * len(subjects) * n_cfg + 1.5), 2.6))
-    x = np.arange(len(subjects))
-    width = 0.8 / n_cfg
-    for j, cfg in enumerate(configs):
-        off = (j - (n_cfg - 1) / 2) * width
-        proj = np.array(
-            [data[cfg].get(s, {}).get("projection", np.nan) for s in subjects]
-        )
-        prep = np.array([data[cfg].get(s, {}).get("prep", np.nan) for s in subjects])
-        flat = np.array([data[cfg].get(s, {}).get("flatten", np.nan) for s in subjects])
-        ax.bar(
-            x + off,
-            proj,
-            width,
-            color=STAGE_COL["projection"],
-            edgecolor="white",
-            linewidth=0.3,
-            label="projection" if j == 0 else None,
-        )
-        ax.bar(
-            x + off,
-            prep,
-            width,
-            bottom=proj,
-            color=STAGE_COL["prep"],
-            edgecolor="white",
-            linewidth=0.3,
-            label="prep (k-ring)" if j == 0 else None,
-        )
-        ax.bar(
-            x + off,
-            flat,
-            width,
-            bottom=proj + prep,
-            color=STAGE_COL["flatten"],
-            edgecolor="white",
-            linewidth=0.3,
-            label="flatten" if j == 0 else None,
-        )
-        totals = proj + prep + flat
-        med = np.nanmedian(totals)
-        ax.axhline(med, color=COL[cfg], lw=0.8, ls="--", alpha=0.8)
-        ax.text(
-            len(subjects) - 0.4,
-            med,
-            f" {LABEL[cfg].split('(')[1].rstrip(')')}\n median {med:.0f}s",
-            color=COL[cfg],
-            fontsize=5.5,
-            va="center",
-            ha="left",
-        )
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(6.4, 3.0))
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(
-        [s.replace("sub-", "") for s in subjects], rotation=45, ha="right"
-    )
-    ax.set_xlabel("subject")
-    ax.set_ylabel("per-brain wall-clock (s, 16 cores)")
-    ax.set_title("End-to-end AutoFlatten runtime (both hemispheres, 16 cores)")
-    ax.legend(loc="upper left", frameon=False, ncol=3, fontsize=6)
-    ax.margins(x=0.02)
+    # --- Panel A: per-brain total runtime (minutes), one point per subject ---
+    for i, cfg in enumerate(configs):
+        totals_min = [sum(v.values()) / 60.0 for v in data[cfg].values()]
+        _box(axA, i, totals_min, COL[cfg], width=0.5)
+        _strip(axA, i, totals_min, COL[cfg], seed=i)
+        if totals_min:
+            med = float(np.median(totals_min))
+            axA.annotate(
+                f"{med:.1f} min",
+                (i, med),
+                color=COL[cfg],
+                fontsize=7,
+                xytext=(8, 0),
+                textcoords="offset points",
+                va="center",
+            )
+    axA.set_xticks(range(len(configs)))
+    axA.set_xticklabels([LABEL[c].replace("AutoFlatten ", "AF\n") for c in configs])
+    axA.set_xlim(-0.6, len(configs) - 0.4)
+    axA.set_ylabel("per-brain wall-clock (min)")
+    axA.set_ylim(bottom=0)
+    axA.set_title("Time to flatten one brain\n(both hemispheres, 16 cores)", fontsize=8)
+
+    # --- Panel B: per-stage runtime distribution (log s), grouped by config ---
+    stages = [
+        ("projection", "projection"),
+        ("prep", "prep (k-ring)"),
+        ("flatten", "flatten"),
+    ]
+    gap = len(configs) + 0.8
+    centers = []
+    for si, (skey, _slabel) in enumerate(stages):
+        base = si * gap
+        centers.append(base + (len(configs) - 1) / 2)
+        for ci, cfg in enumerate(configs):
+            vals = [data[cfg][s][skey] for s in data[cfg]]
+            _box(axB, base + ci, vals, COL[cfg], width=0.6)
+            _strip(axB, base + ci, vals, COL[cfg], seed=si * 10 + ci, size=8)
+    axB.set_yscale("log")
+    axB.set_xticks(centers)
+    axB.set_xticklabels([s[1] for s in stages])
+    axB.set_ylabel("stage wall-clock (s)")
+    axB.set_title("Where the time goes", fontsize=8)
+    handles = [
+        plt.Line2D([0], [0], color=COL[c], lw=3, alpha=0.6, label=LABEL[c])
+        for c in configs
+    ]
+    axB.legend(handles=handles, loc="upper left", frameon=False, fontsize=6.5)
+
+    fig.suptitle("End-to-end AutoFlatten runtime @ 16 cores", fontsize=9.5)
     _save(fig, out_dir, "fig_runtime_e2e", ts)
 
 
