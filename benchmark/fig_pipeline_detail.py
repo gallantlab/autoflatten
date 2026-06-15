@@ -24,9 +24,10 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 PROJ_C = "#2e6f95"
 FLAT_C = "#5a9367"
 IO_C = "#b07d2b"  # inputs / outputs
+ROBUST_C = "#2e6f95"  # robust_fast
+TUTTE_C = "#8a4f9e"  # tutte_default
 
 
-# (phase, kind, title, detail, n_detail_lines)
 def _steps(hemi):
     return [
         (
@@ -47,14 +48,8 @@ def _steps(hemi):
             "proj",
             "step",
             "ensure_continuous_cuts",
-            "NetworkX connected components → shortest-path reconnect",
-        ),
-        (
-            "proj",
-            "step",
-            "refine_cuts_with_geodesic",
-            "replace mapped cuts with geodesic shortest paths\n"
-            "on the fiducial surface (curvature-weighted graph)",
+            "connect cut components (NetworkX shortest paths) — cuts kept in place\n"
+            "[continuity-only; geodesic cut refinement available but off by default]",
         ),
         ("proj", "io", "create_patch_file", f"→  {hemi}.autoflatten.patch.3d"),
         (
@@ -67,9 +62,9 @@ def _steps(hemi):
         (
             "flat",
             "step",
-            "Initialization",
-            "Tutte flip-free embedding (libigl harmonic)  [default]\n"
-            "or FreeSurfer normal-projection init",
+            "Initialization  (both configs)",
+            "Tutte flip-free embedding (libigl harmonic)\n"
+            "[package legacy option: FreeSurfer normal-projection init]",
         ),
         (
             "flat",
@@ -83,7 +78,8 @@ def _steps(hemi):
             "flat",
             "step",
             "Negative-area removal",
-            "initial + final passes — eliminate flipped triangles",
+            "final pass — eliminate flipped triangles\n"
+            "(initial NAR off — the flip-free Tutte start makes it moot)",
         ),
         ("flat", "step", "Spring smoothing", "Laplacian smoothing (visual quality)"),
         ("flat", "io", "Distance-optimal rescale", f"→  {hemi}.flat.patch.3d"),
@@ -101,10 +97,10 @@ def render(hemi, out_dir: Path, ts: str) -> None:
     box_w = 7.4
     pitch = 1.70
     top = len(steps) * pitch
-    fig_h = 0.66 * len(steps) + 1.2
-    fig, ax = plt.subplots(figsize=(7.2, fig_h))
+    fig_h = 0.66 * len(steps) + 2.4
+    fig, ax = plt.subplots(figsize=(7.4, fig_h))
     ax.set_xlim(0, 10)
-    ax.set_ylim(-0.4, top + 1.0)
+    ax.set_ylim(-2.9, top + 1.0)
     ax.axis("off")
 
     centers = []
@@ -188,8 +184,57 @@ def render(hemi, out_dir: Path, ts: str) -> None:
             color=color,
         )
 
-    _band(0, 4, "PROJECTION  (FreeSurfer-free)", PROJ_C)
-    _band(5, 10, "FLATTENING  (pyflatten · JAX)", FLAT_C)
+    _band(0, 3, "PROJECTION  (FreeSurfer-free)", PROJ_C)
+    _band(4, 9, "FLATTENING  (pyflatten · JAX)", FLAT_C)
+
+    # config-comparison callout below the flow
+    cy0 = centers[-1] - 0.67
+    ax.add_patch(
+        FancyBboxPatch(
+            (5 - box_w / 2, cy0 - 1.9),
+            box_w,
+            1.7,
+            boxstyle="round,pad=0.02,rounding_size=0.10",
+            facecolor="#f7f5ef",
+            edgecolor="0.55",
+            linewidth=1.0,
+            linestyle="--",
+            zorder=2,
+        )
+    )
+    ax.text(
+        5,
+        cy0 - 0.36,
+        "Two configurations  (both Tutte init · initial NAR off)",
+        ha="center",
+        va="top",
+        fontsize=8,
+        fontweight="bold",
+        color="0.25",
+        zorder=3,
+    )
+    ax.text(
+        5,
+        cy0 - 0.82,
+        "robust_fast  (shipping default):  k-ring n = 6 · line-search 7  "
+        "→  ~3× faster, ~same accuracy",
+        ha="center",
+        va="top",
+        fontsize=6.4,
+        color=ROBUST_C,
+        zorder=3,
+    )
+    ax.text(
+        5,
+        cy0 - 1.24,
+        "tutte_default  (quality-first):  k-ring n = 12 · full refinement  "
+        "→  lowest distortion, slower",
+        ha="center",
+        va="top",
+        fontsize=6.4,
+        color=TUTTE_C,
+        zorder=3,
+    )
 
     ax.text(
         5,

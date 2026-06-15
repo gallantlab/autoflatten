@@ -151,7 +151,7 @@ def render(subject, hemi, flat_path, out_dir: Path, ts: str) -> None:
         0.39,
         0.55,
         "map fsaverage cuts\n(sphere.reg push/pull)\n"
-        "→ continuity + geodesic\n→ cut into patch",
+        "→ ensure cut continuity\n→ cut into patch",
         PROJ_C,
     )
     _arrow(
@@ -176,13 +176,32 @@ def render(subject, hemi, flat_path, out_dir: Path, ts: str) -> None:
     fig.text(
         0.5, 0.965, "AutoFlatten pipeline", ha="center", fontsize=12, fontweight="bold"
     )
+    # config comparison (both use Tutte init; differ in k-ring density + line search)
     fig.text(
         0.5,
-        0.03,
-        f"red = cut boundary / medial wall   ·   example: {subject} {hemi}",
+        0.105,
+        "Flattening configs (both Tutte init):",
         ha="center",
         fontsize=6,
-        color="0.45",
+        color="0.3",
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.075,
+        "robust_fast — k-ring n=6, line-search 7  (~3× faster, default)        "
+        "tutte_default — n=12, full refinement  (quality-first)",
+        ha="center",
+        fontsize=6,
+        color="0.3",
+    )
+    fig.text(
+        0.5,
+        0.025,
+        f"red = cut boundary / medial wall   ·   example: {subject} {hemi}",
+        ha="center",
+        fontsize=5.5,
+        color="0.5",
     )
     fig.text(
         0.006,
