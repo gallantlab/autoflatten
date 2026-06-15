@@ -58,6 +58,7 @@ Repository = "https://github.com/gallantlab/autoflatten"
 
 [tool.setuptools.packages.find]
 include = ["autoflatten*"]
+exclude = ["benchmark*"]  # research/benchmark tooling: never ship in the wheel
 
 [tool.setuptools.package-data]
 autoflatten = ["default_templates/*.json"]

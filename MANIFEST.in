@@ -3,5 +3,6 @@ include README.md
 recursive-include autoflatten/default_templates *
 prune scripts
 prune docs
+prune benchmark
 exclude CLAUDE.md
 exclude .pre-commit-config.yaml
