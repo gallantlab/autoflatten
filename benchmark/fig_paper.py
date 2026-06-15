@@ -267,16 +267,23 @@ def fig_core_scaling(
 # =================================================================================
 # Figure 3: distortion (true-geodesic, optimal scale)
 # =================================================================================
-def _fs6_distortion(s_time_subjects=None):
-    """FS6 true-geodesic distortion from the existing comparison CSV."""
+def _fs6_distortion(hemis=None):
+    """FS6 true-geodesic distortion from the existing comparison CSV.
+
+    If ``hemis`` (a set of ``(subject, hemi)``) is given, restrict to those so FS6 is scored
+    on the *same* hemispheres as AutoFlatten (paired comparison).
+    """
     rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_20subj.csv")
     loc = {"robust_fast": [], "tutte_default": [], "freesurfer6": []}
     glob = {"robust_fast": [], "tutte_default": [], "freesurfer6": []}
     for r in rows:
         m = r.get("method")
-        if m in loc:
-            loc[m].append(_f(r.get("true_local_mean")))
-            glob[m].append(_f(r.get("true_global_at_optscale")))
+        if m not in loc:
+            continue
+        if hemis is not None and (r.get("subject"), r.get("hemi")) not in hemis:
+            continue
+        loc[m].append(_f(r.get("true_local_mean")))
+        glob[m].append(_f(r.get("true_global_at_optscale")))
     return loc, glob
 
 
@@ -291,7 +298,9 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
     nmax = max(int(r["n_cores"]) for r in rows)
     sel = [r for r in rows if int(r["n_cores"]) == nmax]
 
-    fs6_loc, fs6_glob = _fs6_distortion()
+    # pair FS6 to the exact hemispheres AutoFlatten was scored on
+    af_hemis = {(r["subject"], r["hemi"]) for r in sel}
+    fs6_loc, fs6_glob = _fs6_distortion(hemis=af_hemis)
     methods = list(configs) + ["freesurfer6"]
     panels = [
         (
