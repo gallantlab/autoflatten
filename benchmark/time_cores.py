@@ -156,10 +156,18 @@ def make_config(name: str):
     return cfg
 
 
-def build_entry(subject: str, hemi: str) -> dict:
-    """Build a manifest-style entry straight from the Narratives FreeSurfer derivatives."""
+def build_entry(subject: str, hemi: str, patch_dir: str | None = None) -> dict:
+    """Build a manifest-style entry.
+
+    Patch comes from ``patch_dir`` (re-projected continuity-only patches) when given,
+    else from the Narratives FreeSurfer derivatives. Base surface is always the derivatives
+    fiducial.
+    """
     surf = Path(paths.NARRATIVES_FS) / subject / "surf"
-    patch = surf / f"{hemi}.autoflatten.patch.3d"
+    if patch_dir:
+        patch = Path(patch_dir) / f"{subject}_{hemi}.autoflatten.patch.3d"
+    else:
+        patch = surf / f"{hemi}.autoflatten.patch.3d"
     fid = surf / f"{hemi}.fiducial"
     base = fid if fid.exists() else surf / f"{hemi}.smoothwm"
     if not patch.exists():
@@ -173,6 +181,41 @@ def build_entry(subject: str, hemi: str) -> dict:
         "surface_path": str(base),
         "surface_kind": base.suffix.lstrip("."),
     }
+
+
+def reproject_continuity_only(subject: str, hemi: str, patch_dir: Path) -> Path:
+    """Re-project one hemi with the shipped continuity-only pipeline (geodesic refine off)."""
+    from . import projection
+
+    patch_dir.mkdir(parents=True, exist_ok=True)
+    out = patch_dir / f"{subject}_{hemi}.autoflatten.patch.3d"
+    if not out.exists():
+        projection.project_python(
+            subject,
+            hemi,
+            subjects_dir=str(paths.NARRATIVES_FS),
+            continuity=True,
+            refine_geodesic=False,
+            out_patch=str(out),
+            verbose=False,
+        )
+    return out
+
+
+def run_truegeo(run_dir: Path, subject: str, hemi: str, flattener):
+    """Run-local true-geodesic reference (avoids clobbering the shared kring_cache)."""
+    import numpy as np
+
+    from . import truedist
+
+    tg = run_dir / "truegeo" / f"{subject}_{hemi}.truegeo.npz"
+    if tg.exists():
+        d = np.load(tg)
+        return {"srcs": d["srcs"], "geo": d["geo"], "R": float(d["R"])}
+    ref = truedist.compute_truegeo(flattener)
+    tg.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(tg, **ref)
+    return ref
 
 
 # ---------------------------------------------------------------------------------
@@ -238,7 +281,7 @@ def run_worker(args) -> int:
         "status": "ok",
     }
     try:
-        entry = build_entry(args.subject, args.hemi)
+        entry = build_entry(args.subject, args.hemi, patch_dir=args.patch_dir)
         cfg = make_config(args.config)
 
         # --- prep (load + k-ring geodesics, cache DISABLED + JAX setup) ---
@@ -267,13 +310,7 @@ def run_worker(args) -> int:
         row["area_distortion"] = round(float(m["area_distortion"]), 6)
 
         # --- true-geodesic metrics (energy-independent, reported) ---
-        tg_path = truedist.truegeo_path(args.subject, args.hemi)
-        if tg_path.exists():
-            ref = truedist.load_truegeo(args.subject, args.hemi)
-        else:
-            ref = truedist.compute_truegeo(fl)
-            tg_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(tg_path, **ref)
+        ref = run_truegeo(run_dir, args.subject, args.hemi, fl)
         full = truedist.true_distortion_full(uv, ref)
         row["true_local_mean"] = round(float(full["true_local_mean"]), 4)
         row["true_global_mean"] = round(float(full["true_global_mean"]), 4)
@@ -390,12 +427,26 @@ def run_driver(args) -> int:
                     "configs": CONFIGS,
                     "core_counts": CORE_COUNTS,
                     "s_time": [f"{s}.{h}" for s, h in S_TIME],
+                    "projection": "continuity_only"
+                    if args.reproject
+                    else "derivatives_patches",
                     "kring_cache": "disabled",
                     "created": datetime.now().isoformat(timespec="seconds"),
                 },
                 indent=2,
             )
         )
+
+    # re-project S_time with the shipped continuity-only pipeline (geodesic refine off)
+    patch_dir = None
+    if args.reproject:
+        patch_dir = run_dir / "patches"
+        print(
+            f"Re-projecting {len(S_TIME)} hemis continuity-only -> {patch_dir}",
+            flush=True,
+        )
+        for s, h in S_TIME:
+            reproject_continuity_only(s, h, patch_dir)
 
     done = _done_cells(csv_path)
     # 1-core dominates wall-clock -> run small core counts last so quick cells land first.
@@ -432,6 +483,8 @@ def run_driver(args) -> int:
             "--ts",
             ts,
         ]
+        if patch_dir is not None:
+            cmd += ["--patch-dir", str(patch_dir)]
         subprocess.run(cmd, check=False, cwd=Path(__file__).resolve().parent.parent)
     print(f"\nDone. CSV -> {csv_path}")
     return 0
@@ -453,6 +506,17 @@ def main() -> int:
     )
     ap.add_argument(
         "--ts", default=None, help="run timestamp; omit on driver to mint a fresh one"
+    )
+    ap.add_argument(
+        "--patch-dir",
+        default=None,
+        help="worker: dir of re-projected {subject}_{hemi}.autoflatten.patch.3d "
+        "(else use Narratives derivatives)",
+    )
+    ap.add_argument(
+        "--reproject",
+        action="store_true",
+        help="driver: re-project S_time continuity-only into <run>/patches first",
     )
     args = ap.parse_args()
 

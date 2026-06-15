@@ -32,6 +32,7 @@ from .time_cores import (
     _git_sha,
     make_config,
     pin_cores,
+    run_truegeo,
 )
 
 # Fixed end-to-end subject set (S_e2e): 10 subjects from the prior scaleup-20 cohort with no
@@ -127,6 +128,8 @@ def run_hemi(subject, hemi, config_name, run_dir, ts):
             subject,
             hemi,
             subjects_dir=str(paths.NARRATIVES_FS),
+            continuity=True,
+            refine_geodesic=False,  # shipped continuity-only pipeline
             out_patch=str(patch_path),
             verbose=False,
         )
@@ -165,13 +168,7 @@ def run_hemi(subject, hemi, config_name, run_dir, ts):
         row["n_flipped"] = int(m["n_flipped"])
         row["frac_flipped"] = float(m["frac_flipped"])
 
-        tg = truedist.truegeo_path(subject, hemi)
-        if tg.exists():
-            ref = truedist.load_truegeo(subject, hemi)
-        else:
-            ref = truedist.compute_truegeo(fl)
-            tg.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(tg, **ref)
+        ref = run_truegeo(run_dir, subject, hemi, fl)
         full = truedist.true_distortion_full(uv, ref)
         row["true_global_at_optscale"] = round(
             float(full["true_global_at_optscale"]), 4
@@ -274,6 +271,7 @@ def main() -> int:
                     "n_cores": N_CORES,
                     "configs": args.configs,
                     "s_e2e": subjects,
+                    "projection": "continuity_only",
                     "created": datetime.now().isoformat(timespec="seconds"),
                 },
                 indent=2,

@@ -219,7 +219,7 @@ def project_python(
     subjects_dir=None,
     template_file=None,
     continuity=True,
-    refine_geodesic=True,
+    refine_geodesic=False,
     refine_weight="euclidean",
     curv_alpha=0.1,
     curv_morph="sulc",
@@ -229,13 +229,12 @@ def project_python(
 ):
     """Run the full projection phase **without FreeSurfer**.
 
-    Mirrors ``autoflatten.cli.cmd_project`` (map -> continuity -> geodesic refine ->
+    Mirrors ``autoflatten.cli.cmd_project`` (map -> continuity -> [geodesic refine] ->
     hole fill -> patch) but swaps the ``mri_label2label`` mapping for the validated
     Python KDTree mapper. Every downstream step is already pure Python.
 
-    The ``continuity`` and ``refine_geodesic`` toggles exist for the Phase 2 refinement
-    ablation (are these steps necessary / do they improve downstream distortion?). Both
-    default to True (the shipped pipeline).
+    The shipped pipeline is **continuity-only** (``continuity=True``, ``refine_geodesic=False``):
+    FINDINGS §15 showed geodesic cut refinement raises distortion, so it is off by default.
 
     Returns
     -------
