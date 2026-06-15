@@ -191,12 +191,12 @@ def render_hemi(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     fig.text(
-        0.995,
+        0.006,
         0.995,
         f"fig_flatmaps  TS={ts}",
         fontsize=4.5,
         color="0.6",
-        ha="right",
+        ha="left",
         va="top",
     )
     stem = f"{subject}_{hemi}_3method_{ts}"

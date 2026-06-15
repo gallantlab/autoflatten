@@ -82,14 +82,14 @@ def _f(x, default=np.nan):
 
 def _save(fig, out_dir: Path, name: str, ts: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    # timestamp stamp in the top-right corner (empty space, clear of all labels)
+    # timestamp stamp in the top-left corner (empty in all these layouts)
     fig.text(
-        0.995,
+        0.006,
         0.995,
         f"{name}  TS={ts}",
         fontsize=4.5,
         color="0.6",
-        ha="right",
+        ha="left",
         va="top",
     )
     for ext in ("pdf", "png"):
@@ -457,6 +457,138 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
     _save(fig, out_dir, "fig_distortion", ts)
 
 
+# =================================================================================
+# Figure 4: speed / accuracy trade-off (esp. for choosing the default)
+# =================================================================================
+def _fs6_runtime_perhemi(hemis):
+    """FS6 mris_flatten per-hemi runtime (s), keyed on (subject, hemi)."""
+    out = {}
+    for r in _read_csv(paths.DATA_ROOT / "fs6_compare" / "timing.csv"):
+        key = (r.get("subject"), r.get("hemi"))
+        if hemis is None or key in hemis:
+            out[key] = _f(r.get("runtime_s"))
+    return out
+
+
+def _fs6_local_perhemi(hemis):
+    """FS6 true-local distortion (%) per (subject, hemi)."""
+    out = {}
+    for r in _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_20subj.csv"):
+        if r.get("method") != "freesurfer6":
+            continue
+        key = (r.get("subject"), r.get("hemi"))
+        if hemis is None or key in hemis:
+            out[key] = _f(r.get("true_local_mean"))
+    return out
+
+
+def fig_speed_accuracy(cores_dir, configs, out_dir: Path, ts: str) -> None:
+    """Per-hemisphere flatten runtime (x) vs local metric distortion (y).
+
+    Lower-left is better (fast + accurate). Makes the robust_fast / tutte_default trade-off
+    explicit and shows both dominate FreeSurfer 6.
+    """
+    rows = [
+        r
+        for r in _read_csv(cores_dir / "cores" / f"cores_{ts}.csv")
+        if r.get("status") == "ok"
+    ]
+    if not rows:
+        print("  [fig_speed_accuracy] no cores data, skipping")
+        return
+    nmax = max(int(r["n_cores"]) for r in rows)
+    sel = [r for r in rows if int(r["n_cores"]) == nmax]
+    af_hemis = {(r["subject"], r["hemi"]) for r in sel}
+
+    # method -> list of (runtime_s, local_distortion%)
+    pts = {c: [] for c in configs}
+    for r in sel:
+        c = r["config"]
+        if c in pts:
+            pts[c].append((_f(r["flatten_s"]), _f(r["true_local_at_optscale"])))
+    fs6_rt = _fs6_runtime_perhemi(af_hemis)
+    fs6_loc = _fs6_local_perhemi(af_hemis)
+    fs6_pts = [
+        (fs6_rt[k], fs6_loc[k])
+        for k in af_hemis
+        if k in fs6_rt
+        and k in fs6_loc
+        and np.isfinite(fs6_rt[k])
+        and np.isfinite(fs6_loc[k])
+    ]
+
+    methods = list(configs) + (["freesurfer6"] if fs6_pts else [])
+    series = {**pts, "freesurfer6": fs6_pts}
+
+    fig, ax = plt.subplots(figsize=(4.0, 3.2))
+    for m in methods:
+        arr = np.array(
+            [p for p in series[m] if np.isfinite(p[0]) and np.isfinite(p[1])],
+            dtype=float,
+        )
+        if not len(arr):
+            continue
+        ax.scatter(
+            arr[:, 0], arr[:, 1], s=10, color=COL[m], alpha=0.35, linewidths=0, zorder=2
+        )
+        mx, my = float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+        ax.errorbar(
+            mx,
+            my,
+            xerr=[
+                [mx - np.percentile(arr[:, 0], 25)],
+                [np.percentile(arr[:, 0], 75) - mx],
+            ],
+            yerr=[
+                [my - np.percentile(arr[:, 1], 25)],
+                [np.percentile(arr[:, 1], 75) - my],
+            ],
+            fmt="o",
+            color=COL[m],
+            ms=8,
+            mec="white",
+            mew=0.8,
+            lw=1.0,
+            capsize=2,
+            zorder=4,
+            label=LABEL[m],
+        )
+        # stagger labels so the two close AutoFlatten points don't collide
+        off = {
+            "robust_fast": (-6, -10, "right", "top"),
+            "tutte_default": (6, 9, "left", "bottom"),
+            "freesurfer6": (-8, 10, "right", "bottom"),
+        }.get(m, (6, -8, "left", "top"))
+        ax.annotate(
+            f"{mx:.0f} s, {my:.1f}%",
+            (mx, my),
+            color=COL[m],
+            fontsize=6,
+            xytext=off[:2],
+            textcoords="offset points",
+            ha=off[2],
+            va=off[3],
+        )
+
+    ax.set_xscale("log")
+    ax.set_xlabel("flatten runtime (s, 16 cores; FS6 = mris_flatten, OMP)")
+    ax.set_ylabel("local metric distortion @ opt scale (%)")
+    ax.set_title("Speed / accuracy trade-off")
+    ax.legend(loc="upper center", frameon=False, fontsize=6.5)
+    ax.annotate(
+        "better",
+        xy=(0.05, 0.07),
+        xytext=(0.60, 0.45),
+        xycoords="axes fraction",
+        textcoords="axes fraction",
+        fontsize=7,
+        color="0.45",
+        ha="center",
+        arrowprops=dict(arrowstyle="->", color="0.45", lw=0.8),
+    )
+    _save(fig, out_dir, "fig_speed_accuracy", ts)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cores-dir", required=True, help="core-scaling run dir (<TS>)")
@@ -472,6 +604,7 @@ def main() -> int:
     print(f"Rendering figures -> {out_dir}")
     fig_core_scaling(cores_dir, args.configs, args.core_counts, out_dir, args.ts)
     fig_distortion(cores_dir, args.configs, out_dir, args.ts)
+    fig_speed_accuracy(cores_dir, args.configs, out_dir, args.ts)
     if args.e2e_dir:
         fig_runtime_e2e(Path(args.e2e_dir), args.configs, out_dir, args.ts)
     return 0
