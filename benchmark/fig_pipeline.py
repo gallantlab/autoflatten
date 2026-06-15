@@ -54,12 +54,12 @@ def _scatter(ax, xy, border, title, size=0.6, sub=8):
     ax.set_title(title, fontsize=8)
 
 
-def _phase_band(fig, x0, x1, y, label, color):
+def _phase_band(fig, x0, x1, y, label, color, subtitle=None):
     fig.add_artist(
         FancyBboxPatch(
             (x0, y),
             x1 - x0,
-            0.05,
+            0.06,
             boxstyle="round,pad=0.004,rounding_size=0.02",
             transform=fig.transFigure,
             facecolor=color,
@@ -69,16 +69,21 @@ def _phase_band(fig, x0, x1, y, label, color):
             zorder=0,
         )
     )
+    cx = (x0 + x1) / 2
     fig.text(
-        (x0 + x1) / 2,
-        y + 0.025,
+        cx,
+        y + 0.038,
         label,
         ha="center",
         va="center",
-        fontsize=8,
+        fontsize=8.5,
         color=color,
         fontweight="bold",
     )
+    if subtitle:
+        fig.text(
+            cx, y + 0.014, subtitle, ha="center", va="center", fontsize=5.6, color=color
+        )
 
 
 def _arrow(fig, x0, x1, y, steps, color):
@@ -125,54 +130,55 @@ def render(subject, hemi, flat_path, out_dir: Path, ts: str) -> None:
     patch_xy = np.column_stack([pc[:, 1], pc[:, 2]])
     flat_xy = np.asarray(fc[:, :2], float)
 
-    fig = plt.figure(figsize=(9.2, 3.4))
-    ax1 = fig.add_axes([0.015, 0.30, 0.235, 0.52])
-    ax2 = fig.add_axes([0.385, 0.30, 0.235, 0.52])
-    ax3 = fig.add_axes([0.755, 0.30, 0.235, 0.52])
+    fig = plt.figure(figsize=(10.0, 3.7))
+    # narrower panels -> wider gaps so the step text never touches a brain
+    ax1 = fig.add_axes([0.005, 0.26, 0.20, 0.46])
+    ax2 = fig.add_axes([0.40, 0.26, 0.20, 0.46])
+    ax3 = fig.add_axes([0.795, 0.26, 0.20, 0.46])
 
     _scatter(ax1, surf_xy, surf_border, "Cortical surface\n(white / fiducial)")
     _scatter(ax2, patch_xy, pb, "3D patch\n(medial wall + cuts)")
     _scatter(ax3, flat_xy, fb, "Flat map")
 
-    # phase bands across the two transitions
-    _phase_band(fig, 0.255, 0.62, 0.86, "PROJECTION  (FreeSurfer-free)", PROJ_C)
-    _phase_band(fig, 0.625, 0.99, 0.86, "FLATTENING  (pyflatten, JAX)", FLAT_C)
+    # phase bands sit over each transition gap, well above the panel titles
+    _phase_band(fig, 0.215, 0.39, 0.83, "PROJECTION", PROJ_C, "FreeSurfer-free")
+    _phase_band(fig, 0.61, 0.785, 0.83, "FLATTENING", FLAT_C, "pyflatten · JAX")
 
-    # step arrows
+    # step arrows centred in the gaps, text below, short lines
     _arrow(
         fig,
-        0.265,
-        0.375,
-        0.56,
-        "map fsaverage cuts (sphere.reg)\n→ ensure continuity\n"
-        "→ geodesic refinement\n→ cut into patch",
+        0.215,
+        0.39,
+        0.55,
+        "map fsaverage cuts\n(sphere.reg push/pull)\n"
+        "→ continuity + geodesic\n→ cut into patch",
         PROJ_C,
     )
     _arrow(
         fig,
-        0.635,
-        0.745,
-        0.56,
-        "k-ring geodesic targets\n→ Tutte flip-free init\n"
-        "→ metric + area optimization\n→ spring smoothing",
+        0.61,
+        0.785,
+        0.55,
+        "k-ring geodesics\n(Numba Dijkstra)\n"
+        "→ Tutte flip-free init\n→ J_d + J_a optimize\n→ spring smoothing",
         FLAT_C,
     )
 
-    fig.text(0.0125, 0.20, "input: subject FreeSurfer surface", fontsize=6, color="0.4")
+    fig.text(0.005, 0.135, "input: subject FreeSurfer surface", fontsize=6, color="0.4")
     fig.text(
-        0.9875,
-        0.20,
+        0.995,
+        0.135,
         f"output: {hemi}.flat.patch.3d",
         fontsize=6,
         color="0.4",
         ha="right",
     )
     fig.text(
-        0.5, 0.95, "AutoFlatten pipeline", ha="center", fontsize=11, fontweight="bold"
+        0.5, 0.965, "AutoFlatten pipeline", ha="center", fontsize=12, fontweight="bold"
     )
     fig.text(
         0.5,
-        0.05,
+        0.03,
         f"red = cut boundary / medial wall   ·   example: {subject} {hemi}",
         ha="center",
         fontsize=6,
