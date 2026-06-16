@@ -175,7 +175,7 @@ def run_projection(
     output_dir,
     template_file=None,
     overwrite=False,
-    refine_geodesic=True,
+    refine_geodesic=False,
     verbose=True,
 ):
     """
@@ -302,7 +302,9 @@ def run_projection(
         else:
             print("\nGeodesic Refinement")
             print("-" * 19)
-            print("Skipped (--no-refine-geodesic)")
+            print(
+                "Skipped (continuity-only is the default; use --refine-geodesic to enable)"
+            )
 
         # Get subject surface data
         print("\nPatch Creation")
@@ -442,7 +444,7 @@ def process_hemisphere(
     template_file=None,
     run_flatten=True,
     overwrite=False,
-    refine_geodesic=True,
+    refine_geodesic=False,
     backend=None,
     verbose=True,
     run_plot=True,
@@ -665,7 +667,7 @@ def cmd_run_full_pipeline(args):
                     args.template_file,
                     True,  # run_flatten
                     args.overwrite,
-                    not args.no_refine_geodesic,
+                    args.refine_geodesic,
                     args.backend,
                     True,  # verbose
                     True,  # run_plot
@@ -691,7 +693,7 @@ def cmd_run_full_pipeline(args):
                     args.template_file,
                     True,  # run_flatten
                     args.overwrite,
-                    not args.no_refine_geodesic,
+                    args.refine_geodesic,
                     args.backend,
                     True,  # verbose
                     True,  # run_plot
@@ -757,7 +759,7 @@ def cmd_project(args):
                 output_dir=output_dir,
                 template_file=args.template_file,
                 overwrite=args.overwrite,
-                refine_geodesic=not args.no_refine_geodesic,
+                refine_geodesic=args.refine_geodesic,
                 verbose=True,
             )
             results[hemi] = patch_file
@@ -1010,9 +1012,10 @@ def add_projection_args(parser):
         help="Path to custom JSON template file defining cuts",
     )
     parser.add_argument(
-        "--no-refine-geodesic",
+        "--refine-geodesic",
         action="store_true",
-        help="Disable geodesic refinement of projected cuts",
+        help="Enable geodesic refinement of projected cuts (off by default; the "
+        "shipped pipeline is continuity-only, which gives lower distortion)",
     )
 
 
