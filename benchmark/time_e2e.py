@@ -141,11 +141,18 @@ def run_hemi(subject, hemi, config_name, run_dir, ts):
         cfg = make_config(config_name)
 
         # --- prep (load + k-ring, cached: e2e measures realistic pipeline cost) ---
+        # Run-local cache: the global kring_cache is keyed only on (subject,hemi,k,n) and
+        # would load STALE k-rings from a run with different (e.g. geodesic-refined) patches,
+        # whose vertex count differs -> broadcasting error. Keep it per-run + per-patch-set.
         t1 = time.time()
         fl = SurfaceFlattener(cfg)
         fl.load_data(str(patch_path), str(base))
-        cache = paths.KRING_CACHE_DIR / (
-            f"{subject}_{hemi}.kring_k{cfg.kring.k_ring}_n{cfg.kring.n_neighbors_per_ring}.npz"
+        cache = (
+            run_dir
+            / "kring_cache"
+            / (
+                f"{subject}_{hemi}.kring_k{cfg.kring.k_ring}_n{cfg.kring.n_neighbors_per_ring}.npz"
+            )
         )
         cache.parent.mkdir(parents=True, exist_ok=True)
         fl.compute_kring_distances(cache_path=str(cache))
