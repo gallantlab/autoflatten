@@ -111,13 +111,14 @@ def _arrow(fig, x0, x1, y, steps, color):
     )
 
 
-def render(subject, hemi, flat_path, out_dir: Path, ts: str) -> None:
+def render(subject, hemi, flat_path, out_dir: Path, ts: str, patch3d=None) -> None:
     import autoflatten.freesurfer as fs
 
     surf = Path(paths.NARRATIVES_FS) / subject / "surf"
     base = surf / f"{hemi}.fiducial"
     base = base if base.exists() else surf / f"{hemi}.smoothwm"
-    patch3d = surf / f"{hemi}.autoflatten.patch.3d"
+    # 3D patch: prefer an explicit (e.g. continuity-only) patch, else the derivatives one
+    patch3d = Path(patch3d) if patch3d else surf / f"{hemi}.autoflatten.patch.3d"
 
     bv, _bf = fs.read_surface(str(base))[:2]
     pc, _po, pb = fs.read_patch(str(patch3d))
@@ -228,10 +229,22 @@ def main() -> int:
     ap.add_argument("--subject", default="sub-055")
     ap.add_argument("--hemi", default="lh", choices=["lh", "rh"])
     ap.add_argument("--flat", required=True, help="flattened patch (.flat.patch.3d)")
+    ap.add_argument(
+        "--patch3d",
+        default=None,
+        help="3D patch for the middle panel (else Narratives derivatives)",
+    )
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--ts", required=True)
     args = ap.parse_args()
-    render(args.subject, args.hemi, args.flat, Path(args.out_dir), args.ts)
+    render(
+        args.subject,
+        args.hemi,
+        args.flat,
+        Path(args.out_dir),
+        args.ts,
+        patch3d=args.patch3d,
+    )
     return 0
 
 
