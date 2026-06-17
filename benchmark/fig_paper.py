@@ -6,7 +6,7 @@ timestamped benchmark CSVs:
   1. fig_runtime_e2e   -- end-to-end per-subject wall-clock @16 cores, stacked by stage.
   2. fig_core_scaling  -- flatten-only runtime vs cores {1,8,16}, log-log, FS6 overlaid.
   3. fig_distortion    -- true-geodesic local + global distortion at optimal scale plus
-                          flipped-triangle counts, FS6 overlaid.
+                          flipped triangles (% of patch faces), FS6 overlaid.
 
 FreeSurfer6 numbers are reused from the existing comparison (never re-run): timings from
 ``speed_1core/8core.csv``, distortion from ``fs6_compare/true_comparison_20subj.csv``.
@@ -380,20 +380,23 @@ def _fs6_distortion(hemis=None):
 
 
 def _fs6_flipped(hemis=None):
-    """FS6 flipped-triangle counts from the existing comparison CSV.
+    """FS6 flipped-triangle counts per hemisphere from the existing comparison CSV.
 
     ``fs6_compare/comparison.csv`` carries ``n_flipped`` for all three methods; the true-
-    geodesic comparison CSV does not. If ``hemis`` (a set of ``(subject, hemi)``) is given,
-    restrict to those so FS6 is scored on the same hemispheres as AutoFlatten.
+    geodesic comparison CSV does not. Returns a ``{(subject, hemi): n_flipped}`` dict so the
+    caller can normalize each by that hemisphere's patch face count. FS6 was flattened from
+    the same AutoFlatten-projected patch (verified: identical induced face count), so the
+    per-hemi denominator is the same as AutoFlatten's. If ``hemis`` is given, restrict to those.
     """
     rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "comparison.csv")
-    out = []
+    out = {}
     for r in rows:
         if r.get("method") != "freesurfer6":
             continue
-        if hemis is not None and (r.get("subject"), r.get("hemi")) not in hemis:
+        key = (r.get("subject"), r.get("hemi"))
+        if hemis is not None and key not in hemis:
             continue
-        out.append(_f(r.get("n_flipped")))
+        out[key] = _f(r.get("n_flipped"))
     return out
 
 
@@ -411,7 +414,17 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
     # pair FS6 to the exact hemispheres AutoFlatten was scored on
     af_hemis = {(r["subject"], r["hemi"]) for r in sel}
     fs6_loc, fs6_glob = _fs6_distortion(hemis=af_hemis)
-    fs6_flip = {"freesurfer6": _fs6_flipped(hemis=af_hemis)}
+
+    # flipped triangles as % of patch faces. AutoFlatten uses its own frac_flipped; FS6's
+    # count is divided by the same hemisphere's patch face count (FS6 flattened the same
+    # AutoFlatten-projected patch, so the denominators match).
+    nfaces_by_hemi = {(r["subject"], r["hemi"]): _f(r["n_faces"]) for r in sel}
+    fs6_flip_pct = [
+        (n / nfaces_by_hemi[k]) * 100.0
+        for k, n in _fs6_flipped(hemis=af_hemis).items()
+        if k in nfaces_by_hemi and np.isfinite(n) and nfaces_by_hemi[k]
+    ]
+    fs6_flip = {"freesurfer6": fs6_flip_pct}
     methods = list(configs) + ["freesurfer6"]
     panels = [
         (
@@ -433,9 +446,12 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
             fs6_glob,
         ),
         (
-            "n_flipped",
-            "flipped triangles (count)",
-            {c: [_f(r["n_flipped"]) for r in sel if r["config"] == c] for c in configs},
+            "frac_flipped",
+            "flipped triangles (% of patch faces)",
+            {
+                c: [_f(r["frac_flipped"]) * 100.0 for r in sel if r["config"] == c]
+                for c in configs
+            },
             fs6_flip,
         ),
     ]
