@@ -5,7 +5,8 @@ timestamped benchmark CSVs:
 
   1. fig_runtime_e2e   -- end-to-end per-subject wall-clock @16 cores, stacked by stage.
   2. fig_core_scaling  -- flatten-only runtime vs cores {1,8,16}, log-log, FS6 overlaid.
-  3. fig_distortion    -- true-geodesic local + global distortion at optimal scale, FS6 overlaid.
+  3. fig_distortion    -- true-geodesic local + global distortion at optimal scale plus
+                          flipped-triangle counts, FS6 overlaid.
 
 FreeSurfer6 numbers are reused from the existing comparison (never re-run): timings from
 ``speed_1core/8core.csv``, distortion from ``fs6_compare/true_comparison_20subj.csv``.
@@ -378,6 +379,24 @@ def _fs6_distortion(hemis=None):
     return loc, glob
 
 
+def _fs6_flipped(hemis=None):
+    """FS6 flipped-triangle counts from the existing comparison CSV.
+
+    ``fs6_compare/comparison.csv`` carries ``n_flipped`` for all three methods; the true-
+    geodesic comparison CSV does not. If ``hemis`` (a set of ``(subject, hemi)``) is given,
+    restrict to those so FS6 is scored on the same hemispheres as AutoFlatten.
+    """
+    rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "comparison.csv")
+    out = []
+    for r in rows:
+        if r.get("method") != "freesurfer6":
+            continue
+        if hemis is not None and (r.get("subject"), r.get("hemi")) not in hemis:
+            continue
+        out.append(_f(r.get("n_flipped")))
+    return out
+
+
 def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
     rows = _read_csv(cores_dir / "cores" / f"cores_{ts}.csv")
     rows = [r for r in rows if r.get("status") == "ok"]
@@ -392,6 +411,7 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
     # pair FS6 to the exact hemispheres AutoFlatten was scored on
     af_hemis = {(r["subject"], r["hemi"]) for r in sel}
     fs6_loc, fs6_glob = _fs6_distortion(hemis=af_hemis)
+    fs6_flip = {"freesurfer6": _fs6_flipped(hemis=af_hemis)}
     methods = list(configs) + ["freesurfer6"]
     panels = [
         (
@@ -412,9 +432,15 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
             },
             fs6_glob,
         ),
+        (
+            "n_flipped",
+            "flipped triangles (count)",
+            {c: [_f(r["n_flipped"]) for r in sel if r["config"] == c] for c in configs},
+            fs6_flip,
+        ),
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(5.2, 2.7))
+    fig, axes = plt.subplots(1, 3, figsize=(7.8, 2.7))
     for ax, (key, ylabel, mydata, fs6data) in zip(axes, panels):
         series = {
             **mydata,
@@ -453,7 +479,11 @@ def fig_distortion(cores_dir, configs, out_dir: Path, ts: str) -> None:
         ax.set_ylabel(ylabel)
     axes[0].set_title("Local (Ju 2005)", fontsize=8)
     axes[1].set_title("Global (Ju 2005)", fontsize=8)
-    fig.suptitle("Metric distortion (true geodesics, optimal scale)", fontsize=9)
+    axes[2].set_title("Flipped triangles", fontsize=8)
+    fig.suptitle(
+        "Metric distortion (true geodesics, optimal scale) & flipped triangles",
+        fontsize=9,
+    )
     _save(fig, out_dir, "fig_distortion", ts)
 
 
