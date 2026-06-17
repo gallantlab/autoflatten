@@ -1071,75 +1071,158 @@ def _angular_kring_kernel(
     n_samples,
     correction,
     max_nb,
+    n_chunks,
 ):
     """Fused, parallel per-vertex angular sampling + limited Dijkstra.
 
     Reproduces the serial loop of :func:`compute_kring_geodesic_distances_angular`
     bit-for-bit (tangent-plane projection -> per-ring angular sampling -> limited
-    Dijkstra) but over a ``prange`` so all CPU cores are used. Each ``prange`` iteration
-    writes only its own output row, so there are no races and the result is deterministic.
+    Dijkstra) but parallelized over chunks so all CPU cores are used. Each chunk owns
+    its own scratch (dist / visited / target / heap), allocated once and reset only on
+    the touched entries between vertices; a naive port that called
+    ``_limited_dijkstra_numba`` inside the ``prange`` allocated five O(n_vertices) arrays
+    per vertex, melting the allocator across threads (see ``_kring_distances_kernel``).
+    Each chunk writes only its own output rows, so there are no races and the result is
+    deterministic.
 
     Returns dense ``(n_vertices, max_nb)`` neighbor/distance arrays plus a per-vertex count;
     the caller slices each row to ``count`` to rebuild the ragged lists.
     """
     n_vertices = vertices.shape[0]
+    nv = len(indptr) - 1
+    INF = np.inf
     out_nb = np.full((n_vertices, max_nb), -1, dtype=np.int64)
     out_dist = np.zeros((n_vertices, max_nb), dtype=np.float64)
     out_count = np.zeros(n_vertices, dtype=np.int64)
 
-    for v in prange(n_vertices):
-        cx = vertices[v, 0]
-        cy = vertices[v, 1]
-        cz = vertices[v, 2]
-        nx = normals[v, 0]
-        ny = normals[v, 1]
-        nz = normals[v, 2]
+    # Per-chunk scratch, allocated once (not per vertex). Matches the discipline in
+    # _kring_distances_kernel: lazy-deletion binary heap with capacity > nv.
+    dist = np.full((n_chunks, nv), INF)
+    visited = np.zeros((n_chunks, nv), dtype=np.bool_)
+    is_target = np.zeros((n_chunks, nv), dtype=np.bool_)
+    touched = np.empty((n_chunks, nv), dtype=np.int64)
+    heap_cap = nv * 3
+    heap_d = np.empty((n_chunks, heap_cap), dtype=np.float64)
+    heap_v = np.empty((n_chunks, heap_cap), dtype=np.int64)
 
-        # Local tangent frame (matches project_to_tangent_plane exactly).
-        if abs(nx) < 0.9:
-            rx, ry, rz = 1.0, 0.0, 0.0
-        else:
-            rx, ry, rz = 0.0, 1.0, 0.0
-        ux = ny * rz - nz * ry
-        uy = nz * rx - nx * rz
-        uz = nx * ry - ny * rx
-        un = np.sqrt(ux * ux + uy * uy + uz * uz)
-        ux /= un
-        uy /= un
-        uz /= un
-        vx = ny * uz - nz * uy
-        vy = nz * ux - nx * uz
-        vz = nx * uy - ny * ux
+    chunk_size = (n_vertices + n_chunks - 1) // n_chunks
 
-        count = 0
-        for level in range(k):
-            start = level_offsets[v, level]
-            end = level_offsets[v, level + 1]
-            m = end - start
-            if m == 0:
+    for c in prange(n_chunks):
+        d_t = dist[c]
+        vis = visited[c]
+        tgt = is_target[c]
+        tch = touched[c]
+        hd = heap_d[c]
+        hv = heap_v[c]
+        v_start = c * chunk_size
+        v_end = min(v_start + chunk_size, n_vertices)
+
+        for v in range(v_start, v_end):
+            cx = vertices[v, 0]
+            cy = vertices[v, 1]
+            cz = vertices[v, 2]
+            nx = normals[v, 0]
+            ny = normals[v, 1]
+            nz = normals[v, 2]
+
+            # Local tangent frame (matches project_to_tangent_plane exactly).
+            if abs(nx) < 0.9:
+                rx, ry, rz = 1.0, 0.0, 0.0
+            else:
+                rx, ry, rz = 0.0, 1.0, 0.0
+            ux = ny * rz - nz * ry
+            uy = nz * rx - nx * rz
+            uz = nx * ry - ny * rx
+            un = np.sqrt(ux * ux + uy * uy + uz * uz)
+            ux /= un
+            uy /= un
+            uz /= un
+            vx = ny * uz - nz * uy
+            vy = nz * ux - nx * uz
+            vz = nx * uy - ny * ux
+
+            count = 0
+            for level in range(k):
+                start = level_offsets[v, level]
+                end = level_offsets[v, level + 1]
+                m = end - start
+                if m == 0:
+                    continue
+                angles = np.empty(m, dtype=np.float64)
+                for i in range(m):
+                    idx = rings_flat[start + i]
+                    px = vertices[idx, 0] - cx
+                    py = vertices[idx, 1] - cy
+                    pz = vertices[idx, 2] - cz
+                    xx = px * ux + py * uy + pz * uz
+                    yy = px * vx + py * vy + pz * vz
+                    angles[i] = np.arctan2(yy, xx)
+                sel = _select_angular_samples_njit(angles, n_samples)
+                for s in range(sel.shape[0]):
+                    out_nb[v, count] = rings_flat[start + sel[s]]
+                    count += 1
+
+            out_count[v] = count
+            if count == 0:
                 continue
-            angles = np.empty(m, dtype=np.float64)
-            for i in range(m):
-                idx = rings_flat[start + i]
-                px = vertices[idx, 0] - cx
-                py = vertices[idx, 1] - cy
-                pz = vertices[idx, 2] - cz
-                xx = px * ux + py * uy + pz * uz
-                yy = px * vx + py * vy + pz * vz
-                angles[i] = np.arctan2(yy, xx)
-            sel = _select_angular_samples_njit(angles, n_samples)
-            for s in range(sel.shape[0]):
-                out_nb[v, count] = rings_flat[start + sel[s]]
-                count += 1
 
-        out_count[v] = count
-        if count > 0:
-            targets = out_nb[v, :count].copy()
-            dists = _limited_dijkstra_numba(
-                indptr, indices, data, v, targets, correction
-            )
-            for i in range(count):
-                out_dist[v, i] = dists[i]
+            # Inlined limited Dijkstra over chunk-local scratch (same correction and heap
+            # discipline as _limited_dijkstra_numba), resetting only touched entries.
+            for j in range(count):
+                tgt[out_nb[v, j]] = True
+
+            nt = 0
+            d_t[v] = 0.0
+            tch[nt] = v
+            nt += 1
+            hd[0] = 0.0
+            hv[0] = v
+            hsize = 1
+            found = 0
+
+            while hsize > 0 and found < count:
+                mi = 0
+                md = hd[0]
+                for i in range(1, hsize):
+                    if hd[i] < md:
+                        md = hd[i]
+                        mi = i
+                du = hd[mi]
+                u = hv[mi]
+                hsize -= 1
+                if mi < hsize:
+                    hd[mi] = hd[hsize]
+                    hv[mi] = hv[hsize]
+                if vis[u]:
+                    continue
+                vis[u] = True
+                if tgt[u]:
+                    found += 1
+                for p in range(indptr[u], indptr[u + 1]):
+                    w = indices[p]
+                    if not vis[w]:
+                        ndist = du + data[p]
+                        if ndist < d_t[w]:
+                            if d_t[w] == INF:
+                                tch[nt] = w
+                                nt += 1
+                            d_t[w] = ndist
+                            if hsize < heap_cap:
+                                hd[hsize] = ndist
+                                hv[hsize] = w
+                                hsize += 1
+
+            for j in range(count):
+                out_dist[v, j] = d_t[out_nb[v, j]] / correction
+
+            # Reset only the entries this vertex touched (visited vertices are a subset of
+            # touched, since a vertex is pushed -- hence touched -- before it is popped).
+            for i in range(nt):
+                x = tch[i]
+                d_t[x] = INF
+                vis[x] = False
+            for j in range(count):
+                tgt[out_nb[v, j]] = False
 
     return out_nb, out_dist, out_count
 
@@ -1217,6 +1300,9 @@ def compute_kring_geodesic_distances_angular(
 
         verts64 = np.ascontiguousarray(vertices, dtype=np.float64)
         norms64 = np.ascontiguousarray(normals, dtype=np.float64)
+        # One scratch set per chunk (not per vertex); cap chunks by thread count and keep
+        # each chunk busy (~2000+ vertices), matching _kring_distances_kernel.
+        n_chunks = max(1, min(numba.get_num_threads(), max(1, n_vertices // 2000)))
         out_nb, out_dist, out_count = _angular_kring_kernel(
             verts64,
             norms64,
@@ -1229,6 +1315,7 @@ def compute_kring_geodesic_distances_angular(
             n_samples_per_ring,
             correction,
             k * n_samples_per_ring,
+            n_chunks,
         )
         sampled_neighbors = [
             out_nb[v, : out_count[v]].copy() for v in range(n_vertices)
