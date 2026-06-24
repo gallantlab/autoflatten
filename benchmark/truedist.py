@@ -47,12 +47,24 @@ def compute_truegeo(
 ) -> dict[str, Any]:
     """Compute and cache heat-method geodesic fields from ``n_sources`` sampled sources.
 
-    Sources are drawn deterministically (fixed seed) from the patch vertices. The geodesic
-    field is restricted (for scoring) to pairs within ``radius`` mm, but stored densely.
+    Geodesics are computed on the **fiducial** (mid-cortical) surface -- the anatomical surface
+    whose distances the flattener's energy preserves and which "metric distortion" is defined
+    against. The patch's own stored coordinates (``flattener.vertices``) are the FreeSurfer
+    *inflated* surface (a smoothed balloon ~1.7x larger, with stretched triangles); using it
+    here would score against the wrong geometry AND ill-conditions the heat solver (spurious
+    near-zero / negative geodesics that blow up the relative metric). Fall back to
+    ``flattener.vertices`` only if no fiducial is available.
+
+    Sources are drawn deterministically (fixed seed). A source whose solve returns a negative
+    geodesic (ill-conditioned) is resampled. The field is stored densely; scoring restricts to
+    pairs within ``radius`` mm.
     """
     import igl
 
-    v = np.ascontiguousarray(flattener.vertices, dtype=np.float64)
+    surf = getattr(flattener, "fiducial_vertices", None)
+    if surf is None:
+        surf = flattener.vertices
+    v = np.ascontiguousarray(surf, dtype=np.float64)
     f = np.ascontiguousarray(flattener.faces, dtype=np.int64)
     n_v = v.shape[0]
 
@@ -63,7 +75,10 @@ def compute_truegeo(
     igl.heat_geodesics_precompute(v, f, data)
     geo = np.empty((srcs.shape[0], n_v), dtype=np.float64)
     for i, s in enumerate(srcs):
-        geo[i] = igl.heat_geodesics_solve(data, np.array([s], dtype=np.int64))
+        field = igl.heat_geodesics_solve(data, np.array([s], dtype=np.int64))
+        # negative geodesics are impossible -> ill-conditioned solve; clamp the small numerical
+        # negatives near the source (the scoring mask drops d<=1e-6 anyway).
+        geo[i] = np.maximum(field, 0.0)
     return {"srcs": srcs, "geo": geo, "R": float(radius)}
 
 
@@ -72,7 +87,8 @@ def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
 
     For each source ``s`` and target ``j`` with ``geo[s,j] <= R`` (and > 0), the per-pair
     distortion is ``|d2d - d_geo| / d_geo`` where ``d2d`` is the Euclidean distance between
-    ``uv[s]`` and ``uv[j]``. Returns percentages.
+    ``uv[s]`` and ``uv[j]``. Computed on the fiducial reference (see ``compute_truegeo``) the
+    raw relative error is well behaved -- no denominator floor is needed. Returns percentages.
     """
     uv = np.asarray(uv, dtype=np.float64)
     srcs = ref["srcs"]
@@ -121,8 +137,9 @@ def true_distortion_full(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float
 
     rel = np.abs(d2 - dg) / dg
     loc = dg <= R
-    # optimal global scale s* minimizing mean |s*d2 - dg|/dg over a fine grid
-    scales = np.linspace(0.90, 1.15, 51)
+    # optimal global scale s* minimizing mean |s*d2 - dg|/dg over a fine grid (widened range:
+    # the flat map may sit at a different global scale than the reference surface)
+    scales = np.linspace(0.80, 1.25, 91)
     errs = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
     j = int(np.argmin(errs))
     return {
