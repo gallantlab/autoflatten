@@ -60,6 +60,10 @@ def run_worker(args) -> int:
     # negative-geo sanity (should be ~0 on fiducial)
     n_neg = int(sum(ref["geo"][i].min() < -0.1 for i in range(len(ref["srcs"]))))
     out.parent.mkdir(parents=True, exist_ok=True)
+    # If this slot is a symlink to another run's (inflated) ref (head-start reuse), unlink it
+    # first so np.savez writes a fresh local file instead of clobbering the shared target.
+    if out.is_symlink() or out.exists():
+        out.unlink()
     np.savez(out, srcs=ref["srcs"], geo=ref["geo"], R=ref["R"], surface="fiducial")
     print(
         f"[ok] {subj} {hemi}: rebuilt on fiducial, neg-geo sources={n_neg}", flush=True
