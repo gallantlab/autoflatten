@@ -639,6 +639,85 @@ def fig_speed_accuracy(cores_dir, configs, out_dir: Path, ts: str) -> None:
     _save(fig, out_dir, "fig_speed_accuracy", ts)
 
 
+def fig_distortion_paired(out_dir: Path, ts: str) -> None:
+    """Paired FS6-vs-pyflatten distortion: each hemisphere's two values connected, so the
+    per-hemisphere consistency of the relative error across methods is visible. Built from
+    ``true_comparison_fiducial.csv`` (both methods on the SAME patch, fiducial metric).
+    Points colored by hemisphere; connector slope = which method is better for that hemi.
+    """
+    rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_fiducial.csv")
+    data: dict = {}
+    for r in rows:
+        if r.get("status") == "ok" and r.get("method") in (
+            "robust_fast",
+            "freesurfer6",
+        ):
+            data.setdefault((r["subject"], r["hemi"]), {})[r["method"]] = r
+    keys = [k for k in data if {"robust_fast", "freesurfer6"} <= set(data[k])]
+    if not keys:
+        print("  [fig_distortion_paired] no paired data, skipping")
+        return
+    hemi_col = {"lh": "#3B6EA5", "rh": "#C1532A"}
+    metrics = [
+        (
+            "true_local_at_optscale",
+            "local metric distortion @ opt scale (%)",
+            "Local (Ju 2005)",
+        ),
+        (
+            "true_global_at_optscale",
+            "global metric distortion @ opt scale (%)",
+            "Global (Ju 2005)",
+        ),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(6.0, 3.4))
+    # x=0 pyflatten (robust_fast), x=1 FreeSurfer 6
+    for ax, (col, ylabel, title) in zip(axes, metrics):
+        py = np.array([_f(data[k]["robust_fast"][col]) for k in keys])
+        fs = np.array([_f(data[k]["freesurfer6"][col]) for k in keys])
+        for i, k in enumerate(keys):
+            ax.plot([0, 1], [py[i], fs[i]], color="0.75", lw=0.4, alpha=0.5, zorder=1)
+        for j, k in enumerate(keys):
+            c = hemi_col[k[1]]
+            ax.scatter([0], [py[j]], s=12, color=c, alpha=0.85, lw=0, zorder=2)
+            ax.scatter([1], [fs[j]], s=12, color=c, alpha=0.85, lw=0, zorder=2)
+        # medians
+        for x, vals in ((0, py), (1, fs)):
+            ax.plot(
+                [x - 0.18, x + 0.18],
+                [np.median(vals)] * 2,
+                color="black",
+                lw=1.4,
+                zorder=3,
+            )
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(
+            [
+                f"pyflatten\n(median {np.median(py):.1f})",
+                f"FreeSurfer 6\n(median {np.median(fs):.1f})",
+            ]
+        )
+        ax.set_xlim(-0.45, 1.45)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=8)
+    handles = [
+        plt.Line2D([], [], marker="o", ls="", color=hemi_col["lh"], label="LH"),
+        plt.Line2D([], [], marker="o", ls="", color=hemi_col["rh"], label="RH"),
+    ]
+    axes[0].legend(
+        handles=handles,
+        loc="upper left",
+        frameon=False,
+        fontsize=6.5,
+        title="hemisphere",
+    )
+    fig.suptitle(
+        f"FreeSurfer 6 vs pyflatten, paired per hemisphere (same patch, {len(keys)} hemis)",
+        fontsize=9,
+    )
+    _save(fig, out_dir, "fig_distortion_paired", ts)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cores-dir", required=True, help="core-scaling run dir (<TS>)")
@@ -654,6 +733,7 @@ def main() -> int:
     print(f"Rendering figures -> {out_dir}")
     fig_core_scaling(cores_dir, args.configs, args.core_counts, out_dir, args.ts)
     fig_distortion(cores_dir, args.configs, out_dir, args.ts)
+    fig_distortion_paired(out_dir, args.ts)
     fig_speed_accuracy(cores_dir, args.configs, out_dir, args.ts)
     if args.e2e_dir:
         fig_runtime_e2e(Path(args.e2e_dir), args.configs, out_dir, args.ts)
