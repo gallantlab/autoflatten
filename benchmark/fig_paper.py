@@ -365,16 +365,18 @@ def _fs6_distortion(hemis=None):
     If ``hemis`` (a set of ``(subject, hemi)``) is given, restrict to those so FS6 is scored
     on the *same* hemispheres as AutoFlatten (paired comparison).
     """
-    rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_20subj.csv")
+    # fiducial + chord-sanitized re-comparison (benchmark/fs6_recompare.py); columns are
+    # true_local_at_optscale / true_global_at_optscale for both methods.
+    rows = _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_fiducial.csv")
     loc = {"robust_fast": [], "tutte_default": [], "freesurfer6": []}
     glob = {"robust_fast": [], "tutte_default": [], "freesurfer6": []}
     for r in rows:
         m = r.get("method")
-        if m not in loc:
+        if m not in loc or r.get("status") != "ok":
             continue
         if hemis is not None and (r.get("subject"), r.get("hemi")) not in hemis:
             continue
-        loc[m].append(_f(r.get("true_local_mean")))
+        loc[m].append(_f(r.get("true_local_at_optscale")))
         glob[m].append(_f(r.get("true_global_at_optscale")))
     return loc, glob
 
@@ -519,12 +521,14 @@ def _fs6_runtime_perhemi(hemis):
 def _fs6_local_perhemi(hemis):
     """FS6 true-local distortion (%) per (subject, hemi)."""
     out = {}
-    for r in _read_csv(paths.DATA_ROOT / "fs6_compare" / "true_comparison_20subj.csv"):
-        if r.get("method") != "freesurfer6":
+    for r in _read_csv(
+        paths.DATA_ROOT / "fs6_compare" / "true_comparison_fiducial.csv"
+    ):
+        if r.get("method") != "freesurfer6" or r.get("status") != "ok":
             continue
         key = (r.get("subject"), r.get("hemi"))
         if hemis is None or key in hemis:
-            out[key] = _f(r.get("true_local_mean"))
+            out[key] = _f(r.get("true_local_at_optscale"))
     return out
 
 
