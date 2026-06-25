@@ -78,6 +78,10 @@ def _half_violin(ax, vals, center, width, side, color, vmax=None):
     vals = np.asarray(vals, float)
     if vmax is not None:
         vals = vals[vals <= vmax]
+    # gaussian_kde needs >=2 points with non-zero spread; a singular covariance
+    # (one value, or all identical) raises LinAlgError. Skip the cloud in that case.
+    if vals.size < 2 or np.ptp(vals) == 0:
+        return
     kde = gaussian_kde(vals)
     grid = np.linspace(vals.min(), vals.max(), 200)
     dens = kde(grid) / kde(grid).max() * width

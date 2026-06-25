@@ -46,29 +46,24 @@ FIELDS = [
 ]
 
 
-def _score(uv, ref, R=30.0):
-    import numpy as np
+def _score(uv, ref):
+    # Use the shared metric (benchmark.truedist) so the FS6 comparison stays on the same
+    # definition as the group/cores tables. The bracket is widened to [0.5, 2.0]: FreeSurfer
+    # does not apply the distance-optimal expansion, so each method is scored at its own
+    # optimum. local-at-optscale is true_distortion on the scale-applied uv (identical to
+    # masking dg<=R after the global fit).
+    from . import truedist
 
-    srcs, geo = ref["srcs"], ref["geo"]
-    d2, dg = [], []
-    for i, s in enumerate(srcs):
-        g = geo[i]
-        m = g > 1e-6
-        d2.append(np.linalg.norm(uv[m] - uv[s], axis=1))
-        dg.append(g[m])
-    d2 = np.concatenate(d2)
-    dg = np.concatenate(dg)
-    scales = np.linspace(0.5, 2.0, 151)  # wide: each method at its own optimal scale
-    err = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
-    j = int(err.argmin())
-    opt = float(scales[j])
-    loc = dg <= R
-    rl = np.abs(opt * d2 - dg) / dg
+    full = truedist.true_distortion_full(
+        uv, ref, scale_bracket=(0.5, 2.0), n_scales=151
+    )
+    opt = full["opt_scale"]
+    loc = truedist.true_distortion(uv * opt, ref)
     return {
         "opt_scale": round(opt, 4),
-        "true_global_at_optscale": round(float(err[j] * 100), 4),
-        "true_local_at_optscale": round(float(np.mean(rl[loc]) * 100), 4),
-        "n_pairs": int(dg.size),
+        "true_global_at_optscale": round(float(full["true_global_at_optscale"]), 4),
+        "true_local_at_optscale": round(float(loc["true_mean_distortion"]), 4),
+        "n_pairs": int(full["n_pairs_global"]),
     }
 
 
@@ -98,10 +93,10 @@ def run_worker(args) -> int:
         base = run_dir / f"{hemi}.smoothwm"  # symlink -> fiducial
         fl = SurfaceFlattener(make_config("robust_fast"))
         fl.load_data(str(patch), str(base))
-        ref = truedist.compute_truegeo(fl)  # fiducial + chord-sanitized
-        np.savez(
-            run_dir / "truegeo_fiducial.npz", **ref, surface="fiducial", sanitized=True
-        )
+        ref = truedist.compute_truegeo(
+            fl
+        )  # fiducial + chord-sanitized (stamps provenance)
+        np.savez(run_dir / "truegeo_fiducial.npz", **ref)
 
         # FreeSurfer flat (never re-run)
         uv_fs = read_patch(str(run_dir / f"{hemi}.flat"))[0][:, :2].astype(float)
@@ -132,19 +127,15 @@ def run_worker(args) -> int:
 
 
 def _done() -> set[tuple[str, str]]:
-    done = set()
-    if OUT_CSV.exists():
-        for r in csv.DictReader(open(OUT_CSV)):
-            if r.get("status") == "ok":
-                done.add((r["subject"], r["hemi"]))
-    # require BOTH methods present
+    # A (subject, hemi) is done only when BOTH methods (FS6 + pyflatten) recorded status=ok.
     from collections import Counter
 
-    c = Counter()
+    c: Counter = Counter()
     if OUT_CSV.exists():
-        for r in csv.DictReader(open(OUT_CSV)):
-            if r.get("status") == "ok":
-                c[(r["subject"], r["hemi"])] += 1
+        with open(OUT_CSV) as fh:
+            for r in csv.DictReader(fh):
+                if r.get("status") == "ok":
+                    c[(r["subject"], r["hemi"])] += 1
     return {k for k, n in c.items() if n >= 2}
 
 

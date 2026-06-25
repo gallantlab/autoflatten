@@ -211,9 +211,19 @@ def run_truegeo(run_dir: Path, subject: str, hemi: str, flattener):
     tg = run_dir / "truegeo" / f"{subject}_{hemi}.truegeo.npz"
     if tg.exists():
         d = np.load(tg)
-        return {"srcs": d["srcs"], "geo": d["geo"], "R": float(d["R"])}
+        # Only reuse a sanitized fiducial reference. A pre-fix .npz built on the inflated
+        # surface (or lacking provenance) would silently score against the wrong geometry,
+        # so treat it as stale and recompute.
+        surface = str(d["surface"]) if "surface" in d.files else "inflated"
+        sanitized = bool(d["sanitized"]) if "sanitized" in d.files else False
+        if surface == "fiducial" and sanitized:
+            return {"srcs": d["srcs"], "geo": d["geo"], "R": float(d["R"])}
     ref = truedist.compute_truegeo(flattener)
     tg.parent.mkdir(parents=True, exist_ok=True)
+    # If tg is a stale symlink seeded from another run, unlink it first so savez writes a
+    # run-local file rather than clobbering the shared head-start reference it points to.
+    if tg.is_symlink() or tg.exists():
+        tg.unlink()
     np.savez(tg, **ref)
     return ref
 

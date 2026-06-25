@@ -62,9 +62,14 @@ def _recompute_row(row, flat_dir: Path, truegeo_dir: Path) -> str:
     ref = {"srcs": d["srcs"], "geo": d["geo"], "R": float(d["R"])}
     uv = read_patch(str(flat))[0][:, :2].astype(np.float64)
 
-    full = truedist.true_distortion_full(uv, ref)
-    opt = full["opt_scale"]
-    loc = truedist.true_distortion(uv * opt, ref)
+    try:
+        full = truedist.true_distortion_full(uv, ref)
+        opt = full["opt_scale"]
+        loc = truedist.true_distortion(uv * opt, ref)
+    except ValueError as exc:
+        # misaligned flat/reference or no valid pairs -- leave this row's columns untouched
+        print(f"  skip {row['subject']} {row['hemi']} {row['config']}: {exc}")
+        return "skip(error)"
     row["opt_scale"] = round(float(opt), 6)
     row["true_global_at_optscale"] = round(float(full["true_global_at_optscale"]), 4)
     row["true_local_at_optscale"] = round(float(loc["true_mean_distortion"]), 4)

@@ -60,7 +60,7 @@ def main() -> int:
         flattener, n_sources=args.n_sources, radius=args.radius, seed=args.seed
     )
     paths.KRING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez(out, srcs=ref["srcs"], geo=ref["geo"], R=ref["R"])
+    np.savez(out, **ref)  # includes surface/sanitized provenance
     print(
         f"Wrote {out} ({ref['srcs'].size} sources, R={ref['R']}mm) in {time.time() - t0:.0f}s"
     )

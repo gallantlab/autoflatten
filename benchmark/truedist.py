@@ -84,7 +84,17 @@ def compute_truegeo(
         # entries are dropped by the scoring mask (d > 1e-6).
         chord = np.linalg.norm(v - v[s], axis=1)
         geo[i] = np.where(field < 0.5 * chord, 0.0, field)
-    return {"srcs": srcs, "geo": geo, "R": float(radius)}
+    used_fiducial = getattr(flattener, "fiducial_vertices", None) is not None
+    return {
+        "srcs": srcs,
+        "geo": geo,
+        "R": float(radius),
+        # Provenance so a cached .npz can be validated before reuse: refs built on the
+        # inflated surface (no fiducial available) must not be silently reused now that
+        # the metric is defined on the fiducial surface.
+        "surface": "fiducial" if used_fiducial else "inflated",
+        "sanitized": True,
+    }
 
 
 def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
@@ -99,6 +109,11 @@ def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
     srcs = ref["srcs"]
     geo = ref["geo"]
     R = ref["R"]
+    if uv.shape[0] != geo.shape[1]:
+        raise ValueError(
+            f"uv has {uv.shape[0]} vertices but truegeo reference has {geo.shape[1]} "
+            "-- flat patch and reference are misaligned (different projection/run?)"
+        )
 
     errs = []
     for i, s in enumerate(srcs):
@@ -109,6 +124,11 @@ def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
         d2d = np.linalg.norm(uv[mask] - uv[s], axis=1)
         rel = np.abs(d2d - d_geo[mask]) / d_geo[mask]
         errs.append(rel)
+    if not errs:
+        raise ValueError(
+            "no valid source/target pairs within R "
+            "(all geodesics masked out -- check the truegeo reference)"
+        )
     all_err = np.concatenate(errs)
     return {
         "true_mean_distortion": float(np.mean(all_err) * 100.0),
@@ -118,18 +138,33 @@ def true_distortion(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def true_distortion_full(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float]:
+def true_distortion_full(
+    uv: np.ndarray,
+    ref: dict[str, Any],
+    scale_bracket: tuple[float, float] = (0.80, 1.25),
+    n_scales: int = 91,
+) -> dict[str, float]:
     """Local (<=R), global (all pairs), and global-at-distance-optimal-scale distortion.
 
     The local <=R metric is gameable (a conformal disk scores well locally while globally
     catastrophic), so the *global* all-pairs metric is the faithful objective. Also reports
     the single global scale ``s*`` that minimizes global distortion (the area-matched output
     is generally not metric-optimal) and the distortion at ``s*``.
+
+    ``scale_bracket`` / ``n_scales`` set the grid for the optimal-scale search. The default
+    narrow bracket suits pyflatten maps (which already apply the distance-optimal expansion);
+    a method that does not (e.g. FreeSurfer in the fs6 comparison) should widen it so each map
+    is scored at its own optimum.
     """
     uv = np.asarray(uv, dtype=np.float64)
     srcs = ref["srcs"]
     geo = ref["geo"]
     R = ref["R"]
+    if uv.shape[0] != geo.shape[1]:
+        raise ValueError(
+            f"uv has {uv.shape[0]} vertices but truegeo reference has {geo.shape[1]} "
+            "-- flat patch and reference are misaligned (different projection/run?)"
+        )
 
     d2_all, dg_all = [], []
     for i, s in enumerate(srcs):
@@ -137,14 +172,19 @@ def true_distortion_full(uv: np.ndarray, ref: dict[str, Any]) -> dict[str, float
         m = dg > 1e-6
         d2_all.append(np.linalg.norm(uv[m] - uv[s], axis=1))
         dg_all.append(dg[m])
+    if not any(a.size for a in dg_all):
+        raise ValueError(
+            "no valid geodesic pairs (all sources masked out -- "
+            "check the truegeo reference)"
+        )
     d2 = np.concatenate(d2_all)
     dg = np.concatenate(dg_all)
 
     rel = np.abs(d2 - dg) / dg
     loc = dg <= R
-    # optimal global scale s* minimizing mean |s*d2 - dg|/dg over a fine grid (widened range:
-    # the flat map may sit at a different global scale than the reference surface)
-    scales = np.linspace(0.80, 1.25, 91)
+    # optimal global scale s* minimizing mean |s*d2 - dg|/dg over a fine grid (the flat map
+    # may sit at a different global scale than the reference surface)
+    scales = np.linspace(scale_bracket[0], scale_bracket[1], n_scales)
     errs = np.array([np.mean(np.abs(sc * d2 - dg) / dg) for sc in scales])
     j = int(np.argmin(errs))
     return {
