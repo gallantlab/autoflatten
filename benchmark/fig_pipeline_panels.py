@@ -154,20 +154,48 @@ def render_inflated(
     _save(fig, out_stem, dpi)
 
 
+def _orient_flat(xy: np.ndarray, anat: np.ndarray, hemi: str) -> np.ndarray:
+    """Rotate flat coords so the anatomical anterior-posterior axis is horizontal.
+
+    The optimizer leaves each flat map at an arbitrary in-plane orientation. Using each
+    patch vertex's anatomical position on the base surface (FreeSurfer RAS, +Y = anterior),
+    fit the flat-space direction of increasing anterior and rotate it to point LEFT for the
+    left hemisphere (anterior/frontal left, posterior/occipital right); the right hemisphere
+    is mirrored (anterior right). Pure rotation about the centroid -- shape and chirality of
+    the map are unchanged.
+    """
+    xy_c = xy - xy.mean(axis=0)
+    ap = anat[:, 1] - anat[:, 1].mean()  # FreeSurfer RAS Y: anterior positive
+    coeffs, *_ = np.linalg.lstsq(xy_c, ap, rcond=None)  # flat gradient of anterior
+    phi = np.arctan2(coeffs[1], coeffs[0])
+    target = np.pi if hemi == "lh" else 0.0  # anterior -> left (lh) / right (rh)
+    theta = target - phi
+    c, s = np.cos(theta), np.sin(theta)
+    return xy_c @ np.array([[c, -s], [s, c]]).T
+
+
 def render_flatmap(
     flat_patch_path: Path,
     base_surface_path: Path,
     curv_path: Path,
     out_stem: Path,
+    hemi: str = "lh",
+    orient: bool = True,
     dpi: int = 300,
 ) -> None:
-    """Render a flatmap panel colored by binarized curvature. Transparent, no labels."""
+    """Render a flatmap panel colored by binarized curvature. Transparent, no labels.
+
+    When ``orient`` is set, the map is rotated so the anatomical A-P axis is horizontal
+    (anterior left for lh; see :func:`_orient_flat`).
+    """
     flat_vertices, orig_indices, _ = read_patch(str(flat_patch_path))
-    _, base_faces = read_surface(str(base_surface_path))
+    base_vertices, base_faces = read_surface(str(base_surface_path))
     curv = load_curvature(str(curv_path))
 
     faces = extract_patch_faces(base_faces, orig_indices)
     xy = flat_vertices[:, :2]
+    if orient:
+        xy = _orient_flat(xy, base_vertices[orig_indices], hemi)
     face_curv = curv[orig_indices][faces].mean(axis=1)
     base_gray = _base_gray(face_curv)
 
@@ -222,6 +250,11 @@ def main() -> int:
         "--out-dir", default=str(DEFAULT_RUN / "figures" / "pipeline_panels")
     )
     ap.add_argument("--dpi", type=int, default=300)
+    ap.add_argument(
+        "--no-orient",
+        action="store_true",
+        help="keep the optimizer's raw flat orientation (default: A-P horizontal)",
+    )
     args = ap.parse_args()
 
     hemi = args.hemi
@@ -268,6 +301,8 @@ def main() -> int:
             surf / f"{hemi}.fiducial",
             surf / f"{hemi}.curv",
             out_dir / f"{subj}_{hemi}_flatmap",
+            hemi=hemi,
+            orient=not args.no_orient,
             dpi=args.dpi,
         )
 
