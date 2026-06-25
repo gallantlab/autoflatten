@@ -77,13 +77,18 @@ DEFAULT_PARCELS = [
 DEFAULT_SUBJECTS = ["sub-022", "sub-041", "sub-052"]
 
 # Natural inflated-surface view per parcel: the aspect where the parcel is most fully
-# visible. superiorfrontal is largely a *medial* structure (a lateral/dorsal view catches
-# only its dorsal lip), so it is shown medially; fusiform is ventral; the rest are lateral.
-# Overridden for all parcels by an explicit --inflated-view.
-PARCEL_VIEW = {
-    "lateraloccipital": "lateral",
+# visible. A value is either a named view (medial/lateral/ventral/frontal) or an explicit
+# (elev, azim) pair for parcels that sit off the cardinal aspects. Projection is orthographic,
+# so *elevation* foreshortens the A-P extent (a high-tilt camera looks "squashed"); azimuth
+# just orbits the vertical axis and keeps proportions natural. superiorfrontal is largely a
+# *medial* structure (a lateral view catches only its dorsal lip), so it is shown medially;
+# fusiform is ventral; lateraloccipital wraps the occipital pole, so it is orbited toward the
+# pole at zero elevation (no squash); superiorparietal is dorsal-posterior and needs a modest
+# tilt. Angles are for the left hemisphere. Overridden for all parcels by --inflated-view.
+PARCEL_VIEW: dict[str, str | tuple[float, float]] = {
+    "lateraloccipital": (0.0, 135.0),
     "superiorfrontal": "medial",
-    "superiorparietal": "lateral",
+    "superiorparietal": (20.0, 200.0),
     "fusiform": "ventral",
 }
 
@@ -214,6 +219,25 @@ def flatten_patch(
     return out_flat
 
 
+def _view_rotation(hemi: str, view: str | tuple[float, float]) -> np.ndarray:
+    """Rotation matrix for a named view or an explicit ``(elev, azim)`` pair.
+
+    Named views delegate to fig_pipeline_panels (medial/lateral/ventral/frontal); a tuple
+    builds the same matrix construction directly from the given angles, letting a parcel be
+    shown from an oblique angle facing its surface.
+    """
+    if isinstance(view, str):
+        return _rotation(hemi, view)
+    elev, azim = view
+    er, ar = np.radians(elev), np.radians(azim)
+    ca, sa = np.cos(ar), np.sin(ar)
+    ce, se = np.cos(er), np.sin(er)
+    r_base = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+    rz = np.array([[ca, -sa, 0], [sa, ca, 0], [0, 0, 1]])
+    rx = np.array([[1, 0, 0], [0, ce, -se], [0, se, ce]])
+    return rx @ r_base @ rz
+
+
 def render_cut_inflated(
     vertices: np.ndarray,
     faces: np.ndarray,
@@ -221,7 +245,7 @@ def render_cut_inflated(
     patch_mask: np.ndarray,
     hemi: str,
     out_stem: Path,
-    view: str = "lateral",
+    view: str | tuple[float, float] = "lateral",
     dpi: int = 300,
 ) -> None:
     """Inflated-surface panel: the cut-out region washed red, the patch left as curvature.
@@ -243,7 +267,7 @@ def render_cut_inflated(
     normals /= np.linalg.norm(normals, axis=1, keepdims=True) + 1e-10
     centroids = vpf.mean(axis=1)
 
-    r = _rotation(hemi, view)
+    r = _view_rotation(hemi, view)
     rverts = vertices @ r.T
     rface = vpf @ r.T
     rnorm = normals @ r.T
