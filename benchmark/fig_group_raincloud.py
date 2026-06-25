@@ -113,12 +113,10 @@ def _rng(seed):
 
 
 def _far_fence(*arrays):
-    """Tukey far-outlier fence (Q3 + 3*IQR) over the pooled values, or None if nothing exceeds
-    it. Used to zoom the display so a few localized blow-ups don't squash the bulk."""
-    v = np.concatenate([np.asarray(a, float) for a in arrays])
-    q1, q3 = np.percentile(v, [25, 75])
-    cap = q3 + 3.0 * (q3 - q1)
-    return float(cap) if v.max() > cap else None
+    """Display cap for zoom/off-scale handling. Disabled (returns None): on the corrected
+    fiducial metric the extremes are mild (~22% vs a ~14% bulk), so the full range is shown
+    with no clipping. (Kept as a hook in case a future dataset has genuine far outliers.)"""
+    return None
 
 
 # ---------------------------------------------------------------------------------
