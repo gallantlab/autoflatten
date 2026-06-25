@@ -517,7 +517,7 @@ def _kring_distances_kernel(
     allocated once and resets only the touched entries between vertices. A naive parallel
     port of ``_limited_dijkstra_numba`` allocated five O(n_vertices) arrays per call inside
     the prange, which melts the allocator across threads; this avoids that. Output matches
-    the serial ``_limited_dijkstra_numba`` (same correction, same heap discipline).
+    the serial ``_limited_dijkstra_numba`` (same correction, same linear-scan extract-min).
     """
     nv = len(indptr) - 1
     n = offsets.shape[0] - 1
@@ -527,8 +527,9 @@ def _kring_distances_kernel(
     visited = np.zeros((n_chunks, nv), dtype=np.bool_)
     is_target = np.zeros((n_chunks, nv), dtype=np.bool_)
     touched = np.empty((n_chunks, nv), dtype=np.int64)
-    # Lazy-deletion binary heap: a vertex can be pushed multiple times before it is
-    # popped/visited, so capacity must exceed nv. Match _limited_dijkstra_numba (3*nv).
+    # Priority queue (unsorted array, linear-scan extract-min): a vertex can be pushed
+    # multiple times before it is popped/visited, so capacity must exceed nv. Match
+    # _limited_dijkstra_numba (3*nv).
     heap_cap = nv * 3
     heap_d = np.empty((n_chunks, heap_cap), dtype=np.float64)
     heap_v = np.empty((n_chunks, heap_cap), dtype=np.int64)
@@ -1095,8 +1096,11 @@ def _angular_kring_kernel(
     out_dist = np.zeros((n_vertices, max_nb), dtype=np.float64)
     out_count = np.zeros(n_vertices, dtype=np.int64)
 
-    # Per-chunk scratch, allocated once (not per vertex). Matches the discipline in
-    # _kring_distances_kernel: lazy-deletion binary heap with capacity > nv.
+    # Per-chunk scratch, allocated once (not per vertex). Priority queue is an unsorted
+    # array with linear-scan extract-min (see the Dijkstra loop below) -- matching the
+    # serial _limited_dijkstra_numba, which is fast enough for these local neighborhoods.
+    # Capacity is 3*nv because a vertex may be pushed several times before it is popped
+    # (stale entries are skipped via `visited`), so the queue can exceed nv.
     dist = np.full((n_chunks, nv), INF)
     visited = np.zeros((n_chunks, nv), dtype=np.bool_)
     is_target = np.zeros((n_chunks, nv), dtype=np.bool_)
@@ -1166,8 +1170,9 @@ def _angular_kring_kernel(
             if count == 0:
                 continue
 
-            # Inlined limited Dijkstra over chunk-local scratch (same correction and heap
-            # discipline as _limited_dijkstra_numba), resetting only touched entries.
+            # Inlined limited Dijkstra over chunk-local scratch (same correction and
+            # linear-scan extract-min as _limited_dijkstra_numba), resetting only touched
+            # entries.
             for j in range(count):
                 tgt[out_nb[v, j]] = True
 
