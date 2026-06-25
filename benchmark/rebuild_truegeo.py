@@ -56,8 +56,31 @@ def run_worker(args) -> int:
 
     fl = SurfaceFlattener(FlattenConfig())
     fl.load_data(str(patch), str(base))
-    ref = truedist.compute_truegeo(fl)  # now heat on fiducial
-    # negative-geo sanity (should be ~0 on fiducial)
+
+    if args.sanitize:
+        # Mask gross heat-solver failures (geo < 0.5*chord) in an already-built fiducial ref,
+        # without re-solving heat. Needs the fiducial coords (load_data above) for the chord.
+        d = np.load(out)
+        srcs, geo = d["srcs"], d["geo"].copy()
+        fid = np.asarray(fl.fiducial_vertices, np.float64)
+        nbad = 0
+        for i, s in enumerate(srcs):
+            chord = np.linalg.norm(fid - fid[s], axis=1)
+            mask = geo[i] < 0.5 * chord
+            nbad += int(mask.sum())
+            geo[i] = np.where(mask, 0.0, geo[i])
+        np.savez(
+            out, srcs=srcs, geo=geo, R=float(d["R"]), surface="fiducial", sanitized=True
+        )
+        print(
+            f"[ok] {subj} {hemi}: sanitized ({nbad} impossible pairs zeroed)",
+            flush=True,
+        )
+        return 0
+
+    ref = truedist.compute_truegeo(
+        fl
+    )  # now heat on fiducial (with chord masking baked in)
     n_neg = int(sum(ref["geo"][i].min() < -0.1 for i in range(len(ref["srcs"]))))
     out.parent.mkdir(parents=True, exist_ok=True)
     # If this slot is a symlink to another run's (inflated) ref (head-start reuse), unlink it
@@ -71,32 +94,37 @@ def run_worker(args) -> int:
     return 0
 
 
-def _needs_rebuild(run_dir: Path, subj: str, hemi: str) -> bool:
+def _needs_rebuild(run_dir: Path, subj: str, hemi: str, sanitize: bool) -> bool:
     import numpy as np
 
     p = run_dir / "truegeo" / f"{subj}_{hemi}.truegeo.npz"
     if not p.exists() or p.is_symlink():  # symlinked-in old refs must be replaced
-        return True
+        return not sanitize  # sanitize needs an existing fiducial ref to mask
     try:
         d = np.load(p)
+        if sanitize:
+            return str(d.get("surface", "")) == "fiducial" and not bool(
+                d.get("sanitized", False)
+            )
         return str(d.get("surface", "")) != "fiducial"
     except Exception:  # noqa: BLE001
-        return True
+        return not sanitize
 
 
 def run_driver(args) -> int:
     run_dir = Path(args.run_dir)
     hemis = _hemis_with_flat(run_dir)
-    # back up the old (inflated) truegeo dir once
-    bak = run_dir / "truegeo_inflated"
-    tg = run_dir / "truegeo"
-    if tg.exists() and not bak.exists():
-        shutil.copytree(tg, bak, symlinks=True)
-        print(f"backed up inflated truegeo -> {bak}")
-    todo = [(s, h) for (s, h) in hemis if _needs_rebuild(run_dir, s, h)]
+    if not args.sanitize:
+        # back up the old (inflated) truegeo dir once
+        bak = run_dir / "truegeo_inflated"
+        tg = run_dir / "truegeo"
+        if tg.exists() and not bak.exists():
+            shutil.copytree(tg, bak, symlinks=True)
+            print(f"backed up inflated truegeo -> {bak}")
+    todo = [(s, h) for (s, h) in hemis if _needs_rebuild(run_dir, s, h, args.sanitize)]
+    verb = "sanitize" if args.sanitize else "rebuild on FIDUCIAL"
     print(
-        f"rebuild_truegeo: {len(hemis)} hemis, {len(todo)} to rebuild on FIDUCIAL "
-        f"({N_LANES} lanes).",
+        f"rebuild_truegeo: {len(hemis)} hemis, {len(todo)} to {verb} ({N_LANES} lanes).",
         flush=True,
     )
 
@@ -122,6 +150,8 @@ def run_driver(args) -> int:
             "--cpus",
             cpus,
         ]
+        if args.sanitize:
+            cmd.append("--sanitize")
         return subprocess.Popen(cmd, cwd=repo)
 
     for lane in range(min(N_LANES, len(queue))):
@@ -147,6 +177,11 @@ def main() -> int:
     ap.add_argument("--subject")
     ap.add_argument("--hemi", choices=["lh", "rh"])
     ap.add_argument("--cpus")
+    ap.add_argument(
+        "--sanitize",
+        action="store_true",
+        help="mask gross heat failures (geo<0.5*chord) in existing fiducial refs; no heat re-solve",
+    )
     args = ap.parse_args()
     return run_worker(args) if args.worker else run_driver(args)
 

@@ -76,9 +76,14 @@ def compute_truegeo(
     geo = np.empty((srcs.shape[0], n_v), dtype=np.float64)
     for i, s in enumerate(srcs):
         field = igl.heat_geodesics_solve(data, np.array([s], dtype=np.int64))
-        # negative geodesics are impossible -> ill-conditioned solve; clamp the small numerical
-        # negatives near the source (the scoring mask drops d<=1e-6 anyway).
-        geo[i] = np.maximum(field, 0.0)
+        # A geodesic can never be shorter than the straight-line 3D chord. The heat solver
+        # occasionally emits grossly-wrong near-zero (or negative) values for far vertices
+        # (ill-conditioning); these tiny denominators blow up the relative metric. Zero out any
+        # estimate below HALF the chord -- a loose physical bound that flags only gross failures
+        # (<0.1% of pairs; legitimate heat under-estimation stays well above 0.5*chord). Zeroed
+        # entries are dropped by the scoring mask (d > 1e-6).
+        chord = np.linalg.norm(v - v[s], axis=1)
+        geo[i] = np.where(field < 0.5 * chord, 0.0, field)
     return {"srcs": srcs, "geo": geo, "R": float(radius)}
 
 
