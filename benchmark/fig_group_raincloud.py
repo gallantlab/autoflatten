@@ -284,6 +284,120 @@ def fig_collapsed(rows, out_dir: Path, ts: str, config: str) -> None:
     _save(fig, out_dir, "fig_group_raincloud_collapsed", ts, config)
 
 
+def _load_both(run_dir: Path, ts: str, col: str):
+    """Pair the two configs by (subject, hemi): {(subj,hemi): {config: value}}."""
+    out: dict = {}
+    for cfg in ("robust_fast", "tutte_default"):
+        p = run_dir / "results" / f"group_{cfg}_{ts}.csv"
+        for r in csv.DictReader(open(p)):
+            if r.get("status") == "ok":
+                out.setdefault((r["subject"], r["hemi"]), {})[cfg] = float(r[col])
+    return out
+
+
+def fig_config_paired(run_dir: Path, out_dir: Path, ts: str) -> None:
+    """Collapsed vertical raincloud, robust_fast vs tutte_default paired per hemisphere, points
+    colored by hemisphere (within-config pairing line connects each hemi's two configs)."""
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 4.6))
+    rng = _rng(2)
+    for ax, (mkey, (col, label)) in zip(axes, METRICS.items()):
+        data = _load_both(run_dir, ts, col)
+        keys = [k for k in data if {"robust_fast", "tutte_default"} <= set(data[k])]
+        rob = np.array([data[k]["robust_fast"] for k in keys])
+        tut = np.array([data[k]["tutte_default"] for k in keys])
+        hemis = np.array([k[1] for k in keys])
+        cap = _far_fence(rob, tut)
+
+        _half_violin(ax, rob, 0.0, 0.30, "left", "0.6", vmax=cap)
+        _half_violin(ax, tut, 1.0, 0.30, "right", "0.6", vmax=cap)
+        _box(ax, rob, 0.0)
+        _box(ax, tut, 1.0)
+
+        xr = 0.20 + rng.uniform(0, 0.10, len(keys))
+        xt = 0.80 - rng.uniform(0, 0.10, len(keys))
+        for i in range(len(keys)):
+            ax.plot(
+                [xr[i], xt[i]],
+                [rob[i], tut[i]],
+                color="0.75",
+                lw=0.3,
+                alpha=0.4,
+                zorder=1,
+            )
+        for h in ("lh", "rh"):
+            m = hemis == h
+            ax.scatter(
+                xr[m],
+                rob[m],
+                s=12,
+                color=HEMI_COLORS[h],
+                alpha=0.85,
+                lw=0,
+                zorder=2,
+                label=h.upper() if ax is axes[0] else None,
+            )
+            ax.scatter(
+                xt[m], tut[m], s=12, color=HEMI_COLORS[h], alpha=0.85, lw=0, zorder=2
+            )
+
+        if cap is not None:
+            for xs, vv in ((xr, rob), (xt, tut)):
+                off = vv > cap
+                if off.any():
+                    ax.scatter(
+                        xs[off],
+                        np.full(off.sum(), cap),
+                        marker="^",
+                        s=20,
+                        color="0.25",
+                        zorder=3,
+                        clip_on=False,
+                    )
+            nbad = int((rob > cap).sum() + (tut > cap).sum())
+            ax.annotate(
+                f"{nbad} off-scale (max {max(rob.max(), tut.max()):.0f}%)",
+                xy=(0.5, cap),
+                xytext=(0.5, cap * 0.99),
+                ha="center",
+                va="top",
+                fontsize=6.5,
+                color="0.3",
+            )
+        pooled = np.concatenate([rob, tut])
+        inv = pooled[pooled <= cap] if cap is not None else pooled
+        rng_v = np.ptp(inv)
+        top = (cap * 1.06) if cap is not None else inv.max() + 0.05 * rng_v
+        ax.set_ylim(inv.min() - 0.08 * rng_v, top)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(
+            [
+                f"robust_fast\n(median {np.median(rob):.1f})",
+                f"tutte_default\n(median {np.median(tut):.1f})",
+            ]
+        )
+        ax.set_xlim(-0.5, 1.5)
+        ax.set_ylabel(label)
+        ax.set_title(mkey.capitalize(), fontsize=10)
+    axes[0].legend(loc="upper left", frameon=False, fontsize=8, title="hemisphere")
+    fig.suptitle(
+        f"AutoFlatten group distortion — robust_fast vs tutte_default, "
+        f"{len(_load_both(run_dir, ts, METRICS['local'][0]))} hemispheres",
+        fontsize=10,
+    )
+    fig.text(
+        0.01, 0.01, f"fig_group_raincloud_configs  TS={ts}", fontsize=4.5, color="0.5"
+    )
+    fig.tight_layout(rect=(0, 0.02, 1, 0.96))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ext in ("pdf", "png"):
+        fig.savefig(
+            out_dir / f"fig_group_raincloud_configs_{ts}.{ext}", bbox_inches="tight"
+        )
+    plt.close(fig)
+    print(f"  wrote fig_group_raincloud_configs_{ts}.pdf / .png")
+
+
 def _save(fig, out_dir: Path, name: str, ts: str, config: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ("pdf", "png"):
@@ -303,10 +417,20 @@ def main() -> int:
         help="explicit results CSV (else auto: floored if present)",
     )
     ap.add_argument("--out-dir", default=None, help="default: <run-dir>/figures")
+    ap.add_argument(
+        "--mode",
+        choices=["per-config", "config-paired"],
+        default="per-config",
+        help="per-config: paired-hemi + collapsed for --config; config-paired: robust vs tutte",
+    )
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
     out_dir = Path(args.out_dir) if args.out_dir else run_dir / "figures"
+    if args.mode == "config-paired":
+        print(f"Rendering config-paired raincloud (robust vs tutte) -> {out_dir}")
+        fig_config_paired(run_dir, out_dir, args.ts)
+        return 0
     rows = _load(run_dir, args.config, args.ts, Path(args.csv) if args.csv else None)
     print(f"Rendering group rainclouds ({args.config}, {len(rows)} hemis) -> {out_dir}")
     fig_paired(rows, out_dir, args.ts, args.config)
