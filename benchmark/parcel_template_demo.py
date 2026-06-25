@@ -14,8 +14,16 @@ For each parcel we write the fsaverage-space template JSON (the reusable artifac
 for each subject we project it (validated ``sphere.reg`` KDTree mapper, no FreeSurfer),
 flatten with the shipping ``robust_fast`` config, and render Illustrator-ready panels
 (transparent background, no labels): the fsaverage and per-subject inflated surfaces with
-the cut-out (removed) region washed semi-transparent red and the patch left as full
-curvature, and the resulting flatmap.
+the cut-out (removed) region washed semi-transparent red over the shaded curvature (so the
+curvature still reads underneath) and the patch left as full, un-washed curvature, and the
+resulting flatmap.
+
+Each inflated panel is shown from a per-parcel view (the ``PARCEL_VIEW`` dict): either a
+named aspect (medial/lateral/ventral/frontal) or, for parcels that sit off the cardinal
+aspects, an explicit ``(elev, azim)`` angle pair. ``--inflated-view`` overrides it.
+
+Flat patches are reused if they already exist (so the panels can be re-rendered cheaply);
+pass ``--reflatten`` to force re-running the flattening optimization.
 
 A largest-connected-component guard is applied to the projected patch: the mapped parcel
 boundary can leave a stray island that would disconnect the patch and break flattening.

@@ -124,6 +124,7 @@ The CLI supports three modes:
 1. **Template Loading** ([config.py](autoflatten/config.py), [template.py](autoflatten/template.py))
    - Default: `fsaverage_cuts_template.json` contains medial wall + 5 anatomical cuts
    - Templates stored in `autoflatten/default_templates/`
+   - **Template format is general**: a template JSON maps `{hemi}_<region>` keys to lists of fsaverage vertex indices to *exclude*, and the patch is the complement (whatever survives). Any region can serve as a template — e.g. take a single anatomical parcel, make its complement the cut region, and the parcel comes out as the patch. See [benchmark/parcel_template_demo.py](benchmark/parcel_template_demo.py) for a worked example deriving a template from a FreeSurfer parcellation (aparc/Desikan-Killiany `.annot`).
 
 2. **Cut Mapping** ([core.py](autoflatten/core.py):`map_cuts_to_subject`)
    - Uses FreeSurfer's `mri_label2label` to map template cuts to target subject
