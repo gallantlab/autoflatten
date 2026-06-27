@@ -45,6 +45,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import networkx as nx
 import nibabel as nib
 import nibabel.freesurfer.io as fsio
 import numpy as np
@@ -53,7 +54,7 @@ from matplotlib.collections import PolyCollection
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
-from autoflatten.core import fill_holes_in_patch
+from autoflatten.core import ensure_continuous_cuts, fill_holes_in_patch
 from autoflatten.freesurfer import create_patch_from_keep, load_surface
 
 from . import paths
@@ -170,8 +171,72 @@ def largest_cc(kept: np.ndarray, faces: np.ndarray, n_vertices: int) -> np.ndarr
     return kept[comp_of_kept == biggest]
 
 
+def relaxation_cut(
+    parcel_idx: np.ndarray, faces: np.ndarray, surf_coords: np.ndarray, width: int = 0
+) -> np.ndarray:
+    """Author an illustrative relaxation (relief) cut for a parcel, on fsaverage.
+
+    A thin slit from the parcel boundary inward to its centroid: removing it lets a dome-like
+    patch open and relax instead of shearing. Returned as fsaverage vertex indices. The slit
+    is the within-parcel shortest path (edge weights = Euclidean distance on ``surf_coords``)
+    from the boundary vertex farthest from the centroid to the centroid vertex; ``width``
+    dilates it by that many mesh rings (kept inside the parcel). Anchoring on the boundary is
+    what keeps it a *slit* (one boundary loop) rather than an interior hole.
+    """
+    parcel_idx = np.unique(np.asarray(parcel_idx, dtype=np.int64))
+    faces = np.asarray(faces, dtype=np.int64)
+    n = surf_coords.shape[0]
+    in_p = np.zeros(n, dtype=bool)
+    in_p[parcel_idx] = True
+
+    # Parcel-internal edges -> weighted graph (the slit must stay inside the parcel).
+    fp = faces[in_p[faces].all(axis=1)]
+    edges = np.vstack([fp[:, [0, 1]], fp[:, [1, 2]], fp[:, [0, 2]]])
+    w = np.linalg.norm(surf_coords[edges[:, 0]] - surf_coords[edges[:, 1]], axis=1)
+    g = nx.Graph()
+    g.add_nodes_from(parcel_idx.tolist())
+    g.add_weighted_edges_from(
+        zip(edges[:, 0].tolist(), edges[:, 1].tolist(), w.tolist())
+    )
+
+    # Centroid vertex: parcel vertex nearest the parcel's mean position.
+    centroid_xyz = surf_coords[parcel_idx].mean(axis=0)
+    centroid_v = int(
+        parcel_idx[
+            np.argmin(np.linalg.norm(surf_coords[parcel_idx] - centroid_xyz, axis=1))
+        ]
+    )
+
+    # Boundary vertices: parcel vertices in a face that straddles the parcel edge.
+    straddle = faces[in_p[faces].any(axis=1) & ~in_p[faces].all(axis=1)]
+    bmask = np.zeros(n, dtype=bool)
+    for col in range(3):
+        cv = straddle[:, col]
+        bmask[cv[in_p[cv]]] = True
+    boundary = np.nonzero(bmask)[0]
+    # Farthest boundary vertex from the centroid -> the longest radial slit.
+    start = int(
+        boundary[
+            np.argmax(
+                np.linalg.norm(surf_coords[boundary] - surf_coords[centroid_v], axis=1)
+            )
+        ]
+    )
+
+    path = nx.shortest_path(g, start, centroid_v, weight="weight")
+    cut = set(path)
+    for _ in range(max(0, width)):  # dilate within the parcel
+        cut |= {nb for v in list(cut) for nb in g.neighbors(v)}
+    return np.array(sorted(cut), dtype=np.int64)
+
+
 def write_template_json(
-    hemi: str, parcel: str, parcel_idx: np.ndarray, n_vertices: int, out_path: Path
+    hemi: str,
+    parcel: str,
+    parcel_idx: np.ndarray,
+    n_vertices: int,
+    out_path: Path,
+    cut_idx: np.ndarray | None = None,
 ) -> Path:
     """Write the reusable fsaverage-space template excluding the parcel's complement.
 
@@ -179,11 +244,16 @@ def write_template_json(
     ``{hemi}_mwall``: the template loaders treat every ``{hemi}_<region>`` key the same
     (union into the excluded set), and the ``mwall`` name is only meaningful to the
     geodesic-refine barrier -- which a parcel complement (no anatomical medial wall) should
-    not trigger anyway.
+    not trigger anyway. An optional relaxation cut is written under ``{hemi}_relaxcut`` as a
+    separate thin-cut key (a 1D slit inside the parcel, repaired by continuity, not part of
+    the solid complement).
     """
     complement = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), parcel_idx)
+    tmpl = {f"{hemi}_excluded": complement.tolist()}
+    if cut_idx is not None and len(cut_idx):
+        tmpl[f"{hemi}_relaxcut"] = np.asarray(cut_idx, dtype=np.int64).tolist()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({f"{hemi}_excluded": complement.tolist()}))
+    out_path.write_text(json.dumps(tmpl))
     return out_path
 
 
@@ -193,24 +263,43 @@ def project_parcel(
     parcel_fsavg: np.ndarray,
     fs_dir: Path,
     out_patch: Path,
+    relax_cut_fsavg: np.ndarray | None = None,
 ) -> tuple[Path, np.ndarray, int]:
     """Project the parcel to ``subject`` (FS-free) and build a single-component patch.
 
+    If ``relax_cut_fsavg`` is given, that fsaverage relaxation cut is mapped alongside the
+    parcel, repaired with :func:`ensure_continuous_cuts` (the mapped thin path can fragment,
+    and with geodesic refine off, continuity repair is what re-knits the slit), and subtracted
+    from the patch -- demonstrating a template-defined relief cut on an arbitrary patch.
+
     Returns ``(patch_file, kept_vertices, n_surface)``.
     """
-    mapped = map_cuts_to_subject_python(
-        {"parcel": parcel_fsavg}, subject, hemi, subjects_dir=str(fs_dir)
-    )["parcel"]
+    to_map = {"parcel": parcel_fsavg}
+    if relax_cut_fsavg is not None and len(relax_cut_fsavg):
+        to_map["relaxcut"] = relax_cut_fsavg
+    mapped = map_cuts_to_subject_python(to_map, subject, hemi, subjects_dir=str(fs_dir))
+
     pts, polys = load_surface(subject, "inflated", hemi, subjects_dir=str(fs_dir))
     polys = np.asarray(polys, dtype=np.int64)
     n = len(pts)
 
-    kept = largest_cc(mapped, polys, n)
+    kept = largest_cc(mapped["parcel"], polys, n)
     excluded = set(np.setdiff1d(np.arange(n, dtype=np.int64), kept).tolist())
     holes = fill_holes_in_patch(polys, excluded)
     if holes:
         excluded |= {int(v) for v in holes}
     kept = np.array(sorted(set(range(n)) - excluded), dtype=np.int64)
+
+    if "relaxcut" in mapped and len(mapped["relaxcut"]):
+        # Continuity repair on the mapped slit (de-hardcoded: a non-anatomical cut key),
+        # then subtract it from the patch and keep the largest remaining component.
+        cut_dict = ensure_continuous_cuts(
+            {"relaxcut": mapped["relaxcut"]}, subject, hemi
+        )
+        cut_v = {int(v) for v in cut_dict["relaxcut"]}
+        kept = largest_cc(
+            np.array(sorted(set(kept.tolist()) - cut_v), dtype=np.int64), polys, n
+        )
 
     out_patch.parent.mkdir(parents=True, exist_ok=True)
     create_patch_from_keep(str(out_patch), pts, polys, kept)
@@ -258,6 +347,100 @@ def flatten_patch(
     out_flat.parent.mkdir(parents=True, exist_ok=True)
     fl.save_result(uv, str(out_flat))
     return out_flat
+
+
+def true_global_distortion(
+    patch_3d: Path, flat_patch: Path, subject: str, hemi: str, fs_dir: Path
+) -> float | None:
+    """True-geodesic global distortion (%) of a flat patch, at the distance-optimal scale.
+
+    Energy-independent quality yardstick (see :mod:`benchmark.truedist`): heat-method
+    geodesics on the fiducial surface vs. 2D flat distances. Returns ``None`` (with a note) if
+    the geodesic backend (libigl) is unavailable, so the comparison never breaks the demo.
+    """
+    try:
+        from autoflatten.flatten import FlattenConfig, SurfaceFlattener
+        from autoflatten.freesurfer import read_patch
+
+        from . import truedist
+
+        base = fs_dir / subject / "surf" / f"{hemi}.fiducial"
+        fl = SurfaceFlattener(FlattenConfig())
+        fl.load_data(
+            str(patch_3d), str(base)
+        )  # geometry/fiducial (shares orig indices)
+        ref = truedist.compute_truegeo(fl)
+        uv = read_patch(str(flat_patch))[0][:, :2].astype(np.float64)
+        return float(truedist.true_distortion_full(uv, ref)["true_global_at_optscale"])
+    except Exception as exc:  # noqa: BLE001 - distortion is a best-effort extra
+        print(f"    (true-distortion skipped: {exc})")
+        return None
+
+
+def _process_one(
+    subj: str,
+    hemi: str,
+    p_idx: np.ndarray,
+    parcel: str,
+    view: str | tuple[float, float],
+    fs_dir: Path,
+    out_dir: Path,
+    fig_dir: Path,
+    args,
+    relax_cut_fsavg: np.ndarray | None,
+    tag: str,
+) -> tuple[Path, Path]:
+    """Project -> render inflated -> flatten -> render flatmap for one subject/parcel variant.
+
+    ``tag`` ("", "_nocut", "_relaxcut") disambiguates the output filenames. Returns
+    ``(patch_3d_path, flat_patch_path)``.
+    """
+    surf = fs_dir / subj / "surf"
+    patch, kept, n = project_parcel(
+        subj,
+        hemi,
+        p_idx,
+        fs_dir,
+        out_dir / "patches" / f"{subj}_{hemi}_{parcel}{tag}.patch.3d",
+        relax_cut_fsavg=relax_cut_fsavg,
+    )
+    print(f"    {tag or 'patch'}: {kept.size}/{n} vertices kept")
+
+    s_verts, s_faces = nib.freesurfer.read_geometry(str(surf / f"{hemi}.inflated"))
+    s_curv = load_curvature(str(surf / f"{hemi}.curv"))
+    s_mask = np.zeros(n, dtype=bool)
+    s_mask[kept] = True
+    render_cut_inflated(
+        np.asarray(s_verts),
+        np.asarray(s_faces, dtype=np.int64),
+        s_curv,
+        s_mask,
+        hemi,
+        fig_dir / f"{subj}_{hemi}_{parcel}{tag}_inflated_patch",
+        view=view,
+        dpi=args.dpi,
+    )
+
+    flat = flatten_patch(
+        patch,
+        subj,
+        hemi,
+        args.config,
+        fs_dir,
+        out_dir / "kring_cache",
+        out_dir / "flat" / f"{subj}_{hemi}_{parcel}{tag}_{args.config}.flat.patch.3d",
+        reuse=not args.reflatten,
+    )
+    render_flatmap(
+        flat,
+        surf / f"{hemi}.fiducial",
+        surf / f"{hemi}.curv",
+        fig_dir / f"{subj}_{hemi}_{parcel}{tag}_flatmap",
+        hemi=hemi,
+        orient=not args.no_orient,
+        dpi=args.dpi,
+    )
+    return patch, flat
 
 
 def _view_rotation(hemi: str, view: str | tuple[float, float]) -> np.ndarray:
@@ -373,12 +556,26 @@ def main() -> int:
         default=None,
         help="view for the inflated panels; default is per-parcel (see PARCEL_VIEW)",
     )
+    ap.add_argument(
+        "--relax-cut",
+        action="store_true",
+        help="add a template-defined relaxation (relief) cut to each parcel, flatten with "
+        "and without it, and report the true-distortion change",
+    )
+    ap.add_argument(
+        "--relax-cut-width",
+        type=int,
+        default=0,
+        help="dilate the relaxation slit by this many mesh rings (default 0 = 1-wide)",
+    )
     args = ap.parse_args()
 
     hemi = args.hemi
     fs_dir = Path(args.fs_dir)
     out_dir = Path(args.out_dir)
     fig_dir = out_dir / "figures"
+    # ensure_continuous_cuts loads subject surfaces via SUBJECTS_DIR; pin it to --fs-dir.
+    os.environ["SUBJECTS_DIR"] = str(fs_dir)
 
     # fsaverage inflated + curvature (shared across parcels) for the template panel.
     fsa = fs_dir / "fsaverage" / "surf"
@@ -393,18 +590,28 @@ def main() -> int:
         p_idx = parcel_vertices(hemi, parcel, args.annot)
         print(f"  fsaverage parcel: {p_idx.size} vertices")
 
+        cut_idx = None
+        if args.relax_cut:
+            cut_idx = relaxation_cut(
+                p_idx, fsa_faces, np.asarray(fsa_verts), width=args.relax_cut_width
+            )
+            print(f"  relaxation cut: {cut_idx.size} fsaverage vertices")
+
         write_template_json(
             hemi,
             parcel,
             p_idx,
             n_fsavg,
             out_dir / "templates" / f"{hemi}_{parcel}.json",
+            cut_idx=cut_idx,
         )
 
-        # fsaverage template panel: the parcel is the patch (full curvature), the
-        # complement (= the template's cut region) washed red.
+        # fsaverage template panel: the parcel is the patch (full curvature), the complement
+        # (and the relaxation slit, if any) washed red.
         patch_mask = np.zeros(n_fsavg, dtype=bool)
         patch_mask[largest_cc(p_idx, fsa_faces, n_fsavg)] = True
+        if cut_idx is not None:
+            patch_mask[cut_idx] = False
         render_cut_inflated(
             np.asarray(fsa_verts),
             fsa_faces,
@@ -418,55 +625,56 @@ def main() -> int:
 
         for subj in args.subjects:
             print(f"  {subj}:")
-            surf = fs_dir / subj / "surf"
-            patch, kept, n = project_parcel(
+            if not args.relax_cut:
+                _process_one(
+                    subj,
+                    hemi,
+                    p_idx,
+                    parcel,
+                    view,
+                    fs_dir,
+                    out_dir,
+                    fig_dir,
+                    args,
+                    relax_cut_fsavg=None,
+                    tag="",
+                )
+                continue
+
+            # With/without comparison: flatten the parcel both ways and report distortion.
+            patch0, flat0 = _process_one(
                 subj,
                 hemi,
                 p_idx,
+                parcel,
+                view,
                 fs_dir,
-                out_dir / "patches" / f"{subj}_{hemi}_{parcel}.patch.3d",
+                out_dir,
+                fig_dir,
+                args,
+                relax_cut_fsavg=None,
+                tag="_nocut",
             )
-            print(f"    projected patch: {kept.size}/{n} vertices kept")
-
-            # subject inflated panel: projected patch keeps curvature, cut region washed red
-            s_verts, s_faces = nib.freesurfer.read_geometry(
-                str(surf / f"{hemi}.inflated")
-            )
-            s_curv = load_curvature(str(surf / f"{hemi}.curv"))
-            s_mask = np.zeros(n, dtype=bool)
-            s_mask[kept] = True
-            render_cut_inflated(
-                np.asarray(s_verts),
-                np.asarray(s_faces, dtype=np.int64),
-                s_curv,
-                s_mask,
-                hemi,
-                fig_dir / f"{subj}_{hemi}_{parcel}_inflated_patch",
-                view=view,
-                dpi=args.dpi,
-            )
-
-            flat = flatten_patch(
-                patch,
+            patch1, flat1 = _process_one(
                 subj,
                 hemi,
-                args.config,
+                p_idx,
+                parcel,
+                view,
                 fs_dir,
-                out_dir / "kring_cache",
-                out_dir
-                / "flat"
-                / f"{subj}_{hemi}_{parcel}_{args.config}.flat.patch.3d",
-                reuse=not args.reflatten,
+                out_dir,
+                fig_dir,
+                args,
+                relax_cut_fsavg=cut_idx,
+                tag="_relaxcut",
             )
-            render_flatmap(
-                flat,
-                surf / f"{hemi}.fiducial",
-                surf / f"{hemi}.curv",
-                fig_dir / f"{subj}_{hemi}_{parcel}_flatmap",
-                hemi=hemi,
-                orient=not args.no_orient,
-                dpi=args.dpi,
-            )
+            d0 = true_global_distortion(patch0, flat0, subj, hemi, fs_dir)
+            d1 = true_global_distortion(patch1, flat1, subj, hemi, fs_dir)
+            if d0 is not None and d1 is not None:
+                print(
+                    f"    true-global distortion: no-cut {d0:.2f}%  ->  "
+                    f"relaxcut {d1:.2f}%  ({d1 - d0:+.2f} pp)"
+                )
 
     print(f"\nDone -> {fig_dir}")
     return 0

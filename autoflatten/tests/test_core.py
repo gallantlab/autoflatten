@@ -247,6 +247,46 @@ def test_ensure_continuous_cuts_with_disconnected_cut(
         assert nx.has_path(subgraph, v1, v2)
 
 
+def test_ensure_continuous_cuts_custom_key_and_skips(
+    mock_surface_data_with_disconnected_cut, monkeypatch
+):
+    """Continuity repair applies to any cut key, but skips solid-region/internal keys.
+
+    A custom ``relaxcut`` key (not one of the five shipped anatomical cuts) with two
+    disconnected vertices must be connected -- proving the cut list is no longer hardcoded.
+    A solid-region ``excluded`` key and an internal ``_hole_fill`` key must be left exactly
+    as-is (a 2D removed region is already one blob; repairing it is a meaningless no-op).
+    """
+
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
+        d = mock_surface_data_with_disconnected_cut
+        if surf_type == "inflated":
+            return d["vertices_inflated"], d["faces"]
+        elif surf_type == "fiducial":
+            return d["vertices_fiducial"], d["faces"]
+        raise ValueError(f"Unexpected surface type: {surf_type}")
+
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
+
+    excluded = np.array([2, 6])  # solid-region key: must be untouched
+    hole = np.array([5])  # internal bookkeeping key: must be untouched
+    vertex_dict = {
+        "relaxcut": np.array([0, 8]),  # disconnected custom cut in one component
+        "excluded": excluded,
+        "_hole_fill": hole,
+    }
+
+    result = ensure_continuous_cuts(vertex_dict, "test_subject", "lh")
+
+    # Custom cut was repaired: original endpoints retained + connecting vertices added.
+    assert len(result["relaxcut"]) > 2
+    assert 0 in result["relaxcut"] and 8 in result["relaxcut"]
+
+    # Solid-region and internal keys were skipped entirely (unchanged).
+    np.testing.assert_array_equal(result["excluded"], excluded)
+    np.testing.assert_array_equal(result["_hole_fill"], hole)
+
+
 @requires_freesurfer
 def test_map_cuts_to_subject_with_freesurfer():
     """

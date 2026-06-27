@@ -30,6 +30,11 @@ TRAPPED_VERTEX_MAX_BFS = 200
 # Typically 1-2 iterations suffice; 10 provides ample margin for complex cases
 HOLE_FILL_MAX_ITERATIONS = 10
 
+# Template keys that denote a *solid* removed region (a 2D area, not a 1D cut line):
+# the anatomical medial wall, or a parcel complement under "excluded". These are excluded
+# from cut-continuity repair (already one connected blob) and from geodesic refinement.
+_SOLID_REGION_KEYS = frozenset({"mwall", "excluded"})
+
 
 def _find_geometric_endpoints(cut_vertices, pts):
     """Find the two most geometrically distant vertices in a cut.
@@ -155,10 +160,19 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     print("Creating surface graph...")
     G = _build_surface_graph(pts_fiducial, polys)
 
-    # Process each cut (using anatomical names from template)
-    cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
-    for cut_key in cut_names:
-        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+    # Process every thin-cut key in the template. Solid removed regions (the medial wall, or
+    # a parcel complement under an "excluded" key) are skipped: they are already a single
+    # connected blob, so "making them continuous" is a meaningless no-op on a huge subgraph.
+    # Internal bookkeeping keys (e.g. "_hole_fill") are skipped too. This lets a custom cut
+    # (e.g. a relaxation cut on an arbitrary patch) get continuity repair, not just the five
+    # shipped anatomical cuts.
+    cut_keys = [
+        key
+        for key in vertex_dict
+        if key not in _SOLID_REGION_KEYS and not str(key).startswith("_")
+    ]
+    for cut_key in cut_keys:
+        if len(vertex_dict[cut_key]) == 0:
             continue
 
         print(f"Processing {cut_key}...")
