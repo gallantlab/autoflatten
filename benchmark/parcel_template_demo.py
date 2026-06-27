@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import matplotlib
@@ -70,10 +71,35 @@ from .probe_tutte_init import make_flatten_fn
 from .projection import map_cuts_to_subject_python
 from .time_cores import make_config
 
-# fsaverage parcellations ship with FreeSurfer; the datalad fsaverage's annot content is
-# an unfetched annex stub, so read the annot from the FreeSurfer-6 install (identical
-# standard 163842-vertex fsaverage indexing as the narratives sphere.reg, verified).
-FS6_FSAVERAGE_LABEL = Path("/data2/freesurfer-6.0/subjects/fsaverage/label")
+# Hardcoded fallback for the fsaverage label dir (the box where this benchmark was authored).
+_FS6_FSAVERAGE_LABEL = Path("/data2/freesurfer-6.0/subjects/fsaverage/label")
+
+
+def _find_fsaverage_label_dir() -> Path:
+    """Locate an fsaverage ``label/`` dir that has *real* ``.annot`` content.
+
+    fsaverage parcellations ship with every FreeSurfer install, but the datalad-managed
+    fsaverage under ``SUBJECTS_DIR`` keeps its annots as unfetched git-annex symlinks (the
+    dir exists; the ``.annot`` is a broken link). So we probe candidate roots and accept the
+    first whose ``lh.aparc.annot`` *resolves* (``Path.exists`` follows symlinks, returning
+    False for a broken annex stub), preferring ``FREESURFER_HOME`` (canonical, always real),
+    then ``SUBJECTS_DIR``, then the authoring box's FreeSurfer-6 install.
+    """
+    candidates = []
+    fs_home = os.environ.get("FREESURFER_HOME")
+    if fs_home:
+        candidates.append(Path(fs_home) / "subjects" / "fsaverage" / "label")
+    subjects_dir = os.environ.get("SUBJECTS_DIR")
+    if subjects_dir:
+        candidates.append(Path(subjects_dir) / "fsaverage" / "label")
+    candidates.append(_FS6_FSAVERAGE_LABEL)
+    for cand in candidates:
+        if (cand / "lh.aparc.annot").exists():  # follows symlinks: real content only
+            return cand
+    return _FS6_FSAVERAGE_LABEL
+
+
+FS6_FSAVERAGE_LABEL = _find_fsaverage_label_dir()
 
 # The four large, disc-like Desikan-Killiany (aparc) parcels chosen for the demo.
 DEFAULT_PARCELS = [
@@ -168,7 +194,7 @@ def project_parcel(
     mapped = map_cuts_to_subject_python(
         {"parcel": parcel_fsavg}, subject, hemi, subjects_dir=str(fs_dir)
     )["parcel"]
-    pts, polys = load_surface(subject, "inflated", hemi)
+    pts, polys = load_surface(subject, "inflated", hemi, subjects_dir=str(fs_dir))
     polys = np.asarray(polys, dtype=np.int64)
     n = len(pts)
 
