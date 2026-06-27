@@ -29,8 +29,8 @@ A largest-connected-component guard is applied to the projected patch: the mappe
 boundary can leave a stray island that would disconnect the patch and break flattening.
 
 A ``--parcels`` name may also be a *composite region* (``COMPOSITE_REGIONS``): a union of
-aparc parcels, optionally anterior-cropped -- e.g. ``anteriortemporal`` (the temporal-pole
-cap). With ``--relax-cut`` each patch additionally gets a template-defined relaxation
+aparc parcels, optionally cropped to a ball around the temporal pole -- e.g.
+``anteriortemporal`` (the temporal-pole cap). With ``--relax-cut`` each patch gets a relaxation
 (relief) cut: a thin slit authored on fsaverage (boundary -> centroid, ``{hemi}_relaxcut``
 key), mapped, re-knit with continuity repair, and subtracted; the patch is flattened with
 and without it and the true-global distortion change is reported. A relief cut only helps
@@ -161,10 +161,10 @@ def parcel_vertices(hemi: str, parcel: str, annot: str = "aparc") -> np.ndarray:
     return np.nonzero(labels == names.index(parcel))[0].astype(np.int64)
 
 
-# Composite regions: a union of aparc parcels, optionally cropped to the anterior portion
-# (keep the most-anterior ``anterior_frac`` by RAS Y). The anterior temporal lobe is a curved
-# 3D cap (the temporal pole), so it flattens with high distortion -- the case where a relief
-# cut earns its keep, unlike a near-developable single gyral parcel.
+# Composite regions: a union of aparc parcels, optionally cropped to a ball around the
+# temporal pole (``pole_radius_mm``). The anterior temporal lobe is a curved 3D cap (the
+# temporal pole), so it flattens with high distortion -- the case where a relief cut earns
+# its keep, unlike a near-developable single gyral parcel.
 COMPOSITE_REGIONS: dict[str, dict] = {
     "anteriortemporal": {
         "parcels": [
@@ -175,7 +175,11 @@ COMPOSITE_REGIONS: dict[str, dict] = {
             "inferiortemporal",
             "fusiform",
         ],
-        "anterior_frac": 0.45,
+        # Crop a ball (mm, Euclidean on the inflated surface) around the temporal pole rather
+        # than an axis-aligned anterior slice: a convex crop yields a clean rounded cap with no
+        # thin slivers (a Y-quantile crop leaves ragged 1-vertex necks that flattening stretches
+        # into spikes and that break disc topology).
+        "pole_radius_mm": 45.0,
     },
 }
 
@@ -187,16 +191,21 @@ def region_vertices(
     surf_coords: np.ndarray,
     faces: np.ndarray,
 ) -> np.ndarray:
-    """Vertices of a composite region: union of parcels, anterior-cropped, largest component."""
+    """Vertices of a composite region: union of parcels, cropped to a pole ball, largest cc."""
     spec = COMPOSITE_REGIONS[name]
     idx = np.unique(
         np.concatenate([parcel_vertices(hemi, p, annot) for p in spec["parcels"]])
     )
-    frac = spec.get("anterior_frac")
-    if frac is not None:
-        y = surf_coords[idx, 1]  # FreeSurfer RAS Y: anterior positive
-        idx = idx[y >= np.quantile(y, 1.0 - frac)]
-    return largest_cc(idx, np.asarray(faces, dtype=np.int64), surf_coords.shape[0])
+    faces = np.asarray(faces, dtype=np.int64)
+    n = surf_coords.shape[0]
+    radius = spec.get("pole_radius_mm")
+    if radius is not None:
+        pole = idx[
+            np.argmax(surf_coords[idx, 1])
+        ]  # most anterior vertex = temporal pole
+        d = np.linalg.norm(surf_coords[idx] - surf_coords[pole], axis=1)
+        idx = idx[d <= radius]
+    return largest_cc(idx, faces, n)
 
 
 def resolve_region(
@@ -345,23 +354,26 @@ def project_parcel(
     polys = np.asarray(polys, dtype=np.int64)
     n = len(pts)
 
-    kept = largest_cc(mapped["parcel"], polys, n)
-    excluded = set(np.setdiff1d(np.arange(n, dtype=np.int64), kept).tolist())
-    holes = fill_holes_in_patch(polys, excluded)
-    if holes:
-        excluded |= {int(v) for v in holes}
-    kept = np.array(sorted(set(range(n)) - excluded), dtype=np.int64)
+    kept0 = largest_cc(mapped["parcel"], polys, n)
+    excluded = set(np.setdiff1d(np.arange(n, dtype=np.int64), kept0).tolist())
 
     if "relaxcut" in mapped and len(mapped["relaxcut"]):
-        # Continuity repair on the mapped slit (de-hardcoded: a non-anatomical cut key),
-        # then subtract it from the patch and keep the largest remaining component.
+        # Continuity repair on the mapped slit (de-hardcoded: a non-anatomical cut key), then
+        # fold it into the exclusion set *before* hole filling. A boundary-connected slit just
+        # notches the outer boundary (one loop, preserved); an interior portion -- where the
+        # mapped endpoint landed just inside the patch boundary -- becomes a hole that the
+        # fill below closes, keeping the patch a single disc instead of a 5-loop mess.
         cut_dict = ensure_continuous_cuts(
             {"relaxcut": mapped["relaxcut"]}, subject, hemi
         )
-        cut_v = {int(v) for v in cut_dict["relaxcut"]}
-        kept = largest_cc(
-            np.array(sorted(set(kept.tolist()) - cut_v), dtype=np.int64), polys, n
-        )
+        excluded |= {int(v) for v in cut_dict["relaxcut"]}
+
+    holes = fill_holes_in_patch(polys, excluded)
+    if holes:
+        excluded |= {int(v) for v in holes}
+    kept = largest_cc(
+        np.array(sorted(set(range(n)) - excluded), dtype=np.int64), polys, n
+    )
 
     out_patch.parent.mkdir(parents=True, exist_ok=True)
     create_patch_from_keep(str(out_patch), pts, polys, kept)
