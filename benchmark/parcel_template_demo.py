@@ -113,12 +113,14 @@ def _find_fsaverage_label_dir() -> Path:
 
 FS6_FSAVERAGE_LABEL = _find_fsaverage_label_dir()
 
-# The four large, disc-like Desikan-Killiany (aparc) parcels chosen for the demo.
+# Demo regions: four large disc-like Desikan-Killiany (aparc) parcels plus one composite
+# region (the anterior temporal lobe, a curved temporal-pole cap; see COMPOSITE_REGIONS).
 DEFAULT_PARCELS = [
     "lateraloccipital",
     "superiorfrontal",
     "superiorparietal",
     "fusiform",
+    "anteriortemporal",
 ]
 DEFAULT_SUBJECTS = ["sub-022", "sub-041", "sub-052"]
 
