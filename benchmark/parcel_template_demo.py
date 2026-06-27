@@ -28,10 +28,21 @@ pass ``--reflatten`` to force re-running the flattening optimization.
 A largest-connected-component guard is applied to the projected patch: the mapped parcel
 boundary can leave a stray island that would disconnect the patch and break flattening.
 
+A ``--parcels`` name may also be a *composite region* (``COMPOSITE_REGIONS``): a union of
+aparc parcels, optionally anterior-cropped -- e.g. ``anteriortemporal`` (the temporal-pole
+cap). With ``--relax-cut`` each patch additionally gets a template-defined relaxation
+(relief) cut: a thin slit authored on fsaverage (boundary -> centroid, ``{hemi}_relaxcut``
+key), mapped, re-knit with continuity repair, and subtracted; the patch is flattened with
+and without it and the true-global distortion change is reported. A relief cut only helps
+on an intrinsically curved cap (the anterior temporal lobe drops ~1 pp), not a near-flat
+gyral parcel (distortion rises -- only the cross-cut penalty, no curvature to relieve).
+
 Usage
 -----
     python -m benchmark.parcel_template_demo                       # 4 parcels x 3 subjects
     python -m benchmark.parcel_template_demo --parcels fusiform --subjects sub-022
+    python -m benchmark.parcel_template_demo --parcels anteriortemporal \\
+        --subjects sub-022 --relax-cut --relax-cut-width 1        # relief-cut comparison
 """
 
 from __future__ import annotations
@@ -125,6 +136,10 @@ PARCEL_VIEW: dict[str, str | tuple[float, float]] = {
     "superiorfrontal": "medial",
     "superiorparietal": (20.0, 200.0),
     "fusiform": "ventral",
+    "anteriortemporal": (
+        -25.0,
+        215.0,
+    ),  # antero-latero-inferior, facing the temporal pole
 }
 
 DEFAULT_OUT = paths.DATA_ROOT / "paper_bench_2026" / "parcel_template_demo"
@@ -144,6 +159,53 @@ def parcel_vertices(hemi: str, parcel: str, annot: str = "aparc") -> np.ndarray:
     if parcel not in names:
         raise ValueError(f"parcel {parcel!r} not in {path.name}; available: {names}")
     return np.nonzero(labels == names.index(parcel))[0].astype(np.int64)
+
+
+# Composite regions: a union of aparc parcels, optionally cropped to the anterior portion
+# (keep the most-anterior ``anterior_frac`` by RAS Y). The anterior temporal lobe is a curved
+# 3D cap (the temporal pole), so it flattens with high distortion -- the case where a relief
+# cut earns its keep, unlike a near-developable single gyral parcel.
+COMPOSITE_REGIONS: dict[str, dict] = {
+    "anteriortemporal": {
+        "parcels": [
+            "temporalpole",
+            "entorhinal",
+            "superiortemporal",
+            "middletemporal",
+            "inferiortemporal",
+            "fusiform",
+        ],
+        "anterior_frac": 0.45,
+    },
+}
+
+
+def region_vertices(
+    hemi: str,
+    name: str,
+    annot: str,
+    surf_coords: np.ndarray,
+    faces: np.ndarray,
+) -> np.ndarray:
+    """Vertices of a composite region: union of parcels, anterior-cropped, largest component."""
+    spec = COMPOSITE_REGIONS[name]
+    idx = np.unique(
+        np.concatenate([parcel_vertices(hemi, p, annot) for p in spec["parcels"]])
+    )
+    frac = spec.get("anterior_frac")
+    if frac is not None:
+        y = surf_coords[idx, 1]  # FreeSurfer RAS Y: anterior positive
+        idx = idx[y >= np.quantile(y, 1.0 - frac)]
+    return largest_cc(idx, np.asarray(faces, dtype=np.int64), surf_coords.shape[0])
+
+
+def resolve_region(
+    name: str, hemi: str, annot: str, surf_coords: np.ndarray, faces: np.ndarray
+) -> np.ndarray:
+    """fsaverage vertices for a region name: a composite if known, else a single parcel."""
+    if name in COMPOSITE_REGIONS:
+        return region_vertices(hemi, name, annot, surf_coords, faces)
+    return parcel_vertices(hemi, name, annot)
 
 
 def largest_cc(kept: np.ndarray, faces: np.ndarray, n_vertices: int) -> np.ndarray:
@@ -587,7 +649,9 @@ def main() -> int:
     for parcel in args.parcels:
         view = args.inflated_view or PARCEL_VIEW.get(parcel, "lateral")
         print(f"\n=== parcel: {parcel} ({hemi}, {view} view) ===")
-        p_idx = parcel_vertices(hemi, parcel, args.annot)
+        p_idx = resolve_region(
+            parcel, hemi, args.annot, np.asarray(fsa_verts), fsa_faces
+        )
         print(f"  fsaverage parcel: {p_idx.size} vertices")
 
         cut_idx = None
