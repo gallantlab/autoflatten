@@ -7,8 +7,8 @@ that any region can become a template by deriving one from an off-the-shelf anat
 parcellation:
 
     take one parcel of an fsaverage ``.annot`` -> its **complement** is the cut/removed
-    region (``{hemi}_mwall``) -> run the standard FreeSurfer-free pipeline (project ->
-    flatten) -> the parcel alone comes out as a flatmap.
+    region (a neutral ``{hemi}_excluded`` template key) -> run the standard FreeSurfer-free
+    pipeline (project -> flatten) -> the parcel alone comes out as a flatmap.
 
 For each parcel we write the fsaverage-space template JSON (the reusable artifact), then
 for each subject we project it (validated ``sphere.reg`` KDTree mapper, no FreeSurfer),
@@ -54,7 +54,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 from autoflatten.core import fill_holes_in_patch
-from autoflatten.freesurfer import create_patch_file, load_surface
+from autoflatten.freesurfer import create_patch_from_keep, load_surface
 
 from . import paths
 from .fig_pipeline_panels import (
@@ -173,10 +173,17 @@ def largest_cc(kept: np.ndarray, faces: np.ndarray, n_vertices: int) -> np.ndarr
 def write_template_json(
     hemi: str, parcel: str, parcel_idx: np.ndarray, n_vertices: int, out_path: Path
 ) -> Path:
-    """Write the reusable fsaverage-space template: mwall = complement of the parcel."""
+    """Write the reusable fsaverage-space template excluding the parcel's complement.
+
+    The exclusion list lives under a neutral ``{hemi}_excluded`` key rather than
+    ``{hemi}_mwall``: the template loaders treat every ``{hemi}_<region>`` key the same
+    (union into the excluded set), and the ``mwall`` name is only meaningful to the
+    geodesic-refine barrier -- which a parcel complement (no anatomical medial wall) should
+    not trigger anyway.
+    """
     complement = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), parcel_idx)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({f"{hemi}_mwall": complement.tolist()}))
+    out_path.write_text(json.dumps({f"{hemi}_excluded": complement.tolist()}))
     return out_path
 
 
@@ -206,7 +213,7 @@ def project_parcel(
     kept = np.array(sorted(set(range(n)) - excluded), dtype=np.int64)
 
     out_patch.parent.mkdir(parents=True, exist_ok=True)
-    create_patch_file(str(out_patch), pts, polys, {"mwall": np.array(sorted(excluded))})
+    create_patch_from_keep(str(out_patch), pts, polys, kept)
     return out_patch, kept, n
 
 

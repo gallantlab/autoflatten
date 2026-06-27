@@ -13,6 +13,7 @@ import autoflatten.freesurfer as fs
 from autoflatten.freesurfer import (
     create_label_file,
     create_patch_file,
+    create_patch_from_keep,
     is_freesurfer_available,
     read_freesurfer_label,
     run_mris_flatten,
@@ -145,6 +146,33 @@ def test_create_patch_file(mock_surface_data):
 
                 # Verify the coordinates match (within floating point precision)
                 np.testing.assert_allclose([x, y, z], coord, rtol=1e-5)
+
+
+def test_create_patch_from_keep_matches_exclusion(mock_surface_data):
+    """create_patch_from_keep yields the same patch as excluding the complement.
+
+    The keep-set helper is just a positive-API wrapper: keeping a set of vertices must
+    produce a byte-identical patch to excluding every other vertex via create_patch_file.
+    """
+    vertices = mock_surface_data["vertices"]
+    faces = mock_surface_data["faces"]
+
+    keep = np.array([1, 2, 3])  # flatten everything except vertex 0
+    excluded = np.setdiff1d(np.arange(len(vertices)), keep)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        keep_file = os.path.join(temp_dir, "keep.patch")
+        excl_file = os.path.join(temp_dir, "excl.patch")
+
+        _, keep_vertices = create_patch_from_keep(keep_file, vertices, faces, keep)
+        _, excl_vertices = create_patch_file(
+            excl_file, vertices, faces, {"excluded": excluded}
+        )
+
+        # Same included vertices, and byte-identical files.
+        assert [v[0] for v in keep_vertices] == [v[0] for v in excl_vertices]
+        with open(keep_file, "rb") as a, open(excl_file, "rb") as b:
+            assert a.read() == b.read()
 
 
 def test_create_patch_file_uint32_faces(mock_surface_data_uint32):

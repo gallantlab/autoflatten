@@ -276,6 +276,40 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
     return filename, patch_vertices
 
 
+def create_patch_from_keep(filename, vertices, faces, keep_indices, coords=None):
+    """Create a patch file from a positive keep-set (the region to flatten).
+
+    The patch is normally defined by *excluding* vertices (medial wall + cuts). When the
+    region to flatten is known directly -- e.g. a single anatomical parcel -- it is clearer
+    to specify which vertices to KEEP than to label their complement as a "medial wall".
+    This inverts the keep-set to an exclusion set and delegates to :func:`create_patch_file`.
+
+    Parameters
+    ----------
+    filename : str
+        Output filename for the patch.
+    vertices : array-like
+        Array of vertex coordinates with shape ``(n_vertices, 3)``.
+    faces : array-like
+        Array of face indices with shape ``(n_faces, 3)``.
+    keep_indices : array-like of int
+        Vertex indices to KEEP in the patch; every other vertex is excluded.
+    coords : array-like, optional
+        Alternative coordinates to store (e.g. inflated). If None, uses ``vertices``.
+
+    Returns
+    -------
+    filename : str
+        The filename of the created patch file.
+    patch_vertices : list
+        List of vertices included in the patch file.
+    """
+    n_vertices = len(vertices)
+    keep = np.unique(np.asarray(keep_indices, dtype=np.int64))
+    excluded = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), keep)
+    return create_patch_file(filename, vertices, faces, {"excluded": excluded}, coords)
+
+
 def create_label_file(vertex_ids, subject, hemi, output_file):
     """
     Create a FreeSurfer label file from a list of vertex IDs
