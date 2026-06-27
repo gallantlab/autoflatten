@@ -167,19 +167,21 @@ def parcel_vertices(hemi: str, parcel: str, annot: str = "aparc") -> np.ndarray:
 # its keep, unlike a near-developable single gyral parcel.
 COMPOSITE_REGIONS: dict[str, dict] = {
     "anteriortemporal": {
+        # Lateral + ventral anterior temporal lobe. entorhinal is deliberately excluded: it
+        # sits on the medial wall, so including it pokes a thin strip onto the medial surface
+        # that flattening stretches into a spike.
         "parcels": [
             "temporalpole",
-            "entorhinal",
             "superiortemporal",
             "middletemporal",
             "inferiortemporal",
             "fusiform",
         ],
-        # Crop a ball (mm, Euclidean on the inflated surface) around the temporal pole rather
-        # than an axis-aligned anterior slice: a convex crop yields a clean rounded cap with no
-        # thin slivers (a Y-quantile crop leaves ragged 1-vertex necks that flattening stretches
-        # into spikes and that break disc topology).
-        "pole_radius_mm": 45.0,
+        # Crop a *geodesic* ball around the temporal pole (mm along the inflated surface), not
+        # an axis-aligned slice or a Euclidean ball: surface distance never grabs the far bank
+        # of a sulcus (Euclidean-close, surface-far), so the cap stays a clean disc with no thin
+        # cross-fold necks that break topology / stretch into spikes when flattened.
+        "pole_radius_mm": 55.0,
     },
 }
 
@@ -191,7 +193,7 @@ def region_vertices(
     surf_coords: np.ndarray,
     faces: np.ndarray,
 ) -> np.ndarray:
-    """Vertices of a composite region: union of parcels, cropped to a pole ball, largest cc."""
+    """Vertices of a composite region: union of parcels, cropped to a geodesic pole ball."""
     spec = COMPOSITE_REGIONS[name]
     idx = np.unique(
         np.concatenate([parcel_vertices(hemi, p, annot) for p in spec["parcels"]])
@@ -200,11 +202,24 @@ def region_vertices(
     n = surf_coords.shape[0]
     radius = spec.get("pole_radius_mm")
     if radius is not None:
-        pole = idx[
-            np.argmax(surf_coords[idx, 1])
-        ]  # most anterior vertex = temporal pole
-        d = np.linalg.norm(surf_coords[idx] - surf_coords[pole], axis=1)
-        idx = idx[d <= radius]
+        # Geodesic ball: shortest-path distance from the temporal pole along the region's own
+        # mesh edges (weighted by Euclidean edge length on the inflated surface), keeping
+        # vertices within ``radius``. Staying on-surface never grabs the far bank of a sulcus
+        # (Euclidean-close, surface-far), so the cap has no thin cross-fold necks.
+        in_reg = np.zeros(n, dtype=bool)
+        in_reg[idx] = True
+        fr = faces[in_reg[faces].all(axis=1)]
+        e = np.vstack([fr[:, [0, 1]], fr[:, [1, 2]], fr[:, [0, 2]]])
+        w = np.linalg.norm(surf_coords[e[:, 0]] - surf_coords[e[:, 1]], axis=1)
+        g = nx.Graph()
+        g.add_nodes_from(idx.tolist())
+        g.add_weighted_edges_from(zip(e[:, 0].tolist(), e[:, 1].tolist(), w.tolist()))
+        pole = int(idx[np.argmax(surf_coords[idx, 1])])  # most anterior vertex
+        if pole in g:
+            dist = nx.single_source_dijkstra_path_length(
+                g, pole, cutoff=radius, weight="weight"
+            )
+            idx = np.array(sorted(dist), dtype=np.int64)
     return largest_cc(idx, faces, n)
 
 
