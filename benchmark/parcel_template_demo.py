@@ -271,9 +271,12 @@ def relaxation_cut(
     dilates it by that many mesh rings (kept inside the parcel). Anchoring on the boundary is
     what keeps it a *slit* (one boundary loop) rather than an interior hole.
     """
-    parcel_idx = np.unique(np.asarray(parcel_idx, dtype=np.int64))
     faces = np.asarray(faces, dtype=np.int64)
     n = surf_coords.shape[0]
+    # Reduce to a single connected component first: a disconnected parcel would put the slit
+    # endpoints in different graph components (no path) -- composites are already largest_cc'd,
+    # but a bare single parcel from parcel_vertices() is not.
+    parcel_idx = largest_cc(np.unique(np.asarray(parcel_idx, dtype=np.int64)), faces, n)
     in_p = np.zeros(n, dtype=bool)
     in_p[parcel_idx] = True
 
@@ -302,6 +305,8 @@ def relaxation_cut(
         cv = straddle[:, col]
         bmask[cv[in_p[cv]]] = True
     boundary = np.nonzero(bmask)[0]
+    if boundary.size == 0:
+        raise ValueError("parcel has no boundary (covers the whole surface?)")
     # Farthest boundary vertex from the centroid -> the longest radial slit.
     start = int(
         boundary[
@@ -359,6 +364,10 @@ def project_parcel(
     parcel, repaired with :func:`ensure_continuous_cuts` (the mapped thin path can fragment,
     and with geodesic refine off, continuity repair is what re-knits the slit), and subtracted
     from the patch -- demonstrating a template-defined relief cut on an arbitrary patch.
+
+    Note: with a relax cut, ``ensure_continuous_cuts`` loads the subject surfaces via the
+    ``SUBJECTS_DIR`` env var (it takes no subjects-dir arg), so callers must have it pointing at
+    ``fs_dir``. ``main`` sets it; a direct caller passing a different ``fs_dir`` must too.
 
     Returns ``(patch_file, kept_vertices, n_surface)``.
     """
@@ -759,7 +768,9 @@ def main() -> int:
                 fig_dir,
                 args,
                 relax_cut_fsavg=cut_idx,
-                tag="_relaxcut",
+                # Width is in the tag so a different --relax-cut-width gets its own patch/flat
+                # /kring-cache filenames and is never served a stale reused flat.
+                tag=f"_relaxcut_w{args.relax_cut_width}",
             )
             d0 = true_global_distortion(patch0, flat0, subj, hemi, fs_dir)
             d1 = true_global_distortion(patch1, flat1, subj, hemi, fs_dir)

@@ -306,6 +306,11 @@ def create_patch_from_keep(filename, vertices, faces, keep_indices, coords=None)
     """
     n_vertices = len(vertices)
     keep = np.unique(np.asarray(keep_indices, dtype=np.int64))
+    if keep.size and (keep[0] < 0 or keep[-1] >= n_vertices):
+        raise ValueError(
+            f"keep_indices out of range [0, {n_vertices}) "
+            f"(got min {int(keep[0])}, max {int(keep[-1])})"
+        )
     excluded = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), keep)
     return create_patch_file(filename, vertices, faces, {"excluded": excluded}, coords)
 
