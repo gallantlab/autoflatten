@@ -270,7 +270,7 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
 
     n_border = int(border_mask[included_vertex_indices].sum())
     print(f"Created patch file {filename} with {n_patch} vertices")
-    print(f"Excluded {int(excluded_mask.sum())} vertices (medial wall and cuts)")
+    print(f"Excluded {int(excluded_mask.sum())} vertices")
     print(f"Marked {n_border} vertices as border vertices")
 
     return filename, patch_vertices

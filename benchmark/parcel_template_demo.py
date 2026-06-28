@@ -132,7 +132,8 @@ DEFAULT_SUBJECTS = ["sub-022", "sub-041", "sub-052"]
 # *medial* structure (a lateral view catches only its dorsal lip), so it is shown medially;
 # fusiform is ventral; lateraloccipital wraps the occipital pole, so it is orbited toward the
 # pole at zero elevation (no squash); superiorparietal is dorsal-posterior and needs a modest
-# tilt. Angles are for the left hemisphere. Overridden for all parcels by --inflated-view.
+# tilt. Tuple angles are tuned for the left hemisphere; _view_rotation mirrors them across the
+# sagittal plane (azim -> 180 - azim) for the right. Overridden for all parcels by --inflated-view.
 PARCEL_VIEW: dict[str, str | tuple[float, float]] = {
     "lateraloccipital": (0.0, 135.0),
     "superiorfrontal": "medial",
@@ -549,10 +550,17 @@ def _view_rotation(hemi: str, view: str | tuple[float, float]) -> np.ndarray:
     Named views delegate to fig_pipeline_panels (medial/lateral/ventral/frontal); a tuple
     builds the same matrix construction directly from the given angles, letting a parcel be
     shown from an oblique angle facing its surface.
+
+    The PARCEL_VIEW tuples are tuned for the left hemisphere. For the right hemisphere they are
+    mirrored across the sagittal plane, which is exactly ``azim -> 180 - azim`` (elevation
+    unchanged): this matches the lateral/medial hemisphere flip in _get_view_angles and is a
+    proper rotation, so back-face culling stays correct.
     """
     if isinstance(view, str):
         return _rotation(hemi, view)
     elev, azim = view
+    if hemi == "rh":
+        azim = 180.0 - azim
     er, ar = np.radians(elev), np.radians(azim)
     ca, sa = np.cos(ar), np.sin(ar)
     ce, se = np.cos(er), np.sin(er)
