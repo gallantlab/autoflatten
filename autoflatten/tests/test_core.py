@@ -287,6 +287,44 @@ def test_ensure_continuous_cuts_custom_key_and_skips(
     np.testing.assert_array_equal(result["_hole_fill"], hole)
 
 
+def test_ensure_continuous_cuts_custom_solid_keys(
+    mock_surface_data_with_disconnected_cut, monkeypatch
+):
+    """A caller-supplied ``solid_keys`` overrides the module default, not just adds to it.
+
+    A disconnected ``myregion`` key is declared solid via ``solid_keys={"myregion"}`` and
+    must be left untouched, while a ``relaxcut`` key (not in ``solid_keys``) in the same
+    dict is still repaired.
+    """
+
+    def mock_load_surface(subject, surf_type, hemi, subjects_dir=None):
+        d = mock_surface_data_with_disconnected_cut
+        if surf_type == "inflated":
+            return d["vertices_inflated"], d["faces"]
+        elif surf_type == "fiducial":
+            return d["vertices_fiducial"], d["faces"]
+        raise ValueError(f"Unexpected surface type: {surf_type}")
+
+    monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
+
+    myregion = np.array([0, 8])  # disconnected, but declared solid: must be untouched
+    vertex_dict = {
+        "relaxcut": np.array([0, 8]),  # disconnected custom cut: still repaired
+        "myregion": myregion,
+    }
+
+    result = ensure_continuous_cuts(
+        vertex_dict, "test_subject", "lh", solid_keys={"myregion"}
+    )
+
+    # relaxcut is not in solid_keys, so it still gets continuity repair.
+    assert len(result["relaxcut"]) > 2
+    assert 0 in result["relaxcut"] and 8 in result["relaxcut"]
+
+    # myregion is declared solid via solid_keys and must be left exactly as-is.
+    np.testing.assert_array_equal(result["myregion"], myregion)
+
+
 @requires_freesurfer
 def test_map_cuts_to_subject_with_freesurfer():
     """
