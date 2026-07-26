@@ -30,6 +30,11 @@ TRAPPED_VERTEX_MAX_BFS = 200
 # Typically 1-2 iterations suffice; 10 provides ample margin for complex cases
 HOLE_FILL_MAX_ITERATIONS = 10
 
+# Template keys that denote a *solid* removed region (a 2D area, not a 1D cut line):
+# the anatomical medial wall, or a parcel complement under "excluded". These are excluded
+# from cut-continuity repair (already one connected blob) and from geodesic refinement.
+_SOLID_REGION_KEYS = frozenset({"mwall", "excluded"})
+
 
 def _find_geometric_endpoints(cut_vertices, pts):
     """Find the two most geometrically distant vertices in a cut.
@@ -119,7 +124,7 @@ def _find_farthest_vertex(start, candidates, pts):
     return candidates[idx], dists[idx]
 
 
-def ensure_continuous_cuts(vertex_dict, subject, hemi):
+def ensure_continuous_cuts(vertex_dict, subject, hemi, solid_keys=None):
     """
     Make cuts continuous using Euclidean distances on the inflated surface for speed.
 
@@ -131,12 +136,29 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
         Subject identifier.
     hemi : str
         Hemisphere identifier ('lh' or 'rh').
+    solid_keys : set of str, optional
+        Keys that denote *solid* removed regions (2D areas, not 1D cut lines) and should
+        be skipped by continuity repair. Defaults to ``_SOLID_REGION_KEYS``
+        (``{"mwall", "excluded"}``) when None.
 
     Returns
     -------
     vertex_dict : dict
         Updated dictionary with continuous cuts.
+
+    Notes
+    -----
+    Every key in ``vertex_dict`` that is not in ``solid_keys`` and not underscore-prefixed
+    gets continuity repair. Solid 2D removed regions (e.g. the medial wall, or a parcel
+    complement) must be listed in ``solid_keys`` -- the defaults cover the shipped
+    ``mwall`` and the demo's ``excluded``. This matters because repairing a
+    multi-component solid region connects its components with shortest paths that cut
+    straight through the patch, silently deleting a line of patch vertices. "Solid vs
+    thin" cannot be inferred geometrically: a dilated relaxation cut is thin by intent
+    but can look solid by any interior-vertex or interior-fraction test.
     """
+    solid_keys = _SOLID_REGION_KEYS if solid_keys is None else frozenset(solid_keys)
+
     # Get INFLATED surface geometry instead of fiducial
     print("Loading inflated surface...")
     pts_inflated, polys = load_surface(subject, "inflated", hemi)
@@ -155,10 +177,19 @@ def ensure_continuous_cuts(vertex_dict, subject, hemi):
     print("Creating surface graph...")
     G = _build_surface_graph(pts_fiducial, polys)
 
-    # Process each cut (using anatomical names from template)
-    cut_names = ["calcarine", "medial1", "medial2", "medial3", "temporal"]
-    for cut_key in cut_names:
-        if cut_key not in vertex_dict or len(vertex_dict[cut_key]) == 0:
+    # Process every thin-cut key in the template. Solid removed regions (listed in
+    # solid_keys) are skipped: they are already a single connected blob, so "making them
+    # continuous" is a meaningless no-op on a huge subgraph. Internal bookkeeping keys
+    # (e.g. "_hole_fill") are skipped too. This lets a custom cut (e.g. a relaxation cut
+    # on an arbitrary patch) get continuity repair, not just the five shipped anatomical
+    # cuts.
+    cut_keys = [
+        key
+        for key in vertex_dict
+        if key not in solid_keys and not str(key).startswith("_")
+    ]
+    for cut_key in cut_keys:
+        if len(vertex_dict[cut_key]) == 0:
             continue
 
         print(f"Processing {cut_key}...")

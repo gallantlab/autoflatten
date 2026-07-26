@@ -270,10 +270,57 @@ def create_patch_file(filename, vertices, faces, vertex_dict, coords=None):
 
     n_border = int(border_mask[included_vertex_indices].sum())
     print(f"Created patch file {filename} with {n_patch} vertices")
-    print(f"Excluded {int(excluded_mask.sum())} vertices (medial wall and cuts)")
+    print(f"Excluded {int(excluded_mask.sum())} vertices")
     print(f"Marked {n_border} vertices as border vertices")
 
     return filename, patch_vertices
+
+
+def create_patch_from_keep(filename, vertices, faces, keep_indices, coords=None):
+    """Create a patch file from a positive keep-set (the region to flatten).
+
+    The patch is normally defined by *excluding* vertices (medial wall + cuts). When the
+    region to flatten is known directly -- e.g. a single anatomical parcel -- it is clearer
+    to specify which vertices to KEEP than to label their complement as a "medial wall".
+    This inverts the keep-set to an exclusion set and delegates to :func:`create_patch_file`.
+
+    Parameters
+    ----------
+    filename : str
+        Output filename for the patch.
+    vertices : array-like
+        Array of vertex coordinates with shape ``(n_vertices, 3)``.
+    faces : array-like
+        Array of face indices with shape ``(n_faces, 3)``.
+    keep_indices : array-like of int
+        Vertex indices to KEEP in the patch; every other vertex is excluded.
+    coords : array-like, optional
+        Alternative coordinates to store (e.g. inflated). If None, uses ``vertices``.
+
+    Returns
+    -------
+    filename : str
+        The filename of the created patch file.
+    patch_vertices : list
+        List of vertices included in the patch file.
+
+    Raises
+    ------
+    ValueError
+        If ``keep_indices`` is empty, or contains an index outside
+        ``[0, n_vertices)``.
+    """
+    n_vertices = len(vertices)
+    keep = np.unique(np.asarray(keep_indices, dtype=np.int64))
+    if keep.size == 0:
+        raise ValueError("keep_indices is empty; the patch would have zero vertices")
+    if keep[0] < 0 or keep[-1] >= n_vertices:
+        raise ValueError(
+            f"keep_indices out of range [0, {n_vertices}) "
+            f"(got min {int(keep[0])}, max {int(keep[-1])})"
+        )
+    excluded = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), keep)
+    return create_patch_file(filename, vertices, faces, {"excluded": excluded}, coords)
 
 
 def create_label_file(vertex_ids, subject, hemi, output_file):

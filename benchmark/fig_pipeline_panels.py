@@ -52,11 +52,13 @@ def _get_view_angles(hemi: str, view: str) -> tuple[float, float]:
     """(elev, azim) for a view, matching autoflatten.viz.plot_projection conventions."""
     if view == "medial":
         return (0, 0) if hemi == "lh" else (0, 180)
+    if view == "lateral":
+        return (0, 180) if hemi == "lh" else (0, 0)
     if view == "ventral":
         return (-90, 180)
     if view == "frontal":
         return (0, -90)
-    raise ValueError(f"Unknown view {view!r} (medial/ventral/frontal)")
+    raise ValueError(f"Unknown view {view!r} (medial/lateral/ventral/frontal)")
 
 
 # Binarized-curvature greyscale (FreeSurfer convention: curv > 0 = sulcus = dark).
@@ -143,7 +145,7 @@ def render_inflated(
             facecolors=colors[order],
             edgecolors="face",
             linewidths=0,
-            antialiaseds=True,
+            antialiaseds=False,  # AA on a transparent canvas blends seams -> see-through look
         )
     )
     margin = 5
