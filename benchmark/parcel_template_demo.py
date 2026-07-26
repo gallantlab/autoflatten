@@ -10,13 +10,15 @@ parcellation:
     region (a neutral ``{hemi}_excluded`` template key) -> run the standard FreeSurfer-free
     pipeline (project -> flatten) -> the parcel alone comes out as a flatmap.
 
-For each parcel we write the fsaverage-space template JSON (the reusable artifact), then
-for each subject we project it (validated ``sphere.reg`` KDTree mapper, no FreeSurfer),
-flatten with the shipping ``robust_fast`` config, and render Illustrator-ready panels
-(transparent background, no labels): the fsaverage and per-subject inflated surfaces with
-the cut-out (removed) region washed semi-transparent red over the shaded curvature (so the
-curvature still reads underneath) and the patch left as full, un-washed curvature, and the
-resulting flatmap.
+For each parcel we write the fsaverage-space template JSON (the reusable artifact) and read
+it straight back, so everything downstream consumes the file rather than the in-memory
+indices -- the demo shows template JSON in, flatmap out. Then, for each subject, we project
+that template (validated ``sphere.reg`` KDTree mapper, no FreeSurfer), flatten with the
+shipping ``robust_fast`` config, and render Illustrator-ready panels (transparent
+background, no labels): the fsaverage and per-subject inflated surfaces with the cut-out
+(removed) region washed semi-transparent red over the shaded curvature (so the curvature
+still reads underneath) and the patch left as full, un-washed curvature, and the resulting
+flatmap.
 
 Each inflated panel is shown from a per-parcel view (the ``PARCEL_VIEW`` dict): either a
 named aspect (medial/lateral/ventral/frontal) or, for parcels that sit off the cardinal
@@ -87,17 +89,20 @@ from .time_cores import make_config
 _FS6_FSAVERAGE_LABEL = Path("/data2/freesurfer-6.0/subjects/fsaverage/label")
 
 
-def _find_fsaverage_label_dir() -> Path:
+def _find_fsaverage_label_dir(preferred: Path | None = None) -> Path:
     """Locate an fsaverage ``label/`` dir that has *real* ``.annot`` content.
 
     fsaverage parcellations ship with every FreeSurfer install, but the datalad-managed
     fsaverage under ``SUBJECTS_DIR`` keeps its annots as unfetched git-annex symlinks (the
     dir exists; the ``.annot`` is a broken link). So we probe candidate roots and accept the
     first whose ``lh.aparc.annot`` *resolves* (``Path.exists`` follows symlinks, returning
-    False for a broken annex stub), preferring ``FREESURFER_HOME`` (canonical, always real),
-    then ``SUBJECTS_DIR``, then the authoring box's FreeSurfer-6 install.
+    False for a broken annex stub): ``preferred`` (if given, e.g. derived from ``--fs-dir``),
+    then ``FREESURFER_HOME`` (canonical, always real), then ``SUBJECTS_DIR``, then the
+    authoring box's FreeSurfer-6 install.
     """
     candidates = []
+    if preferred is not None:
+        candidates.append(preferred)
     fs_home = os.environ.get("FREESURFER_HOME")
     if fs_home:
         candidates.append(Path(fs_home) / "subjects" / "fsaverage" / "label")
@@ -110,8 +115,6 @@ def _find_fsaverage_label_dir() -> Path:
             return cand
     return _FS6_FSAVERAGE_LABEL
 
-
-FS6_FSAVERAGE_LABEL = _find_fsaverage_label_dir()
 
 # Demo regions: four large disc-like Desikan-Killiany (aparc) parcels plus one composite
 # region (the anterior temporal lobe, a curved temporal-pole cap; see COMPOSITE_REGIONS).
@@ -154,9 +157,26 @@ REMOVED_RGB = np.array([0.85, 0.12, 0.12])
 REMOVED_ALPHA = 0.55
 
 
-def parcel_vertices(hemi: str, parcel: str, annot: str = "aparc") -> np.ndarray:
-    """fsaverage vertex indices belonging to ``parcel`` in the given ``.annot``."""
-    path = FS6_FSAVERAGE_LABEL / f"{hemi}.{annot}.annot"
+def parcel_vertices(
+    hemi: str, parcel: str, annot: str = "aparc", label_dir: Path | None = None
+) -> np.ndarray:
+    """fsaverage vertex indices belonging to ``parcel`` in the given ``.annot``.
+
+    Parameters
+    ----------
+    hemi : str
+        Hemisphere, ``"lh"`` or ``"rh"``.
+    parcel : str
+        Parcel name as it appears in the ``.annot`` color table.
+    annot : str, optional
+        fsaverage annotation name (default ``"aparc"``).
+    label_dir : Path, optional
+        Directory holding the fsaverage ``.annot`` files. If None, resolved via
+        :func:`_find_fsaverage_label_dir`.
+    """
+    if label_dir is None:
+        label_dir = _find_fsaverage_label_dir()
+    path = label_dir / f"{hemi}.{annot}.annot"
     labels, _, names = fsio.read_annot(str(path))
     names = [n.decode() if isinstance(n, bytes) else n for n in names]
     if parcel not in names:
@@ -195,11 +215,14 @@ def region_vertices(
     annot: str,
     surf_coords: np.ndarray,
     faces: np.ndarray,
+    label_dir: Path | None = None,
 ) -> np.ndarray:
     """Vertices of a composite region: union of parcels, cropped to a geodesic pole ball."""
     spec = COMPOSITE_REGIONS[name]
     idx = np.unique(
-        np.concatenate([parcel_vertices(hemi, p, annot) for p in spec["parcels"]])
+        np.concatenate(
+            [parcel_vertices(hemi, p, annot, label_dir) for p in spec["parcels"]]
+        )
     )
     faces = np.asarray(faces, dtype=np.int64)
     n = surf_coords.shape[0]
@@ -227,12 +250,17 @@ def region_vertices(
 
 
 def resolve_region(
-    name: str, hemi: str, annot: str, surf_coords: np.ndarray, faces: np.ndarray
+    name: str,
+    hemi: str,
+    annot: str,
+    surf_coords: np.ndarray,
+    faces: np.ndarray,
+    label_dir: Path | None = None,
 ) -> np.ndarray:
     """fsaverage vertices for a region name: a composite if known, else a single parcel."""
     if name in COMPOSITE_REGIONS:
-        return region_vertices(hemi, name, annot, surf_coords, faces)
-    return parcel_vertices(hemi, name, annot)
+        return region_vertices(hemi, name, annot, surf_coords, faces, label_dir)
+    return parcel_vertices(hemi, name, annot, label_dir)
 
 
 def largest_cc(kept: np.ndarray, faces: np.ndarray, n_vertices: int) -> np.ndarray:
@@ -326,7 +354,6 @@ def relaxation_cut(
 
 def write_template_json(
     hemi: str,
-    parcel: str,
     parcel_idx: np.ndarray,
     n_vertices: int,
     out_path: Path,
@@ -349,6 +376,38 @@ def write_template_json(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(tmpl))
     return out_path
+
+
+def read_template_json(
+    path: Path, hemi: str, n_vertices: int
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Read back a template JSON written by :func:`write_template_json`.
+
+    Parameters
+    ----------
+    path : Path
+        Template JSON file to read.
+    hemi : str
+        Hemisphere key prefix (``"lh"`` or ``"rh"``).
+    n_vertices : int
+        Number of fsaverage vertices, used to complement ``{hemi}_excluded`` back into a
+        keep-set.
+
+    Returns
+    -------
+    keep : np.ndarray
+        fsaverage vertex indices to keep (the complement of ``{hemi}_excluded``), as
+        ``np.int64``.
+    cut_idx : np.ndarray or None
+        fsaverage vertex indices of the ``{hemi}_relaxcut`` key, as ``np.int64``, or None
+        if the key is absent or empty.
+    """
+    tmpl = json.loads(path.read_text())
+    excluded = np.asarray(tmpl[f"{hemi}_excluded"], dtype=np.int64)
+    keep = np.setdiff1d(np.arange(n_vertices, dtype=np.int64), excluded)
+    relaxcut = tmpl.get(f"{hemi}_relaxcut")
+    cut_idx = np.asarray(relaxcut, dtype=np.int64) if relaxcut else None
+    return keep, cut_idx
 
 
 def project_parcel(
@@ -647,6 +706,12 @@ def main() -> int:
     )
     ap.add_argument("--config", default="robust_fast")
     ap.add_argument("--fs-dir", default=str(paths.NARRATIVES_FS))
+    ap.add_argument(
+        "--annot-dir",
+        default=None,
+        help="directory holding the fsaverage `.annot` files; default: auto-detected "
+        "from --fs-dir / FREESURFER_HOME / SUBJECTS_DIR",
+    )
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT))
     ap.add_argument("--dpi", type=int, default=300)
     ap.add_argument(
@@ -692,29 +757,40 @@ def main() -> int:
     fsa_curv = load_curvature(str(fsa / f"{hemi}.curv"))
     n_fsavg = len(fsa_verts)
 
+    label_dir = (
+        Path(args.annot_dir)
+        if args.annot_dir
+        else _find_fsaverage_label_dir(fs_dir / "fsaverage" / "label")
+    )
+    print(f"fsaverage parcellations: {label_dir}")
+
     for parcel in args.parcels:
         view = args.inflated_view or PARCEL_VIEW.get(parcel, "lateral")
         print(f"\n=== parcel: {parcel} ({hemi}, {view} view) ===")
         p_idx = resolve_region(
-            parcel, hemi, args.annot, np.asarray(fsa_verts), fsa_faces
+            parcel, hemi, args.annot, np.asarray(fsa_verts), fsa_faces, label_dir
         )
         print(f"  fsaverage parcel: {p_idx.size} vertices")
 
         cut_idx = None
         if args.relax_cut:
+            # Must be computed from the original p_idx, before the write/round-trip below.
             cut_idx = relaxation_cut(
                 p_idx, fsa_faces, np.asarray(fsa_verts), width=args.relax_cut_width
             )
             print(f"  relaxation cut: {cut_idx.size} fsaverage vertices")
 
-        write_template_json(
+        tmpl_path = write_template_json(
             hemi,
-            parcel,
             p_idx,
             n_fsavg,
             out_dir / "templates" / f"{hemi}_{parcel}.json",
             cut_idx=cut_idx,
         )
+        # Round-trip through the written template so everything downstream consumes the same
+        # artifact a user would supply -- the demo proves "template JSON in -> flatmap out",
+        # not just "in-memory indices in -> flatmap out".
+        p_idx, cut_idx = read_template_json(tmpl_path, hemi, n_fsavg)
 
         # fsaverage template panel: the parcel is the patch (full curvature), the complement
         # (and the relaxation slit, if any) washed red.

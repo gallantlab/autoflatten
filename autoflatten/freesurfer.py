@@ -303,10 +303,18 @@ def create_patch_from_keep(filename, vertices, faces, keep_indices, coords=None)
         The filename of the created patch file.
     patch_vertices : list
         List of vertices included in the patch file.
+
+    Raises
+    ------
+    ValueError
+        If ``keep_indices`` is empty, or contains an index outside
+        ``[0, n_vertices)``.
     """
     n_vertices = len(vertices)
     keep = np.unique(np.asarray(keep_indices, dtype=np.int64))
-    if keep.size and (keep[0] < 0 or keep[-1] >= n_vertices):
+    if keep.size == 0:
+        raise ValueError("keep_indices is empty; the patch would have zero vertices")
+    if keep[0] < 0 or keep[-1] >= n_vertices:
         raise ValueError(
             f"keep_indices out of range [0, {n_vertices}) "
             f"(got min {int(keep[0])}, max {int(keep[-1])})"

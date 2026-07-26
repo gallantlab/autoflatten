@@ -175,6 +175,32 @@ def test_create_patch_from_keep_matches_exclusion(mock_surface_data):
             assert a.read() == b.read()
 
 
+def test_create_patch_from_keep_rejects_empty_keep_set(mock_surface_data):
+    """An empty keep-set would produce a zero-vertex patch, so it must raise."""
+    vertices = mock_surface_data["vertices"]
+    faces = mock_surface_data["faces"]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        keep_file = os.path.join(temp_dir, "keep.patch")
+        with pytest.raises(ValueError):
+            create_patch_from_keep(
+                keep_file, vertices, faces, np.array([], dtype=np.int64)
+            )
+
+
+def test_create_patch_from_keep_rejects_out_of_range_index(mock_surface_data):
+    """An out-of-range keep index must raise rather than silently corrupt the patch."""
+    vertices = mock_surface_data["vertices"]
+    faces = mock_surface_data["faces"]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        keep_file = os.path.join(temp_dir, "keep.patch")
+        with pytest.raises(ValueError):
+            create_patch_from_keep(
+                keep_file, vertices, faces, np.array([len(vertices)])
+            )
+
+
 def test_create_patch_file_uint32_faces(mock_surface_data_uint32):
     """
     Test creating a patch file with uint32 face indices.
