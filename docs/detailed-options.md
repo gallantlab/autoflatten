@@ -186,7 +186,11 @@ For each processed hemisphere, the pipeline creates:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--k-ring` | 7 | K-ring neighborhood size |
-| `--n-neighbors` | 12 | Neighbors per ring (angular sampling) |
+| `--n-neighbors` | 12 (6 with `--fast`) | Neighbors per ring (angular sampling) |
+| `--init` | tutte | Initial 2D projection: `tutte` (flip-free), `lscm`, or `freesurfer` |
+| `--neg-area` | False | Run the initial negative-area-removal phase (only useful with `--init freesurfer`) |
+| `--skip-neg-area` | (default behavior) | Skip the initial negative-area-removal phase; kept for backward compatibility |
+| `--fast` | False | Speed preset (`robust_fast`): 6 neighbors/ring, 7 line-search points |
 | `--n-cores` | -1 | CPU cores (-1 = all) |
 | `--skip-phase` | - | Skip specific optimization phases |
 | `--skip-spring-smoothing` | False | Skip final smoothing |

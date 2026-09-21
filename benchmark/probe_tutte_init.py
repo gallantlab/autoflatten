@@ -1,17 +1,11 @@
 """Probe: flip-free (Tutte/LSCM) initialization instead of FreeSurfer projection + NAR.
 
-The current pipeline starts from a normal-axis projection that has many flipped
-triangles, then spends its first ~4 minutes in "negative area removal" (NAR) un-flipping
-them. A **Tutte embedding** (harmonic map with the boundary pinned to a convex circle) is
-*guaranteed flip-free* for disk topology — so we can drop the initial-NAR phase entirely
-and feed the flip-free map straight into the existing geodesic-stress refinement.
-
-Hypothesis: equal-or-lower distance distortion, zero flips at init, and less runtime.
-
-This is implemented by injecting a different initial map into the existing
-``SurfaceFlattener`` (overriding ``initial_projection`` and disabling the initial NAR), so
-the refinement (epochs + final NAR + spring) is shared with the baseline and the
-comparison is apples-to-apples.
+This validated the change that is now shipped as the package default: ``init_method``
+on ``FlattenConfig`` defaults to ``"tutte"`` and the initial negative-area-removal (NAR)
+phase defaults to off (see ``autoflatten.flatten.init`` and ``benchmark/FINDINGS.md``
+§1). This module now only re-exports ``flipfree_init``/``scale_to_area`` for existing
+probe callers and keeps ``make_flatten_fn`` for probes that need an init-only run or a
+non-default method (e.g. ``lscm``) without going through the full CLI/backend surface.
 
 Usage
 -----
@@ -28,78 +22,11 @@ import time
 
 import numpy as np
 
+from autoflatten.flatten.init import flipfree_init, scale_to_area  # noqa: F401
+
 from . import paths
 from .harness import evaluate, load_manifest, register_flatten_fn, select_entries
 from .ledger import Ledger, file_hash, new_record
-
-
-# ---------------------------------------------------------------------------------
-# Flip-free initialization
-# ---------------------------------------------------------------------------------
-def flipfree_init(
-    vertices: np.ndarray, faces: np.ndarray, method: str = "tutte"
-) -> np.ndarray:
-    """Compute a flip-free 2D embedding of a disk-topology patch.
-
-    Parameters
-    ----------
-    vertices : (V, 3) float
-        3D patch vertices (use the smoothed/fiducial surface for intrinsic weights).
-    faces : (F, 3) int
-        Triangles (single boundary loop / disk topology).
-    method : {"tutte", "lscm"}
-        ``tutte`` — harmonic map with the boundary pinned to a circle. Guaranteed
-        injective (Tutte's theorem) → no flipped triangles.
-        ``lscm`` — least-squares conformal map (2 pinned boundary vertices). Lower angle
-        distortion but *not* guaranteed flip-free.
-
-    Returns
-    -------
-    (V, 2) float
-        2D coordinates (unscaled).
-    """
-    import igl
-
-    v = np.ascontiguousarray(vertices, dtype=np.float64)
-    f = np.ascontiguousarray(faces, dtype=np.int64)
-    bnd = igl.boundary_loop(f)
-    if bnd is None or len(bnd) == 0:
-        raise ValueError("No boundary loop found; patch is not a disk.")
-
-    if method == "tutte":
-        bc = igl.map_vertices_to_circle(v, bnd.astype(np.int32))
-        uv = igl.harmonic(v, f, bnd.astype(np.int64), np.ascontiguousarray(bc), 1)
-    elif method == "lscm":
-        # Pin the two most distant boundary vertices to (0,0) and (1,0).
-        b = np.array([bnd[0], bnd[len(bnd) // 2]], dtype=np.int64)
-        bc = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-        uv, _ = igl.lscm(v, f, b, bc)
-    else:
-        raise ValueError(f"Unknown init method: {method!r}")
-    return np.asarray(uv, dtype=np.float64)
-
-
-def scale_to_area(uv: np.ndarray, faces: np.ndarray, target_area: float) -> np.ndarray:
-    """Uniformly scale ``uv`` so its total (unsigned) 2D area matches ``target_area``.
-
-    Tutte/LSCM map to ~unit scale, while the geodesic targets are in mm; matching the 3D
-    patch area gives the refinement a sensible starting scale.
-    """
-    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
-    area2d = float(
-        np.abs(
-            0.5
-            * (
-                (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
-                - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
-            )
-        ).sum()
-    )
-    if area2d <= 0 or target_area <= 0:
-        return uv
-    s = np.sqrt(target_area / area2d)
-    centroid = uv.mean(axis=0)
-    return (uv - centroid) * s + centroid
 
 
 # ---------------------------------------------------------------------------------
@@ -108,20 +35,19 @@ def scale_to_area(uv: np.ndarray, faces: np.ndarray, target_area: float) -> np.n
 def make_flatten_fn(method: str = "tutte", refine: bool = True):
     """Build a ``flatten_fn`` that initializes flip-free and (optionally) refines.
 
-    When ``refine`` is True the flip-free map is injected into the existing optimizer
-    with the **initial NAR phase disabled** (its purpose is moot for a flip-free start);
-    the rest of the refinement (epochs, final NAR, spring) is unchanged. When False, the
-    scaled init is returned directly to measure init-only quality.
+    When ``refine`` is True, sets ``flattener.config.init_method`` to *method* and
+    disables the initial NAR phase (its purpose is moot for a flip-free start), then
+    runs the shared optimizer (epochs, final NAR, spring) via ``flattener.run()``. When
+    False, the scaled init is returned directly (no optimizer call) to measure
+    init-only quality.
     """
 
     def _fn(flattener):
-        init = flipfree_init(flattener.vertices, flattener.faces, method=method)
-        init = scale_to_area(init, np.asarray(flattener.faces), flattener.orig_area)
         if not refine:
-            return init
-        # Skip the initial negative-area-removal phase: a flip-free start makes it moot.
+            init = flipfree_init(flattener.vertices, flattener.faces, method=method)
+            return scale_to_area(init, np.asarray(flattener.faces), flattener.orig_area)
+        flattener.config.init_method = method
         flattener.config.negative_area_removal.enabled = False
-        flattener.initial_projection = lambda: init  # injected into run()
         return flattener.run()
 
     return _fn
