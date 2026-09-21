@@ -117,7 +117,9 @@ class TestNegativeAreaRemovalConfig:
     def test_default_values(self):
         """Test default values for NegativeAreaRemovalConfig."""
         config = NegativeAreaRemovalConfig()
-        assert config.enabled is True
+        # Off by default: the default flip-free (Tutte) init starts with zero
+        # flipped triangles, so the initial NAR phase is moot.
+        assert config.enabled is False
         assert config.base_averages == 1024  # FreeSurfer default
         assert config.min_area_pct == 0.5
         # FreeSurfer always runs all ratios in the l_dist_ratios list
@@ -158,6 +160,11 @@ class TestFlattenConfig:
         assert isinstance(config.spring_smoothing, SpringSmoothingConfig)
         assert config.verbose is True
         assert len(config.phases) == 3  # 3 FreeSurfer-style epochs
+        # Shipped defaults: flip-free (Tutte) init makes the initial NAR phase moot,
+        # but the later final NAR phase is a different, unrelated step and stays on.
+        assert config.init_method == "tutte"
+        assert config.negative_area_removal.enabled is False
+        assert config.final_negative_area_removal.enabled is True
 
     def test_default_phases(self):
         """Test that default phases are created correctly (FreeSurfer 3-epoch structure)."""
@@ -217,6 +224,38 @@ class TestFlattenConfig:
             loaded = FlattenConfig.from_json_file(temp_path)
             assert loaded.kring.k_ring == 25
             assert loaded.verbose is False
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_to_dict_includes_init_method(self):
+        """init_method changes behavior, so it must round-trip through to_dict."""
+        config = FlattenConfig(init_method="lscm")
+        d = config.to_dict()
+        assert d["init_method"] == "lscm"
+
+    def test_from_dict_loads_init_method(self):
+        """Test that from_dict correctly loads init_method."""
+        config = FlattenConfig.from_dict({"init_method": "freesurfer"})
+        assert config.init_method == "freesurfer"
+
+    def test_from_dict_defaults_init_method_to_tutte(self):
+        """A dict without init_method should still yield the shipped default."""
+        config = FlattenConfig.from_dict({})
+        assert config.init_method == "tutte"
+
+    def test_json_roundtrip_preserves_init_method(self):
+        """Test JSON save/load roundtrip preserves a non-default init_method."""
+        config = FlattenConfig(init_method="lscm")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        try:
+            with open(temp_path, "w") as f:
+                f.write(config.to_json())
+            loaded = FlattenConfig.from_json_file(temp_path)
+            assert loaded.init_method == "lscm"
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -2241,3 +2280,114 @@ class TestPerfFidelityAdditions:
         )
         assert len(out) == 3
         assert out[2] > 0.0
+
+
+# =============================================================================
+# Flip-free (Tutte/LSCM) initialization
+# =============================================================================
+
+
+def _disk_mesh(n: int = 12):
+    """A flat triangle-fan disk: center vertex + ``n`` boundary vertices on a circle."""
+    ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    rim = np.column_stack([np.cos(ang), np.sin(ang), np.zeros(n)])
+    vertices = np.vstack([[0.0, 0.0, 0.0], rim])
+    faces = np.array([[0, 1 + i, 1 + (i + 1) % n] for i in range(n)], dtype=np.int64)
+    return vertices, faces
+
+
+def _signed_areas(uv, faces):
+    v0, v1, v2 = uv[faces[:, 0]], uv[faces[:, 1]], uv[faces[:, 2]]
+    return 0.5 * (
+        (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1])
+        - (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
+    )
+
+
+class TestFlipfreeInit:
+    """Tests for ``autoflatten.flatten.init.flipfree_init`` / ``scale_to_area``."""
+
+    def test_tutte_init_is_flip_free(self):
+        from autoflatten.flatten.init import flipfree_init
+
+        vertices, faces = _disk_mesh()
+        uv = flipfree_init(vertices, faces, method="tutte")
+        areas = _signed_areas(uv, faces)
+        # All triangles share one orientation -> zero flips (Tutte guarantee).
+        assert np.all(areas > 0) or np.all(areas < 0)
+
+    def test_scale_to_area_matches_target(self):
+        from autoflatten.flatten.init import scale_to_area
+
+        uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)  # area 1
+        faces = np.array([[0, 1, 2], [0, 2, 3]])
+        scaled = scale_to_area(uv, faces, target_area=9.0)
+        assert np.abs(_signed_areas(scaled, faces)).sum() == pytest.approx(9.0)
+
+    def test_unknown_method_raises(self):
+        from autoflatten.flatten.init import flipfree_init
+
+        vertices, faces = _disk_mesh()
+        with pytest.raises(ValueError, match="Unknown init method"):
+            flipfree_init(vertices, faces, method="bogus")
+
+    def test_no_boundary_loop_raises(self):
+        """A closed mesh (no boundary loop) is not a disk and cannot be Tutte-mapped."""
+        from autoflatten.flatten.init import flipfree_init
+
+        # Tetrahedron: a closed surface, so igl.boundary_loop returns empty.
+        vertices = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64
+        )
+        faces = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]], dtype=np.int64)
+        with pytest.raises(ValueError, match="No boundary loop"):
+            flipfree_init(vertices, faces, method="tutte")
+
+
+class TestSurfaceFlattenerInitialProjectionDispatch:
+    """Tests for ``SurfaceFlattener.initial_projection`` dispatch on ``init_method``."""
+
+    def _flattener_with_disk(self, init_method):
+        from autoflatten.flatten import SurfaceFlattener, FlattenConfig
+        from autoflatten.flatten.energy import compute_3d_surface_area
+
+        config = FlattenConfig(verbose=False, init_method=init_method)
+        flattener = SurfaceFlattener(config)
+        vertices, faces = _disk_mesh()
+        # Bypass load_data (which needs real patch/surface files on disk): the
+        # dispatch under test only reads self.vertices/self.faces/self.orig_area.
+        flattener.vertices = vertices
+        flattener.faces = faces
+        flattener.orig_area = compute_3d_surface_area(vertices, faces)
+        return flattener
+
+    def test_tutte_dispatch_is_flip_free(self):
+        flattener = self._flattener_with_disk("tutte")
+        uv = flattener.initial_projection()
+        n_flipped = int(count_flipped_triangles(uv, flattener.faces))
+        assert n_flipped == 0
+
+    def test_freesurfer_dispatch_takes_legacy_path(self):
+        flattener = self._flattener_with_disk("freesurfer")
+        uv = flattener.initial_projection()
+        # Legacy path applies config.initial_scale about the projection's centroid;
+        # just check it runs and returns a (V, 2) array distinct from the flip-free path.
+        assert uv.shape == (flattener.vertices.shape[0], 2)
+
+    def test_unknown_init_method_raises(self):
+        flattener = self._flattener_with_disk("tutte")
+        flattener.config.init_method = "bogus"
+        with pytest.raises(ValueError, match="Unknown init_method"):
+            flattener.initial_projection()
+
+    def test_raises_runtime_error_when_orig_area_missing(self):
+        from autoflatten.flatten import SurfaceFlattener, FlattenConfig
+
+        config = FlattenConfig(verbose=False, init_method="tutte")
+        flattener = SurfaceFlattener(config)
+        vertices, faces = _disk_mesh()
+        flattener.vertices = vertices
+        flattener.faces = faces
+        # orig_area left at its __init__ default of None (load_data not called).
+        with pytest.raises(RuntimeError, match="load_data"):
+            flattener.initial_projection()

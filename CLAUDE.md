@@ -63,6 +63,13 @@ autoflatten flatten lh.autoflatten.patch.3d
 # Use FreeSurfer backend instead of pyflatten:
 autoflatten /path/to/subjects/sub-01 --backend freesurfer
 
+# Speed preset (robust_fast: fewer neighbors/ring, fewer line-search points):
+autoflatten flatten lh.autoflatten.patch.3d --fast
+
+# Use the legacy FreeSurfer-style normal-axis initial projection instead of the
+# default flip-free Tutte init (also re-enables initial negative-area removal):
+autoflatten flatten lh.autoflatten.patch.3d --init freesurfer --neg-area
+
 # Plot a 3D projection surface with cuts:
 autoflatten plot-projection lh.autoflatten.patch.3d --subject-dir /path/to/subject/surf
 
@@ -145,7 +152,8 @@ The CLI supports three modes:
 
 **pyflatten backend** (default):
 - JAX-accelerated gradient descent with vectorized line search
-- FreeSurfer-style 3-epoch optimization: negative area removal → epoch_1 → epoch_2 → epoch_3 → final NAR
+- Flip-free (Tutte) initial projection by default, so the initial negative-area-removal
+  phase is skipped: init → epoch_1 → epoch_2 → epoch_3 → final NAR
 - FreeSurfer-style convergence criteria
 - Final spring smoothing for visual quality
 - Output: `{hemi}.autoflatten.flat.patch.3d` + log file
@@ -208,33 +216,42 @@ only for the projection phase (cut mapping).
 
 The pyflatten backend implements FreeSurfer-style optimization with JAX:
 
-1. **K-ring Distance Computation**: Geodesic distances to k-hop neighbors
+1. **Initial Projection**: Flip-free Tutte embedding by default (`init_method="tutte"`)
+   - Harmonic map with the boundary pinned to a circle; guaranteed injective (zero
+     flipped triangles) for disk topology, per Tutte's theorem
+   - Because the start is already flip-free, the initial negative-area-removal (NAR)
+     phase is off by default (`negative_area_removal.enabled = False`)
+   - `init_method="lscm"` (least-squares conformal, lower angle distortion but not
+     guaranteed flip-free) and `init_method="freesurfer"` (the legacy normal-axis
+     projection, which does need initial NAR) are also available
+
+2. **K-ring Distance Computation**: Geodesic distances to k-hop neighbors
    - Numba-accelerated Dijkstra's algorithm
    - Angular sampling for efficient memory usage
 
-2. **FreeSurfer-style 3-Epoch Optimization**:
-   - Initial negative area removal (l_nlarea=1.0, varying l_dist)
+3. **FreeSurfer-style 3-Epoch Optimization**:
    - Epoch 1: Area-dominant (l_nlarea=1.0, l_dist=0.1)
    - Epoch 2: Balanced (l_nlarea=1.0, l_dist=1.0)
    - Epoch 3: Distance-dominant (l_nlarea=0.1, l_dist=1.0)
-   - Final negative area removal (tighter tolerance)
+   - Final negative area removal (tighter tolerance; a separate, later phase that
+     stays on by default regardless of `init_method`)
 
-3. **Energy Functions**:
+4. **Energy Functions**:
    - J_d: Metric distortion (preserve geodesic distances)
    - J_a: Area energy (prevent flipped triangles)
 
-4. **Vectorized Line Search**: Log-spaced step sizes with quadratic refinement
+5. **Vectorized Line Search**: Log-spaced step sizes with quadratic refinement
 
-5. **Final Spring Smoothing**: Laplacian smoothing for visual quality
+6. **Final Spring Smoothing**: Laplacian smoothing for visual quality
 
 ### Configuration
 
 ```python
 from autoflatten.flatten import FlattenConfig, SurfaceFlattener
 
-config = FlattenConfig()
-config.kring.k_ring = 7  # Neighborhood size
-config.kring.n_neighbors_per_ring = 12  # Angular sampling
+config = FlattenConfig()  # defaults: Tutte init, initial NAR off, k_ring=7, n_neighbors_per_ring=12
+config.kring.k_ring = 10  # e.g. widen the neighborhood size
+config.init_method = "freesurfer"  # opt back into the legacy normal-axis projection
 
 flattener = SurfaceFlattener(config)
 flattener.load_data("lh.patch.3d", "lh.smoothwm")  # or lh.fiducial

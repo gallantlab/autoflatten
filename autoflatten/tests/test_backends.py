@@ -2,8 +2,10 @@
 Tests for the backends module.
 """
 
+import json
 import os
 import tempfile
+from unittest import mock
 
 import pytest
 
@@ -86,6 +88,74 @@ class TestPyflattenBackend:
         instructions = backend.get_install_instructions()
         assert isinstance(instructions, str)
         assert "pip install" in instructions.lower() or "jax" in instructions.lower()
+
+
+class TestPyflattenBackendConfigResolution:
+    """How ``flatten()`` reconciles a config JSON with explicit keyword overrides."""
+
+    def _capture_config(self, tmpdir, **kwargs):
+        """Run ``flatten()`` with a mocked flattener; return the config it was built with."""
+        patch_path = os.path.join(tmpdir, "lh.patch.3d")
+        surface_path = os.path.join(tmpdir, "lh.fiducial")
+        output_path = os.path.join(tmpdir, "lh.flat.patch.3d")
+        for path in (patch_path, surface_path):
+            with open(path, "wb") as f:
+                f.write(b"\x00" * 10)
+
+        with mock.patch("autoflatten.flatten.SurfaceFlattener") as flattener_cls:
+            PyflattenBackend().flatten(
+                patch_path, surface_path, output_path, verbose=False, **kwargs
+            )
+        return flattener_cls.call_args[0][0]
+
+    def _config_file(self, tmpdir, **fields):
+        from autoflatten.flatten import FlattenConfig
+
+        data = FlattenConfig().to_dict()
+        data.update(fields)
+        path = os.path.join(tmpdir, "config.json")
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return path
+
+    def test_init_method_defaults_to_tutte(self):
+        """With no config file and no override, the package default is used."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self._capture_config(tmpdir)
+            assert config.init_method == "tutte"
+            assert config.negative_area_removal.enabled is False
+
+    def test_config_file_init_method_is_preserved(self):
+        """A config JSON's init_method survives when --init was not passed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = self._config_file(tmpdir, init_method="freesurfer")
+            config = self._capture_config(tmpdir, config_path=config_path)
+            assert config.init_method == "freesurfer"
+
+    def test_explicit_init_method_overrides_config_file(self):
+        """An explicit init_method still wins over the config JSON."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = self._config_file(tmpdir, init_method="freesurfer")
+            config = self._capture_config(
+                tmpdir, config_path=config_path, init_method="lscm"
+            )
+            assert config.init_method == "lscm"
+
+    def test_neg_area_opt_in_and_skip_precedence(self):
+        """``neg_area`` re-enables initial NAR; ``skip_neg_area`` wins over it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            enabled = self._capture_config(tmpdir, neg_area=True)
+            assert enabled.negative_area_removal.enabled is True
+
+            both = self._capture_config(tmpdir, neg_area=True, skip_neg_area=True)
+            assert both.negative_area_removal.enabled is False
+
+    def test_n_coarse_steps_override(self):
+        """``n_coarse_steps`` is applied when given and left alone when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert self._capture_config(tmpdir).line_search.n_coarse_steps == 15
+            fast = self._capture_config(tmpdir, n_coarse_steps=7)
+            assert fast.line_search.n_coarse_steps == 7
 
 
 class TestFreeSurferBackend:

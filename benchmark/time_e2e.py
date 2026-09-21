@@ -107,7 +107,6 @@ def run_hemi(subject, hemi, config_name, run_dir, ts):
     from autoflatten.flatten import SurfaceFlattener
     from . import projection, truedist
     from .metrics import per_patch_metrics
-    from .probe_tutte_init import make_flatten_fn
 
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -161,10 +160,9 @@ def run_hemi(subject, hemi, config_name, run_dir, ts):
         row["n_vertices"] = int(np.asarray(fl.vertices).shape[0])
         row["n_faces"] = int(np.asarray(fl.faces).shape[0])
 
-        # --- flatten ---
-        fn = make_flatten_fn("tutte", refine=True)
+        # --- flatten (package default: Tutte flip-free init + refinement) ---
         t2 = time.time()
-        uv = np.asarray(fn(fl))
+        uv = np.asarray(fl.run())
         row["flatten_s"] = round(time.time() - t2, 3)
         row["total_s"] = round(
             row["projection_s"] + row["prep_s"] + row["flatten_s"], 3

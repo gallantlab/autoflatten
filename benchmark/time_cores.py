@@ -132,26 +132,21 @@ def pin_cores(n: int) -> int:
 # Config + entry construction
 # ---------------------------------------------------------------------------------
 def make_config(name: str):
-    """Reconstruct the named AutoFlatten variant (configs lived in the retired scaleup.py).
+    """Build the named AutoFlatten variant as a preset over the shipped package defaults.
 
-    Both use Tutte flip-free init (initial NAR off); they differ only in k-ring density and
-    line-search points. Definitions per FINDINGS.md / the robust_fast shipping-default note.
+    ``FlattenConfig()`` now ships with Tutte flip-free init and initial NAR off (see
+    ``autoflatten.flatten.init`` / FINDINGS.md §1), so ``tutte_default`` is just the
+    defaults; ``robust_fast`` only overrides k-ring density and line-search points.
+    Definitions per FINDINGS.md / the robust_fast shipping-default note.
     """
     from autoflatten.flatten import FlattenConfig
 
-    cfg = FlattenConfig()
+    cfg = FlattenConfig()  # now: Tutte init, initial NAR off, k=7, n=12, line-search 15
     cfg.verbose = False
-    cfg.kring.k_ring = 7
-    cfg.negative_area_removal.enabled = (
-        False  # flip-free Tutte start makes initial NAR moot
-    )
     if name == "robust_fast":
         cfg.kring.n_neighbors_per_ring = 6
         cfg.line_search.n_coarse_steps = 7
-    elif name == "tutte_default":
-        cfg.kring.n_neighbors_per_ring = 12
-        # else: full defaults (n_coarse_steps=15, iters/level=40, full smoothing)
-    else:
+    elif name != "tutte_default":
         raise ValueError(f"unknown config '{name}'")
     return cfg
 
@@ -268,7 +263,6 @@ def run_worker(args) -> int:
 
     from autoflatten.flatten import SurfaceFlattener
     from .metrics import per_patch_metrics
-    from .probe_tutte_init import make_flatten_fn
     from . import truedist
 
     try:  # cap Numba's pool too (env is set, but be explicit)
@@ -304,10 +298,9 @@ def run_worker(args) -> int:
         row["n_vertices"] = int(np.asarray(fl.vertices).shape[0])
         row["n_faces"] = int(np.asarray(fl.faces).shape[0])
 
-        # --- flatten (Tutte flip-free init + refinement) ---
-        fn = make_flatten_fn("tutte", refine=True)
+        # --- flatten (package default: Tutte flip-free init + refinement) ---
         t1 = time.time()
-        uv = np.asarray(fn(fl))
+        uv = np.asarray(fl.run())
         row["flatten_s"] = round(time.time() - t1, 3)
         row["total_s"] = round(row["prep_s"] + row["flatten_s"], 3)
 

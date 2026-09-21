@@ -131,7 +131,10 @@ class NegativeAreaRemovalConfig:
     base_tol : float
         Convergence tolerance for this phase.
     enabled : bool
-        Whether to run negative area removal.
+        Whether to run negative area removal. Default False: the default flip-free
+        (Tutte) init already starts with zero flipped triangles, so this initial NAR
+        phase is moot. Set True only when using ``init_method="freesurfer"``, whose
+        normal-axis projection does produce flipped triangles.
     scale_area : bool
         Whether to apply area-preserving scaling at each iteration.
         This maintains the original 3D surface area during optimization.
@@ -147,7 +150,7 @@ class NegativeAreaRemovalConfig:
     )
     iters_per_level: int = 30  # FreeSurfer default
     base_tol: float = 0.5
-    enabled: bool = True
+    enabled: bool = False
     scale_area: bool = False
 
 
@@ -308,6 +311,14 @@ class FlattenConfig:
     strict_topology : bool
         If True, raise error for non-disk topology (chi != 1).
         If False, warn but continue (flattening will likely fail).
+    init_method : {"tutte", "lscm", "freesurfer"}
+        Initial 2D projection used by ``SurfaceFlattener.initial_projection``.
+        ``"tutte"`` (default) — harmonic map with the boundary pinned to a circle,
+        guaranteed injective (flip-free) for disk topology.
+        ``"lscm"`` — least-squares conformal map; lower angle distortion but not
+        guaranteed flip-free.
+        ``"freesurfer"`` — the legacy normal-axis projection. ``initial_scale``
+        applies only to this method.
     """
 
     kring: KRingConfig = field(default_factory=KRingConfig)
@@ -329,10 +340,13 @@ class FlattenConfig:
     print_every: int = 100
     verbose: bool = True
     strict_topology: bool = True
-    initial_scale: float = 3.0  # Scale factor after initial 2D projection
+    # Scale factor after initial 2D projection; applies only to init_method="freesurfer".
+    initial_scale: float = 3.0
     # Align the final map to FreeSurfer's normal-projection orientation. Matters when a
     # flip-free init (Tutte/LSCM) is used, which otherwise leaves orientation arbitrary.
     align_orientation: bool = True
+    # Initial 2D projection method; see the class docstring for the three choices.
+    init_method: str = "tutte"
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for serialization."""
@@ -397,6 +411,7 @@ class FlattenConfig:
             "strict_topology": self.strict_topology,
             "initial_scale": self.initial_scale,
             "align_orientation": self.align_orientation,
+            "init_method": self.init_method,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -437,6 +452,7 @@ class FlattenConfig:
             strict_topology=data.get("strict_topology", True),
             initial_scale=data.get("initial_scale", 3.0),
             align_orientation=data.get("align_orientation", True),
+            init_method=data.get("init_method", "tutte"),
         )
 
     @classmethod
