@@ -62,13 +62,26 @@ def _build_backend_kwargs(args, n_jobs=None, subject=None):
 
     backend_kwargs = {}
     if args.backend == "pyflatten":
+        # --k-ring / --n-neighbors default to None so --fast can supply its own
+        # values without clobbering an explicit user choice. None must never reach
+        # config.kring.n_neighbors_per_ring itself -- there, None means "use all
+        # neighbors" (no angular sampling), a much slower and different behavior.
+        k_ring = args.k_ring if args.k_ring is not None else 7
+        if args.n_neighbors is not None:
+            n_neighbors = args.n_neighbors
+        else:
+            n_neighbors = 6 if args.fast else 12
+        n_coarse_steps = 7 if args.fast else None
         backend_kwargs.update(
             {
-                "k_ring": args.k_ring,
-                "n_neighbors_per_ring": args.n_neighbors,
+                "k_ring": k_ring,
+                "n_neighbors_per_ring": n_neighbors,
                 "skip_phases": args.skip_phase,
                 "skip_spring_smoothing": args.skip_spring_smoothing,
                 "skip_neg_area": args.skip_neg_area,
+                "neg_area": args.neg_area,
+                "init_method": args.init_method,
+                "n_coarse_steps": n_coarse_steps,
                 "config_path": args.pyflatten_config,
                 "n_jobs": n_jobs,
                 "cache_distances": args.debug_save_distances,
@@ -1035,14 +1048,36 @@ def add_pyflatten_args(parser):
     group.add_argument(
         "--k-ring",
         type=int,
-        default=7,
+        default=None,
         help="K-ring neighborhood size (default: 7)",
     )
     group.add_argument(
         "--n-neighbors",
         type=int,
-        default=12,
-        help="Neighbors per ring for angular sampling (default: 12)",
+        default=None,
+        help="Neighbors per ring for angular sampling (default: 12, or 6 with --fast)",
+    )
+    group.add_argument(
+        "--init",
+        dest="init_method",
+        choices=["tutte", "lscm", "freesurfer"],
+        default=None,
+        help="Initial 2D projection method: 'tutte' (default, flip-free harmonic "
+        "map), 'lscm' (least-squares conformal, not guaranteed flip-free), or "
+        "'freesurfer' (legacy normal-axis projection). Unset leaves the value from "
+        "--pyflatten-config, if any.",
+    )
+    group.add_argument(
+        "--neg-area",
+        action="store_true",
+        help="Run the initial negative-area-removal phase (off by default; only "
+        "useful with --init freesurfer)",
+    )
+    group.add_argument(
+        "--fast",
+        action="store_true",
+        help="Speed preset (robust_fast): 6 neighbors/ring and 7 line-search "
+        "points (~3x faster, slightly higher distortion)",
     )
     group.add_argument(
         "--print-every",
@@ -1069,7 +1104,8 @@ def add_pyflatten_args(parser):
     group.add_argument(
         "--skip-neg-area",
         action="store_true",
-        help="Skip negative area removal phase",
+        help="Skip the initial negative-area-removal phase. This is the default "
+        "behavior; the flag is retained for backward compatibility.",
     )
     group.add_argument(
         "--pyflatten-config",

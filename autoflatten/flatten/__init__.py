@@ -65,6 +65,8 @@ from .energy import (
     get_vertices_with_negative_area,
 )
 
+from .init import flipfree_init, scale_to_area
+
 __all__ = [
     # Main class
     "SurfaceFlattener",
@@ -104,4 +106,7 @@ __all__ = [
     "smooth_gradient",
     "compute_spring_displacement",
     "get_vertices_with_negative_area",
+    # Flip-free initialization
+    "flipfree_init",
+    "scale_to_area",
 ]

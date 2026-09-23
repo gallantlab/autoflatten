@@ -35,6 +35,7 @@ from .energy import (
     prepare_smoothing_data,
     smooth_gradient,
 )
+from .init import flipfree_init, scale_to_area
 
 # Import I/O functions from autoflatten.freesurfer
 from ..freesurfer import extract_patch_faces, read_patch, read_surface, write_patch
@@ -1651,24 +1652,45 @@ class SurfaceFlattener:
         )
 
     def initial_projection(self) -> np.ndarray:
-        """Compute initial 2D projection with FreeSurfer-style scaling.
+        """Compute the initial 2D projection, dispatching on ``config.init_method``.
 
-        Applies a global scale factor after projection to compensate for
-        projection-induced shrinkage. FreeSurfer default is 3.0.
+        ``"tutte"`` / ``"lscm"``: a flip-free (or near-flip-free) map via
+        :func:`flipfree_init`, rescaled to match the 3D patch area with
+        :func:`scale_to_area`. ``config.initial_scale`` does not apply on this path --
+        ``scale_to_area`` already sets the scale.
+
+        ``"freesurfer"``: the legacy normal-axis projection (:func:`freesurfer_projection`),
+        followed by the ``config.initial_scale`` global scale that compensates for its
+        projection-induced shrinkage (FreeSurfer default is 3.0).
 
         Returns:
             (V, 2) initial UV coordinates
         """
-        uv = freesurfer_projection(self.vertices, self.faces)
+        method = self.config.init_method
+        if method in ("tutte", "lscm"):
+            if self.orig_area is None:
+                raise RuntimeError(
+                    "orig_area is not set; call load_data before initial_projection."
+                )
+            uv = flipfree_init(self.vertices, self.faces, method=method)
+            uv = scale_to_area(uv, np.asarray(self.faces), self.orig_area)
+            return uv
+        elif method == "freesurfer":
+            uv = freesurfer_projection(self.vertices, self.faces)
 
-        # Apply initial global scale to compensate for projection shrinkage
-        # (FreeSurfer default: 3.0, see mris_flatten.c:509)
-        scale = self.config.initial_scale
-        if scale != 1.0:
-            centroid = np.mean(uv, axis=0)
-            uv = (uv - centroid) * scale + centroid
+            # Apply initial global scale to compensate for projection shrinkage
+            # (FreeSurfer default: 3.0, see mris_flatten.c:509)
+            scale = self.config.initial_scale
+            if scale != 1.0:
+                centroid = np.mean(uv, axis=0)
+                uv = (uv - centroid) * scale + centroid
 
-        return uv
+            return uv
+        else:
+            raise ValueError(
+                f"Unknown init_method: {method!r}. "
+                "Valid values are 'tutte', 'lscm', 'freesurfer'."
+            )
 
     def run(self, snapshot_callback: Callable | None = None) -> np.ndarray:
         """Run complete optimization pipeline.

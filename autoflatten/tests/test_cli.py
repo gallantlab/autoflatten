@@ -118,12 +118,18 @@ class TestArgumentParsers:
         add_pyflatten_args(parser)
 
         args = parser.parse_args([])
-        assert args.k_ring == 7
-        assert args.n_neighbors == 12
+        # k_ring/n_neighbors default to None at the parser level so --fast can
+        # supply its own values; _build_backend_kwargs resolves the effective
+        # defaults (7 / 12, or 6 with --fast).
+        assert args.k_ring is None
+        assert args.n_neighbors is None
         assert args.print_every == 1
         assert args.skip_phase is None
         assert args.skip_spring_smoothing is False
         assert args.skip_neg_area is False
+        assert args.neg_area is False
+        assert args.init_method is None
+        assert args.fast is False
         assert args.pyflatten_config is None
         assert args.n_cores == -1
         assert args.debug_save_distances is False
