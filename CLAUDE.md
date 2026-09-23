@@ -135,6 +135,8 @@ The CLI supports three modes:
 1. **Template Loading** ([config.py](autoflatten/config.py), [template.py](autoflatten/template.py))
    - Default: `fsaverage_cuts_template.json` contains medial wall + 5 anatomical cuts
    - Templates stored in `autoflatten/default_templates/`
+   - **Template format is general**: a template JSON maps `{hemi}_<region>` keys to lists of fsaverage vertex indices to *exclude*, and the patch is the complement (whatever survives). Any region can serve as a template — e.g. take a single anatomical parcel, make its complement the cut region, and the parcel comes out as the patch. See `benchmark/parcel_template_demo.py` in the gallantlab/autoflatten-paper repository for a worked example deriving a template from a FreeSurfer parcellation (aparc/Desikan-Killiany `.annot`).
+   - Continuity repair treats every key as a thin 1D cut except the solid regions `mwall` and `excluded` (and `_`-prefixed internal keys); name any solid 2D removed region one of those, or its pieces get joined by paths through the patch. Geodesic refinement only special-cases `mwall`, so don't combine `--refine-geodesic` with an `excluded`-region template.
 
 2. **Cut Mapping** ([core.py](autoflatten/core.py):`map_cuts_to_subject`)
    - Uses FreeSurfer's `mri_label2label` to map template cuts to target subject
@@ -146,7 +148,7 @@ The CLI supports three modes:
 
 4. **Geodesic Refinement** ([core.py](autoflatten/core.py):`refine_cuts_with_geodesic`)
    - Replaces mapped cuts with geodesic shortest paths between endpoints
-   - **Enabled by default** (disable with `--no-refine-geodesic`)
+   - **Off by default** (continuity-only); enable with `--refine-geodesic`
 
 5. **Patch File Creation** ([freesurfer.py](autoflatten/freesurfer.py):`create_patch_file`)
    - Generates FreeSurfer-compatible patch file
