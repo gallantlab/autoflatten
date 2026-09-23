@@ -32,7 +32,9 @@ HOLE_FILL_MAX_ITERATIONS = 10
 
 # Template keys that denote a *solid* removed region (a 2D area, not a 1D cut line):
 # the anatomical medial wall, or a parcel complement under "excluded". These are excluded
-# from cut-continuity repair (already one connected blob) and from geodesic refinement.
+# from cut-continuity repair (already one connected blob). Note that
+# refine_cuts_with_geodesic only special-cases "mwall", so templates with an "excluded"
+# region should not be combined with geodesic refinement.
 _SOLID_REGION_KEYS = frozenset({"mwall", "excluded"})
 
 

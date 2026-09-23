@@ -188,6 +188,18 @@ def test_create_patch_from_keep_rejects_empty_keep_set(mock_surface_data):
             )
 
 
+def test_create_patch_from_keep_rejects_boolean_mask(mock_surface_data):
+    """A boolean mask would silently be read as indices {0, 1}, so it must raise."""
+    vertices = mock_surface_data["vertices"]
+    faces = mock_surface_data["faces"]
+    mask = np.ones(len(vertices), dtype=bool)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        keep_file = os.path.join(temp_dir, "keep.patch")
+        with pytest.raises(ValueError, match="boolean mask"):
+            create_patch_from_keep(keep_file, vertices, faces, mask)
+
+
 def test_create_patch_from_keep_rejects_out_of_range_index(mock_surface_data):
     """An out-of-range keep index must raise rather than silently corrupt the patch."""
     vertices = mock_surface_data["vertices"]

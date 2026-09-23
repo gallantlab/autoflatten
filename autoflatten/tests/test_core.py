@@ -269,7 +269,9 @@ def test_ensure_continuous_cuts_custom_key_and_skips(
     monkeypatch.setattr("autoflatten.core.load_surface", mock_load_surface)
 
     excluded = np.array([2, 6])  # solid-region key: must be untouched
-    hole = np.array([5])  # internal bookkeeping key: must be untouched
+    # Internal bookkeeping key: must be untouched. Disconnected, so it would be
+    # repaired if the underscore skip were removed.
+    hole = np.array([0, 8])
     vertex_dict = {
         "relaxcut": np.array([0, 8]),  # disconnected custom cut in one component
         "excluded": excluded,
