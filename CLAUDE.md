@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AutoFlatten is a Python pipeline for automatically creating flattened versions of FreeSurfer cortical surfaces. The pipeline maps template cuts from fsaverage to individual subjects using FreeSurfer's surface-based registration, then creates patch files and runs surface flattening to produce 2D flat representations.
 
+Benchmarks, autoresearch experiments, and paper figures live in the separate
+`gallantlab/autoflatten-paper` repository, not here. Keep this repository limited to the
+public package, its tests, docs, and user-facing scripts.
+
 **Key feature**: AutoFlatten supports two flattening backends:
 - **pyflatten** (default): JAX-accelerated Python implementation with vectorized optimization
 - **freesurfer**: Traditional FreeSurfer mris_flatten wrapper

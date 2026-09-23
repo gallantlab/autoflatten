@@ -8,8 +8,8 @@ from it lets the initial-NAR phase be skipped entirely and feeds a clean map str
 the existing geodesic-stress refinement (epochs + final NAR + spring).
 
 This is the default initial projection used by :class:`SurfaceFlattener`
-(``FlattenConfig.init_method == "tutte"``); see ``benchmark/FINDINGS.md`` for the
-validation that motivated shipping it.
+(``FlattenConfig.init_method == "tutte"``); the validation that motivated shipping it
+is in ``benchmark/FINDINGS.md`` of the gallantlab/autoflatten-paper repository.
 """
 
 from __future__ import annotations
