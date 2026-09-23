@@ -429,7 +429,6 @@ class TestLoadCurvature:
 
     def test_load_curvature_returns_array(self):
         """Test that load_curvature returns a numpy array."""
-        import nibabel
         import struct
 
         # Create a minimal curv file in FreeSurfer format

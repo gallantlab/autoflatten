@@ -120,7 +120,7 @@ class FreeSurferBackend(FlattenBackend):
         output_name = output_path_obj.name
 
         if verbose:
-            print(f"Running FreeSurfer mris_flatten backend")
+            print("Running FreeSurfer mris_flatten backend")
             print(f"  Subject: {subject}")
             print(f"  Hemisphere: {hemi}")
             print(f"  Input: {patch_path}")

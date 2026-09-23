@@ -131,7 +131,10 @@ class NegativeAreaRemovalConfig:
     base_tol : float
         Convergence tolerance for this phase.
     enabled : bool
-        Whether to run negative area removal.
+        Whether to run negative area removal. Default False: the default flip-free
+        (Tutte) init already starts with zero flipped triangles, so this initial NAR
+        phase is moot. Set True only when using ``init_method="freesurfer"``, whose
+        normal-axis projection does produce flipped triangles.
     scale_area : bool
         Whether to apply area-preserving scaling at each iteration.
         This maintains the original 3D surface area during optimization.
@@ -147,7 +150,7 @@ class NegativeAreaRemovalConfig:
     )
     iters_per_level: int = 30  # FreeSurfer default
     base_tol: float = 0.5
-    enabled: bool = True
+    enabled: bool = False
     scale_area: bool = False
 
 
@@ -218,6 +221,34 @@ class FinalNegativeAreaRemovalConfig:
     iters_per_level: int = 30
 
 
+@dataclass
+class DistanceOptimalScaleConfig:
+    """Configuration for the distance-optimal output scale.
+
+    The flattening's area-matching final scale (``s = sqrt(orig_area/total_area)``) is a
+    display convention, not part of the objective; it leaves the map ~6% too small versus
+    true geodesic distances. When enabled (default), after optimization the output is
+    rescaled by the single global scale that minimizes true-geodesic distance distortion,
+    computed from a heat-method geodesic sample on the patch, so the saved flatmap is
+    metrically faithful (surface and flat map are directly comparable). The optimum is tight
+    across subjects (~1.06, std ~0.008) and reduces global distance distortion on every
+    benchmark hemisphere.
+
+    Attributes
+    ----------
+    enabled : bool
+        Whether to apply the distance-optimal rescale (default: True).
+    n_sources : int
+        Number of heat-geodesic source vertices sampled (deterministic).
+    seed : int
+        RNG seed for source sampling (keeps the result deterministic).
+    """
+
+    enabled: bool = True
+    n_sources: int = 200
+    seed: int = 0
+
+
 def _default_phases() -> list[PhaseConfig]:
     """Return default optimization phases matching FreeSurfer's 3 epochs.
 
@@ -277,17 +308,17 @@ class FlattenConfig:
         Print progress every N iterations.
     verbose : bool
         Whether to print progress messages.
-    n_jobs : int
-        Number of parallel jobs for distance computation.
-        -1 means use all available CPUs.
     strict_topology : bool
         If True, raise error for non-disk topology (chi != 1).
         If False, warn but continue (flattening will likely fail).
-    adaptive_recovery : bool
-        Enable adaptive flipped-triangle recovery during
-        distance refinement phase. When flipped count exceeds threshold,
-        temporarily increases area weight to fix flipped triangles.
-        Disabled by default to match FreeSurfer's fixed schedule.
+    init_method : {"tutte", "lscm", "freesurfer"}
+        Initial 2D projection used by ``SurfaceFlattener.initial_projection``.
+        ``"tutte"`` (default) — harmonic map with the boundary pinned to a circle,
+        guaranteed injective (flip-free) for disk topology.
+        ``"lscm"`` — least-squares conformal map; lower angle distortion but not
+        guaranteed flip-free.
+        ``"freesurfer"`` — the legacy normal-axis projection. ``initial_scale``
+        applies only to this method.
     """
 
     kring: KRingConfig = field(default_factory=KRingConfig)
@@ -302,13 +333,20 @@ class FlattenConfig:
     spring_smoothing: SpringSmoothingConfig = field(
         default_factory=SpringSmoothingConfig
     )
+    distance_optimal_scale: DistanceOptimalScaleConfig = field(
+        default_factory=DistanceOptimalScaleConfig
+    )
     phases: list[PhaseConfig] = field(default_factory=_default_phases)
     print_every: int = 100
     verbose: bool = True
-    n_jobs: int = -1
     strict_topology: bool = True
-    adaptive_recovery: bool = False  # Disabled by default for FreeSurfer mode
-    initial_scale: float = 3.0  # Scale factor after initial 2D projection
+    # Scale factor after initial 2D projection; applies only to init_method="freesurfer".
+    initial_scale: float = 3.0
+    # Align the final map to FreeSurfer's normal-projection orientation. Matters when a
+    # flip-free init (Tutte/LSCM) is used, which otherwise leaves orientation arbitrary.
+    align_orientation: bool = True
+    # Initial 2D projection method; see the class docstring for the three choices.
+    init_method: str = "tutte"
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for serialization."""
@@ -351,6 +389,11 @@ class FlattenConfig:
                 "max_step_mm": self.spring_smoothing.max_step_mm,
                 "enabled": self.spring_smoothing.enabled,
             },
+            "distance_optimal_scale": {
+                "enabled": self.distance_optimal_scale.enabled,
+                "n_sources": self.distance_optimal_scale.n_sources,
+                "seed": self.distance_optimal_scale.seed,
+            },
             "phases": [
                 {
                     "name": p.name,
@@ -365,10 +408,10 @@ class FlattenConfig:
             ],
             "print_every": self.print_every,
             "verbose": self.verbose,
-            "n_jobs": self.n_jobs,
             "strict_topology": self.strict_topology,
-            "adaptive_recovery": self.adaptive_recovery,
             "initial_scale": self.initial_scale,
+            "align_orientation": self.align_orientation,
+            "init_method": self.init_method,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -388,6 +431,9 @@ class FlattenConfig:
             **data.get("final_negative_area_removal", {})
         )
         spring_smoothing = SpringSmoothingConfig(**data.get("spring_smoothing", {}))
+        distance_optimal_scale = DistanceOptimalScaleConfig(
+            **data.get("distance_optimal_scale", {})
+        )
         phases_data = data.get("phases", _default_phases())
         phases = [
             p if isinstance(p, PhaseConfig) else PhaseConfig(**p) for p in phases_data
@@ -399,13 +445,14 @@ class FlattenConfig:
             negative_area_removal=negative_area_removal,
             final_negative_area_removal=final_negative_area_removal,
             spring_smoothing=spring_smoothing,
+            distance_optimal_scale=distance_optimal_scale,
             phases=phases,
             print_every=data.get("print_every", 100),
             verbose=data.get("verbose", True),
-            n_jobs=data.get("n_jobs", -1),
             strict_topology=data.get("strict_topology", True),
-            adaptive_recovery=data.get("adaptive_recovery", False),  # Default to False
             initial_scale=data.get("initial_scale", 3.0),
+            align_orientation=data.get("align_orientation", True),
+            init_method=data.get("init_method", "tutte"),
         )
 
     @classmethod

@@ -64,6 +64,9 @@ class PyflattenBackend(FlattenBackend):
         skip_phases: Optional[list] = None,
         skip_spring_smoothing: bool = False,
         skip_neg_area: bool = False,
+        neg_area: bool = False,
+        init_method: Optional[str] = None,
+        n_coarse_steps: Optional[int] = None,
         config_path: Optional[str] = None,
         n_jobs: int = -1,
         cache_distances: bool = False,
@@ -94,7 +97,24 @@ class PyflattenBackend(FlattenBackend):
         skip_spring_smoothing : bool
             Whether to skip final spring smoothing
         skip_neg_area : bool
-            Whether to skip negative area removal
+            Whether to skip the initial negative area removal phase. Retained for
+            backward compatibility: initial NAR is off by default (see ``neg_area``),
+            so this is a no-op unless ``neg_area`` was also requested. If both are
+            passed, ``skip_neg_area`` wins.
+        neg_area : bool
+            Whether to run the initial negative-area-removal phase. Off by default,
+            since the default flip-free (Tutte) init starts with zero flipped
+            triangles; useful mainly with ``init_method="freesurfer"``.
+        init_method : {"tutte", "lscm", "freesurfer"}, optional
+            Initial 2D projection method. ``"tutte"`` is a flip-free harmonic map;
+            ``"lscm"`` is a least-squares conformal map (not guaranteed flip-free);
+            ``"freesurfer"`` is the legacy normal-axis projection. If None, leaves
+            whatever the config carries (``FlattenConfig.init_method``, default
+            ``"tutte"``), so a ``config_path`` JSON can set it.
+        n_coarse_steps : int, optional
+            Number of log-spaced line-search step sizes to evaluate. If None,
+            uses the config default (15). Lower values (e.g. 7) trade a small
+            amount of distortion for faster convergence.
         config_path : str, optional
             Path to JSON config file for custom configuration
         n_jobs : int
@@ -130,7 +150,6 @@ class PyflattenBackend(FlattenBackend):
             restore_logging,
             get_kring_cache_filename,
         )
-        from ..flatten.config import KRingConfig
 
         # Load or create configuration
         if config_path is not None:
@@ -142,11 +161,17 @@ class PyflattenBackend(FlattenBackend):
         config.kring.k_ring = k_ring
         config.kring.n_neighbors_per_ring = n_neighbors_per_ring
         config.verbose = verbose
-        config.n_jobs = n_jobs
         config.print_every = print_every
+        if init_method is not None:
+            config.init_method = init_method
+        if n_coarse_steps is not None:
+            config.line_search.n_coarse_steps = n_coarse_steps
 
         if skip_spring_smoothing:
             config.spring_smoothing.enabled = False
+
+        if neg_area:
+            config.negative_area_removal.enabled = True
 
         if skip_neg_area:
             config.negative_area_removal.enabled = False
@@ -161,11 +186,12 @@ class PyflattenBackend(FlattenBackend):
 
         try:
             if verbose:
-                print(f"Running pyflatten backend")
+                print("Running pyflatten backend")
                 print(f"  Input patch: {patch_path}")
                 print(f"  Base surface: {surface_path}")
                 print(f"  Output: {output_path}")
                 print(f"  K-ring: {k_ring}, neighbors/ring: {n_neighbors_per_ring}")
+                print(f"  Init method: {config.init_method}")
 
             # Create flattener
             flattener = SurfaceFlattener(config)

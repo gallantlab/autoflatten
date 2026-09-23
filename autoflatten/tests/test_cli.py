@@ -71,13 +71,13 @@ class TestArgumentParsers:
             parser.parse_args(["--hemispheres", "invalid"])
 
     def test_add_projection_args(self):
-        """add_projection_args should add template-file and no-refine-geodesic."""
+        """add_projection_args should add template-file and refine-geodesic (off by default)."""
         parser = argparse.ArgumentParser()
         add_projection_args(parser)
 
         args = parser.parse_args([])
         assert args.template_file is None
-        assert args.no_refine_geodesic is False
+        assert args.refine_geodesic is False
 
     def test_add_projection_args_with_values(self):
         """add_projection_args arguments should accept values."""
@@ -85,10 +85,10 @@ class TestArgumentParsers:
         add_projection_args(parser)
 
         args = parser.parse_args(
-            ["--template-file", "/path/to/template.json", "--no-refine-geodesic"]
+            ["--template-file", "/path/to/template.json", "--refine-geodesic"]
         )
         assert args.template_file == "/path/to/template.json"
-        assert args.no_refine_geodesic is True
+        assert args.refine_geodesic is True
 
     def test_add_backend_args(self):
         """add_backend_args should add backend choice with pyflatten default."""
@@ -118,12 +118,18 @@ class TestArgumentParsers:
         add_pyflatten_args(parser)
 
         args = parser.parse_args([])
-        assert args.k_ring == 7
-        assert args.n_neighbors == 12
+        # k_ring/n_neighbors default to None at the parser level so --fast can
+        # supply its own values; _build_backend_kwargs resolves the effective
+        # defaults (7 / 12, or 6 with --fast).
+        assert args.k_ring is None
+        assert args.n_neighbors is None
         assert args.print_every == 1
         assert args.skip_phase is None
         assert args.skip_spring_smoothing is False
         assert args.skip_neg_area is False
+        assert args.neg_area is False
+        assert args.init_method is None
+        assert args.fast is False
         assert args.pyflatten_config is None
         assert args.n_cores == -1
         assert args.debug_save_distances is False
@@ -564,7 +570,7 @@ class TestMainFunction:
                 str(subject_dir),
                 "--hemispheres",
                 "lh",
-                "--no-refine-geodesic",
+                "--refine-geodesic",
             ],
         ):
             # Mock the project command to avoid running it
@@ -576,4 +582,4 @@ class TestMainFunction:
                 args = mock_project.call_args[0][0]
                 assert args.subject_dir == str(subject_dir)
                 assert args.hemispheres == "lh"
-                assert args.no_refine_geodesic is True
+                assert args.refine_geodesic is True

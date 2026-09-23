@@ -19,26 +19,14 @@ def test_version_fallback():
     for mod in modules_to_remove:
         del sys.modules[mod]
 
-    # Mock the _version import to fail
+    # A None entry in sys.modules makes "from ._version import version"
+    # raise ImportError, exercising the fallback in autoflatten/__init__.py
     with mock.patch.dict(sys.modules, {"autoflatten._version": None}):
-        # Force ImportError when trying to import from _version
-        import importlib
-
         import autoflatten
 
-        # Reload to trigger the import logic
-        with mock.patch.object(
-            importlib, "import_module", side_effect=ImportError("mocked")
-        ):
-            # Manually test the fallback logic
-            try:
-                from autoflatten._version import version as __version__
-            except (ImportError, TypeError):
-                __version__ = "unknown"
+        assert autoflatten.__version__ == "unknown"
 
-            assert __version__ == "unknown"
-
-    # Restore modules for other tests
+    # Remove the mocked package so other tests reimport the real one
     modules_to_remove = [key for key in sys.modules if key.startswith("autoflatten")]
     for mod in modules_to_remove:
         del sys.modules[mod]

@@ -23,6 +23,7 @@ Example:
 from .algorithm import (
     SurfaceFlattener,
     TopologyError,
+    align_to_freesurfer_orientation,
     count_flipped_triangles,
     freesurfer_projection,
     remove_isolated_vertices,
@@ -56,15 +57,15 @@ from .energy import (
     compute_2d_areas,
     compute_3d_surface_area,
     compute_metric_energy,
-    compute_area_energy,
     compute_area_energy_fs_v6,
     prepare_metric_data,
-    prepare_edge_list,
     prepare_smoothing_data,
     smooth_gradient,
     compute_spring_displacement,
     get_vertices_with_negative_area,
 )
+
+from .init import flipfree_init, scale_to_area
 
 __all__ = [
     # Main class
@@ -85,6 +86,7 @@ __all__ = [
     # Mesh utilities
     "count_flipped_triangles",
     "freesurfer_projection",
+    "align_to_freesurfer_orientation",
     "remove_isolated_vertices",
     "validate_topology",
     # Distance computation
@@ -98,12 +100,13 @@ __all__ = [
     "compute_2d_areas",
     "compute_3d_surface_area",
     "compute_metric_energy",
-    "compute_area_energy",
     "compute_area_energy_fs_v6",
     "prepare_metric_data",
-    "prepare_edge_list",
     "prepare_smoothing_data",
     "smooth_gradient",
     "compute_spring_displacement",
     "get_vertices_with_negative_area",
+    # Flip-free initialization
+    "flipfree_init",
+    "scale_to_area",
 ]
